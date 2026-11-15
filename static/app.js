@@ -224,6 +224,9 @@ const I18N = {
     qChip3: "📈 ¿Hay variabilidad real?",
     btnAiSend: "Enviar",
     i18nAiKeySummary: "🔑 Conectar API Key opcional (Gemini / OpenAI)",
+    i18nBtnAiKeyConfirm: "Confirmar",
+    i18nBtnAiKeyClear: "Quitar",
+    i18nAiKeyNote: "La clave se guarda solo en esta pestaña del navegador y se envía a tu servidor SkyChrono, que la pasa a Google u OpenAI en una cabecera. No se escribe en disco ni en Git.",
     i18nPresetModalBadge: "OBJETIVO PERSONALIZADO",
     addPresetModalTitle: "Agregar Nuevo Objetivo de Referencia",
     i18nBtnClosePreset: "Cerrar",
@@ -423,6 +426,9 @@ const I18N = {
     qChip3: "📈 Is there real variability?",
     btnAiSend: "Send",
     i18nAiKeySummary: "🔑 Connect optional API Key (Gemini / OpenAI)",
+    i18nBtnAiKeyConfirm: "Confirm",
+    i18nBtnAiKeyClear: "Remove",
+    i18nAiKeyNote: "The key is kept only in this browser tab and is sent to your SkyChrono server, which passes it to Google or OpenAI in a header. It is never written to disk or Git.",
     i18nPresetModalBadge: "CUSTOM TARGET",
     addPresetModalTitle: "Add New Reference Target",
     i18nBtnClosePreset: "Close",
@@ -891,6 +897,7 @@ function fmtNum(v, digits = 2, fallback = "—") {
 document.addEventListener("DOMContentLoaded", async () => {
   readUrlParams();
   bindEvents();
+  initAiKeyPanel();
   syncCanvasSize();
   const stageEl = document.getElementById("canvasStage");
   if (stageEl && "ResizeObserver" in window) {
@@ -1023,6 +1030,8 @@ function applyLanguage(lang) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
   }
+  renderAiKeyStatus();
+  updateAiEngineTag();
 
   // Traducir opciones de selects dinámicamente (los 7 niveles de FOV hasta Gran Angular 1.60°)
   const fovSel = document.getElementById("selectFov");
@@ -4856,6 +4865,147 @@ function renderAutoAiSummary() {
   document.getElementById("aiTipBox").innerHTML = formatMarkdownLite(analysis.tip || "");
 }
 
+// ============================================================================
+// CLAVE DE IA OPCIONAL (Gemini / OpenAI): confirmación con el proveedor y estado visible
+// ============================================================================
+const AI_KEY_STORE = "skychrono_ai_key";
+
+function aiKeyStorageGet() {
+  try {
+    return sessionStorage.getItem(AI_KEY_STORE) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function aiKeyStorageSet(value) {
+  try {
+    if (value) sessionStorage.setItem(AI_KEY_STORE, value);
+    else sessionStorage.removeItem(AI_KEY_STORE);
+  } catch (e) {
+    /* almacenamiento no disponible: la clave vive solo en memoria */
+  }
+}
+
+function renderAiKeyStatus() {
+  const el = document.getElementById("aiKeyStatus");
+  if (!el) return;
+  const en = STATE.lang === "en";
+  el.classList.remove("ok", "err", "pending", "muted");
+  const info = STATE.aiKeyInfo;
+  if (STATE.aiKeyChecking) {
+    el.textContent = en ? "⏳ Checking the key with the provider…" : "⏳ Verificando la clave con el proveedor…";
+    el.classList.add("pending");
+  } else if (info) {
+    const icon = info.ok ? (info.warning ? "⚠️" : "✅") : "❌";
+    el.textContent = `${icon} ${en ? info.message_en : info.message_es}`;
+    el.classList.add(info.ok ? (info.warning ? "pending" : "ok") : "err");
+  } else if (STATE.aiServerKey && STATE.aiServerKey.server_key) {
+    const prov = STATE.aiServerKey.provider === "openai" ? "OpenAI" : "Google Gemini";
+    el.textContent = en
+      ? `🔐 The server has its own key (.env) for ${prov}: the copilot uses it unless you confirm another one here.`
+      : `🔐 El servidor tiene su propia clave (.env) de ${prov}: el copiloto la usa salvo que confirmes otra aquí.`;
+    el.classList.add("ok");
+  } else {
+    el.textContent = en
+      ? "No key: the copilot answers with the local deterministic engine (it works without AI)."
+      : "Sin clave: el copiloto responde con el motor local determinista (funciona sin IA).";
+    el.classList.add("muted");
+  }
+  const btnOk = document.getElementById("btnAiKeyConfirm");
+  const btnClr = document.getElementById("btnAiKeyClear");
+  if (btnOk) btnOk.disabled = Boolean(STATE.aiKeyChecking);
+  if (btnClr) btnClr.disabled = Boolean(STATE.aiKeyChecking);
+}
+
+function updateAiEngineTag() {
+  const tag = document.getElementById("aiEngineTag");
+  if (!tag) return;
+  const en = STATE.lang === "en";
+  const info = STATE.aiKeyInfo;
+  if (info && info.ok) tag.textContent = `${info.provider_label} · ${info.model}`;
+  else if (STATE.aiServerKey && STATE.aiServerKey.server_key) tag.textContent = en ? "AI with server key (.env)" : "IA con clave del servidor (.env)";
+  else tag.textContent = en ? "Local engine (no AI key)" : "Motor local (sin clave de IA)";
+}
+
+async function confirmAiKey() {
+  const inp = document.getElementById("inputApiKey");
+  const key = inp ? inp.value.trim() : "";
+  if (!key) {
+    clearAiKey();
+    return false;
+  }
+  STATE.aiKeyChecking = true;
+  renderAiKeyStatus();
+  try {
+    const r = await fetch("/api/ai/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key }),
+    });
+    STATE.aiKeyInfo = await r.json();
+  } catch (err) {
+    STATE.aiKeyInfo = {
+      ok: false,
+      message_es: "No se pudo contactar con el servidor SkyChrono para comprobar la clave.",
+      message_en: "Could not reach the SkyChrono server to check the key.",
+    };
+  }
+  STATE.aiKeyChecking = false;
+  STATE.aiKeyTyped = STATE.aiKeyInfo && STATE.aiKeyInfo.reason === "network" ? "" : key;
+  if (STATE.aiKeyInfo && STATE.aiKeyInfo.ok) {
+    STATE.aiKey = key;
+    aiKeyStorageSet(key);
+  } else {
+    STATE.aiKey = "";
+    aiKeyStorageSet("");
+  }
+  renderAiKeyStatus();
+  updateAiEngineTag();
+  return Boolean(STATE.aiKeyInfo && STATE.aiKeyInfo.ok);
+}
+
+function clearAiKey() {
+  const inp = document.getElementById("inputApiKey");
+  if (inp) inp.value = "";
+  STATE.aiKey = "";
+  STATE.aiKeyTyped = "";
+  STATE.aiKeyInfo = null;
+  aiKeyStorageSet("");
+  renderAiKeyStatus();
+  updateAiEngineTag();
+}
+
+async function initAiKeyPanel() {
+  const btnOk = document.getElementById("btnAiKeyConfirm");
+  const btnClr = document.getElementById("btnAiKeyClear");
+  const inp = document.getElementById("inputApiKey");
+  if (btnOk) btnOk.addEventListener("click", () => confirmAiKey());
+  if (btnClr) btnClr.addEventListener("click", () => clearAiKey());
+  if (inp) {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirmAiKey();
+      }
+    });
+  }
+  try {
+    const r = await fetch("/api/ai/status");
+    STATE.aiServerKey = await r.json();
+  } catch (e) {
+    STATE.aiServerKey = null;
+  }
+  const saved = aiKeyStorageGet();
+  if (saved && inp) {
+    inp.value = saved;
+    await confirmAiKey();
+  } else {
+    renderAiKeyStatus();
+    updateAiEngineTag();
+  }
+}
+
 async function sendAiQuestion(question) {
   const log = document.getElementById("aiChatLog");
   const userDiv = document.createElement("div");
@@ -4865,10 +5015,15 @@ async function sendAiQuestion(question) {
 
   const botDiv = document.createElement("div");
   botDiv.className = "ai-msg bot";
+  const usingAi = Boolean(STATE.aiKey || (STATE.aiServerKey && STATE.aiServerKey.server_key));
   botDiv.textContent =
     STATE.lang === "en"
-      ? "Analyzing SPHEREx FITS image & live L2b telemetry..."
-      : "Analizando imagen FITS y telemetría SPHEREx L2b...";
+      ? usingAi
+        ? "Analyzing with the AI and the SPHEREx telemetry (it may take up to a minute if the provider is busy)..."
+        : "Analyzing the SPHEREx telemetry with the local engine..."
+      : usingAi
+      ? "Analizando con la IA y la telemetría SPHEREx (puede tardar hasta un minuto si el proveedor está saturado)..."
+      : "Analizando la telemetría SPHEREx con el motor local...";
   log.appendChild(botDiv);
   log.scrollTop = log.scrollHeight;
 
@@ -4925,7 +5080,12 @@ async function sendAiQuestion(question) {
   }
 
   try {
-    const apiKey = document.getElementById("inputApiKey").value.trim();
+    const inpKey = document.getElementById("inputApiKey");
+    const typed = inpKey ? inpKey.value.trim() : "";
+    if (typed && typed !== STATE.aiKeyTyped && !STATE.aiKeyChecking) {
+      await confirmAiKey();
+    }
+    const apiKey = STATE.aiKey || "";
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4939,8 +5099,13 @@ async function sendAiQuestion(question) {
       }),
     });
     const data = await r.json();
-    const replyText = data.reply || "Sin respuesta.";
-    botDiv.innerHTML = formatMarkdownLite(replyText);
+    const replyText = data.reply || (STATE.lang === "en" ? "No answer." : "Sin respuesta.");
+    let warn = "";
+    if (data.ai_error) {
+      const m = STATE.lang === "en" ? data.ai_error.message_en : data.ai_error.message_es;
+      warn = `⚠️ ${m} ${STATE.lang === "en" ? "Answer from the local engine:" : "Respuesta del motor local:"}\n\n`;
+    }
+    botDiv.innerHTML = formatChatMarkdown(warn + replyText);
     STATE.chatHistory.push({ role: "user", text: question });
     STATE.chatHistory.push({ role: "model", text: replyText });
     if (data.engine) {
@@ -5003,6 +5168,14 @@ function _beautifyLatexInline(expr) {
     .replace(/\\star(?![a-zA-Z])/g, "⋆")
     .replace(/\\langle(?![a-zA-Z])/g, "⟨")
     .replace(/\\rangle(?![a-zA-Z])/g, "⟩")
+    .replace(/\^\\circ(?![a-zA-Z])|\\circ(?![a-zA-Z])|\\degree(?![a-zA-Z])/g, "°")
+    .replace(/\\prime\\prime(?![a-zA-Z])|\\arcsec(?![a-zA-Z])/g, "″")
+    .replace(/\\prime(?![a-zA-Z])|\\arcmin(?![a-zA-Z])/g, "′")
+    .replace(/\\odot(?![a-zA-Z])/g, "☉")
+    .replace(/\\lesssim(?![a-zA-Z])/g, "≲")
+    .replace(/\\gtrsim(?![a-zA-Z])/g, "≳")
+    .replace(/\\propto(?![a-zA-Z])/g, "∝")
+    .replace(/\\sim(?![a-zA-Z])/g, "~")
     .replace(/\\cos(?![a-zA-Z])/g, "cos")
     .replace(/\\sin(?![a-zA-Z])/g, "sin")
     .replace(/\\ln(?![a-zA-Z])/g, "ln")
@@ -5010,6 +5183,30 @@ function _beautifyLatexInline(expr) {
     .replace(/\\log(?![a-zA-Z])/g, "log")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function _renderInlineMath(s, pushToken) {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const a = s.indexOf("$", i);
+    if (a < 0) {
+      out += s.slice(i);
+      break;
+    }
+    out += s.slice(i, a);
+    const money = /^\d[\d.,]*(?:\s|$)/.test(s.slice(a + 1));
+    const b = money ? -1 : s.indexOf("$", a + 1);
+    const nl = s.indexOf("\n", a + 1);
+    if (b > a + 1 && (nl < 0 || b < nl)) {
+      out += pushToken(`<code>${_beautifyLatexInline(s.slice(a + 1, b))}</code>`);
+      i = b + 1;
+    } else {
+      out += "$";
+      i = a + 1;
+    }
+  }
+  return out;
 }
 
 function formatMarkdownInline(text) {
@@ -5024,10 +5221,8 @@ function formatMarkdownInline(text) {
     pushToken(`<code>${code}</code>`)
   );
 
-  // Inline LaTeX $...$ (evitando montos monetarios como $0 o $10)
-  s = s.replace(/\$(?!\d+[\s.,)])([^$\n]+?)\$/g, (_m, expr) =>
-    pushToken(`<code>${_beautifyLatexInline(expr)}</code>`)
-  );
+  // Inline LaTeX $...$ (un "$" seguido de un número y un espacio o fin, como "$10 ", es un monto y no abre fórmula)
+  s = _renderInlineMath(s, pushToken);
 
   // Links Markdown [label](url)
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|#[^\s)]+)\)/g, (_m, label, url) => {
@@ -5049,6 +5244,11 @@ function formatMarkdownInline(text) {
 
 function formatMarkdownLite(text) {
   return formatMarkdownInline(text).replace(/\n/g, "<br/>");
+}
+
+// Respuestas del copiloto: títulos, listas, tablas y fórmulas con el mismo intérprete (con HTML escapado) de la documentación
+function formatChatMarkdown(text) {
+  return renderMarkdownDocument(String(text || ""), STATE.lang);
 }
 
 // ============================================================================

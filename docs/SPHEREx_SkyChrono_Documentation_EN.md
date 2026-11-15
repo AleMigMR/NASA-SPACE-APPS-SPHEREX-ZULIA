@@ -77,7 +77,7 @@ Three synchronised views: **Hammer-Aitoff** (true 2:1 aspect ratio), **3D globe*
 - **Target spectrum:** each point is one L2b exposure measured with the ePSF at its real λ (in µJy, 1σ error). ▼ marks a 3σ upper limit and × a saturated measurement. The yellow line is the 102-channel spectrum of the DR1 co-add at the same position.
 - **Apparent band depth:** τ of H₂O 3.0, CH₄ 3.3, CO₂ 4.27 and CO 4.67 µm on the DR1 spectrum, with its error and its interpretation (gas or ice).
 - **Light curve per channel:** flux / median for each channel (same λ). Only points of the same colour are comparable.
-- **Copilot:** uses Gemini (if a key is available) or a deterministic local engine. In both cases it receives only measured telemetry and is forbidden from inventing values.
+- **Copilot:** uses Gemini or OpenAI (if a key is available) or a deterministic local engine. In both cases it receives only measured telemetry and is forbidden from inventing values. To use your key: open **🔑 Connect API Key**, paste it and press **Confirm** (or Enter). The app checks it with the provider and shows ✅ (connected, with the chosen model), ⚠️ (valid key but models overloaded or out of quota at that moment) or ❌ (key rejected, with the reason). **Remove** deletes it. The model is chosen automatically among those available to your key; if one is overloaded the next one is tried, and if the provider fails the answer says so before using the local engine.
 
 ### 2.5 Data quality
 The **🛡️ Data quality** panel summarises, with data from the current cube: origin (L2b or static DR1), zodiacal light subtracted, percentage of rejected pixels (official list), PSF used (official ePSF or Gaussian), target saturation, satellites and artefacts (`STREAK`, `SATELLITE_HALO`, `BLOOM`, `SNOWBALL`) and warnings about the dichroic edge and He I.
@@ -125,6 +125,8 @@ The DR1 cube is organised in order-5 NESTED HEALPix tiles (512×512 pixels of 12
 | `GET` | `/api/catalogs` | Gaia DR3 (MAST → VizieR) and AllWISE (VizieR → IRSA Gator) projected onto the grid |
 | `GET` | `/api/gif` | GIF of the epochs |
 | `POST` | `/api/ai/chat` | Copilot (Gemini key in the `x-goog-api-key` header, never in the URL) |
+| `POST` | `/api/ai/validate` | Checks a key with its provider and chooses the model (never returns the key) |
+| `GET` | `/api/ai/status` | Tells whether the server has a key in `.env` (without revealing it) |
 | `GET` | `/api/docs?lang=` | This documentation |
 | `GET` | `/api/spherex-allsky-map` | Equirectangular map of the DR1 cube (visualisation) |
 | `GET` | `/api/hips/spherex/{channel}/{path}` | HiPS proxy for Aladin Lite |
@@ -142,10 +144,10 @@ The DR1 cube is organised in order-5 NESTED HEALPix tiles (512×512 pixels of 12
    - **RW Aur** and **R Dra** (saturated, almost no proper motion): 0.56 ± 1.23″ and 1.82 ± 0.83″, both consistent with zero.
 - **Candidate verification:** a synthetic 5 mJy source moving 12″, injected into real exposures, was recovered as *motion confirmed 12.0″ ± 0.4″*. Static stars whose peak changed with the sub-pixel phase stayed *not confirmed*.
 - **Challenge targets:** see the table in chapter 5 and the `tools/validate_targets.py` tool.
-- **Unit tests:** `python -m pytest tests/` (or `python tests/test_science.py`) checks HEALPix, the propagation of WISE 0855 to the AllWISE epoch, the official bits, the AB zero point, the MPC format, the absence of bias in τ and the recovery of an injected flux.
+- **Unit tests:** `python -m pytest tests/` (or `python tests/test_science.py` and `python tests/test_copilot.py`) checks HEALPix, the propagation of WISE 0855 to the AllWISE epoch, the official bits, the AB zero point, the MPC format, the absence of bias in τ, the recovery of an injected flux, the fallback when IRSA does not respond and the copilot with simulated providers (valid key, invalid key, no quota and missing model).
 
 ### 4.2 Security
-- `.env` is in `.gitignore`. The Gemini key travels in the `x-goog-api-key` header and never in the URL, so it does not end up in logs. Error messages do not echo the request.
+- `.env` is in `.gitignore`. The Gemini key travels in the `x-goog-api-key` header (the OpenAI key in `Authorization`) and never in the URL, so it does not end up in logs. A key pasted in the interface is kept only in that browser tab (`sessionStorage`), is never written to disk, and provider error messages are shown without fragments of the key.
 - Without a key, every scientific function keeps working and the copilot uses the local engine.
 
 ### 4.3 Installation and deployment
@@ -155,7 +157,7 @@ source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py                      # http://localhost:8050
 ```
-Optional variables: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, default 30), `SPHEREX_SIA_TIMEOUT` (s, default 60) and `SPHEREX_PREWARM=0` (disables pre-loading). With Docker: `docker build -t spherex-skychrono .` and `docker run -p 8050:8050 spherex-skychrono`.
+Optional variables: `GEMINI_API_KEY` or `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (only to force a model; by default it is chosen automatically), `PORT`, `SPHEREX_TAP_TIMEOUT` (s, default 30), `SPHEREX_SIA_TIMEOUT` (s, default 60) and `SPHEREX_PREWARM=0` (disables pre-loading). With Docker: `docker build -t spherex-skychrono .` and `docker run -p 8050:8050 spherex-skychrono`.
 
 ### 4.4 Known limitations
 - **Saturation:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) and R Dra saturate SPHEREx in almost every channel. Their **position** is measured from the saturated core and their motion is visible in the blink, but their fluxes are not reliable.

@@ -41,7 +41,7 @@
 | **Fuentes del campo** | Gaia DR3 y AllWISE; distancia solo si π/σ ≥ 5 o hay una distancia publicada | MAST con respaldo VizieR; VizieR con respaldo IRSA Gator |
 | **Calidad de datos** | Origen, luz zodiacal restada, píxeles rechazados, PSF usada, saturación y artefactos | Bits `FLAGS` oficiales (Tabla 16 del Suplemento Explicativo) |
 | **Reporte MPC** | Borrador en formato de satélite (dos líneas, código 288), solo para movimiento confirmado sin contrapartida estelar | Vector geocéntrico de la nave `X/Y/Z_SC` interpolado a mitad de exposición |
-| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini opcional (clave en la cabecera `x-goog-api-key`) o motor local determinista |
+| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini u OpenAI opcional (botón **Confirmar** que comprueba la clave y elige el modelo; errores visibles) o motor local determinista |
 
 ---
 
@@ -151,7 +151,8 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 │   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documentación completa (5 capítulos, ES)
 │   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
 ├── tests/
-│   └── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ y fotometría
+│   ├── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ, fotometría y respaldo sin IRSA
+│   └── test_copilot.py    # Copiloto con proveedores simulados: clave válida/inválida, sin cuota, modelo inexistente
 ├── tools/
 │   └── validate_targets.py  # Validación de los objetivos del reto con datos reales de SPHEREx
 └── poc/                   # Pruebas de concepto iniciales
@@ -172,6 +173,8 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 | `GET` | `/api/catalogs` | Gaia DR3 y AllWISE proyectados en el campo |
 | `GET` | `/api/gif` | Animación GIF de las épocas |
 | `POST` | `/api/ai/chat` | Copiloto |
+| `POST` | `/api/ai/validate` | Comprueba una clave de IA con su proveedor (nunca la devuelve) |
+| `GET` | `/api/ai/status` | Indica si el servidor tiene clave en `.env` (sin revelarla) |
 | `GET` | `/api/docs?lang=es\|en` | Documentación integrada |
 | `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
 | `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
@@ -198,7 +201,9 @@ La app funciona al 100 % sin claves: el copiloto usa entonces su motor local. Pa
 ```bash
 cp .env.example .env
 ```
-Variables disponibles: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos). También puedes dar una clave temporal desde la interfaz: solo vive en la sesión del navegador.
+Variables disponibles: `GEMINI_API_KEY` u `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (solo para forzar un modelo; por defecto se elige solo), `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos).
+
+También puedes usar tu clave sin `.env`: en el panel del copiloto abre **🔑 Conectar API Key**, pégala y pulsa **Confirmar**. La app la comprueba con Google u OpenAI y muestra ✅ (conectada, con el modelo elegido), ⚠️ (válida, pero modelos saturados o sin cuota en ese momento) o ❌ (rechazada, con el motivo). La clave vive solo en esa pestaña del navegador; **Quitar** la borra.
 
 ### 3. Ejecutar
 ```bash
@@ -215,6 +220,9 @@ node --check static/app.js
 ```
 ```bash
 python tests/test_science.py
+```
+```bash
+python tests/test_copilot.py
 ```
 
 ### 5. Docker o Render

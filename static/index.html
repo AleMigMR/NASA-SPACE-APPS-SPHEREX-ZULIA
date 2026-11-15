@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=27" />
+  <link rel="stylesheet" href="/static/styles.css?v=28" />
   <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
 </head>
@@ -681,14 +681,22 @@
           <button type="submit" class="btn btn-accent" id="btnAiSend">Enviar</button>
         </form>
 
-        <details class="ai-key-details">
+        <details class="ai-key-details" id="aiKeyDetails">
           <summary id="i18nAiKeySummary">🔑 Conectar API Key opcional (Gemini / OpenAI)</summary>
-          <input
-            id="inputApiKey"
-            type="password"
-            class="text-input"
-            placeholder="Pega tu GEMINI_API_KEY o OPENAI_API_KEY (opcional)"
-          />
+          <div class="ai-key-row">
+            <input
+              id="inputApiKey"
+              type="password"
+              class="text-input"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Pega tu GEMINI_API_KEY o OPENAI_API_KEY (opcional)"
+            />
+            <button type="button" class="btn btn-accent ai-key-btn" id="btnAiKeyConfirm"><span id="i18nBtnAiKeyConfirm">Confirmar</span></button>
+            <button type="button" class="btn btn-ghost ai-key-btn" id="btnAiKeyClear"><span id="i18nBtnAiKeyClear">Quitar</span></button>
+          </div>
+          <div class="ai-key-status muted" id="aiKeyStatus" role="status" aria-live="polite"></div>
+          <p class="ai-key-note" id="i18nAiKeyNote">La clave se guarda solo en esta pestaña del navegador y se envía a tu servidor SkyChrono, que la pasa a Google u OpenAI en una cabecera. No se escribe en disco ni en Git.</p>
         </details>
       </div>
     </aside>
@@ -945,6 +953,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=27"></script>
+  <script src="/static/app.js?v=28"></script>
 </body>
 </html>

@@ -77,7 +77,7 @@ Tres vistas sincronizadas: **Hammer-Aitoff** (proporción real 2:1), **globo 3D*
 - **Espectro del objetivo:** cada punto es una exposición L2b medida con la ePSF a su λ real (en µJy, error 1σ). ▼ indica un límite superior a 3σ y × una medición saturada. La línea amarilla es el espectro de 102 canales de la co-adición DR1 en la misma posición.
 - **Profundidad aparente de banda:** τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm sobre el espectro DR1, con su error y su interpretación (gas o hielo).
 - **Curva de luz por canal:** flujo / mediana para cada canal (misma λ). Solo son comparables los puntos del mismo color.
-- **Copiloto:** usa Gemini (si hay clave) o un motor local determinista. En ambos casos recibe solo telemetría medida y tiene prohibido inventar valores.
+- **Copiloto:** usa Gemini u OpenAI (si hay clave) o un motor local determinista. En ambos casos recibe solo telemetría medida y tiene prohibido inventar valores. Para usar tu clave: abre **🔑 Conectar API Key**, pégala y pulsa **Confirmar** (o Enter). La app la comprueba con el proveedor y muestra ✅ (conectada, con el modelo elegido), ⚠️ (clave válida pero modelos saturados o sin cuota en ese momento) o ❌ (clave rechazada, con el motivo). **Quitar** la borra. El modelo se elige solo entre los que tu clave tiene disponibles; si uno está saturado se prueba el siguiente, y si el proveedor falla la respuesta lo indica antes de usar el motor local.
 
 ### 2.5 Calidad de datos
 El panel **🛡️ Calidad de datos** resume, con datos del cubo actual: origen (L2b o DR1 estático), luz zodiacal restada, porcentaje de píxeles rechazados (lista oficial), PSF usada (ePSF oficial o gaussiana), saturación del objetivo, satélites y artefactos (`STREAK`, `SATELLITE_HALO`, `BLOOM`, `SNOWBALL`) y avisos de borde dicroico y He I.
@@ -125,6 +125,8 @@ El cubo DR1 se organiza en teselas HEALPix NESTED de orden 5 (512×512 píxeles 
 | `GET` | `/api/catalogs` | Gaia DR3 (MAST → VizieR) y AllWISE (VizieR → IRSA Gator) proyectados en la grilla |
 | `GET` | `/api/gif` | GIF de las épocas |
 | `POST` | `/api/ai/chat` | Copiloto (clave de Gemini en la cabecera `x-goog-api-key`, nunca en la URL) |
+| `POST` | `/api/ai/validate` | Comprueba una clave con su proveedor y elige el modelo (nunca devuelve la clave) |
+| `GET` | `/api/ai/status` | Indica si el servidor tiene una clave en `.env` (sin revelarla) |
 | `GET` | `/api/docs?lang=` | Esta documentación |
 | `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
 | `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
@@ -142,10 +144,10 @@ El cubo DR1 se organiza en teselas HEALPix NESTED de orden 5 (512×512 píxeles 
    - **RW Aur** y **R Dra** (saturadas, casi sin movimiento propio): 0.56 ± 1.23″ y 1.82 ± 0.83″, ambos compatibles con cero.
 - **Verificación de candidatos:** una fuente sintética de 5 mJy que se movía 12″, inyectada en exposiciones reales, se recuperó como *movimiento confirmado 12.0″ ± 0.4″*. Las estrellas estáticas cuyo pico cambiaba por la fase subpíxel quedaron como *no confirmadas*.
 - **Objetivos del reto:** ver la tabla del capítulo 5 y la herramienta `tools/validate_targets.py`.
-- **Pruebas unitarias:** `python -m pytest tests/` (o `python tests/test_science.py`) comprueba HEALPix, propagación de WISE 0855 a la época AllWISE, bits oficiales, punto cero AB, formato MPC, ausencia de sesgo en τ y recuperación de flujo inyectado.
+- **Pruebas unitarias:** `python -m pytest tests/` (o `python tests/test_science.py` y `python tests/test_copilot.py`) comprueba HEALPix, propagación de WISE 0855 a la época AllWISE, bits oficiales, punto cero AB, formato MPC, ausencia de sesgo en τ, recuperación de flujo inyectado, el respaldo cuando IRSA no responde y el copiloto con proveedores simulados (clave válida, inválida, sin cuota y modelo inexistente).
 
 ### 4.2 Seguridad
-- `.env` está en `.gitignore`. La clave de Gemini viaja en la cabecera `x-goog-api-key` y nunca en la URL, para que no quede en registros. Los mensajes de error no reproducen la petición.
+- `.env` está en `.gitignore`. La clave de Gemini viaja en la cabecera `x-goog-api-key` (la de OpenAI en `Authorization`) y nunca en la URL, para que no quede en registros. La clave pegada en la interfaz se guarda solo en esa pestaña del navegador (`sessionStorage`), no se escribe en disco y los mensajes de error del proveedor se muestran sin fragmentos de la clave.
 - Sin clave, todas las funciones científicas siguen operativas y el copiloto usa el motor local.
 
 ### 4.3 Instalación y despliegue
@@ -155,7 +157,7 @@ source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py                      # http://localhost:8050
 ```
-Variables opcionales: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30), `SPHEREX_SIA_TIMEOUT` (s, por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
+Variables opcionales: `GEMINI_API_KEY` u `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (solo para forzar un modelo; por defecto se elige solo), `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30), `SPHEREX_SIA_TIMEOUT` (s, por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
 
 ### 4.4 Limitaciones conocidas
 - **Saturación:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) y R Dra saturan SPHEREx en casi todos los canales. Su **posición** se mide con el núcleo saturado y su movimiento se ve en el blink, pero sus flujos no son fiables.
