@@ -7,7 +7,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: GEMINI_MODEL
-        value: gemini-3-flash-preview
       - key: GEMINI_API_KEY
         sync: false

@@ -238,6 +238,23 @@ async def handle_ai_chat(request: web.Request) -> web.Response:
         return web.json_response({"error": type(e).__name__, "reply": "Error interno del copiloto."}, status=500)
 
 
+async def handle_ai_validate(request: web.Request) -> web.Response:
+    """Comprueba una clave de IA con su proveedor (lista de modelos + consulta mínima). Nunca devuelve la clave."""
+    try:
+        body = await request.json()
+        res = await asyncio.to_thread(se.validate_ai_key, body.get("api_key", ""), bool(body.get("use_server_key")))
+        return web.json_response(res)
+    except Exception as e:
+        traceback.print_exc()
+        return web.json_response({"ok": False, "reason": type(e).__name__,
+                                  "message_es": "Error interno al comprobar la clave.", "message_en": "Internal error while checking the key."}, status=500)
+
+
+async def handle_ai_status(request: web.Request) -> web.Response:
+    """Indica si el servidor tiene una clave de IA en .env o en el entorno (sin revelarla)."""
+    return web.json_response(await asyncio.to_thread(se.ai_server_key_status))
+
+
 async def handle_docs(request: web.Request) -> web.Response:
     raw_id = (request.query.get("lang") or request.query.get("id") or "es").strip().lower()
     doc_id = "en" if raw_id == "en" or raw_id.endswith("_en") else "es"
@@ -301,6 +318,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/catalogs", handle_catalogs)
     app.router.add_get("/api/gif", handle_gif)
     app.router.add_post("/api/ai/chat", handle_ai_chat)
+    app.router.add_post("/api/ai/validate", handle_ai_validate)
+    app.router.add_get("/api/ai/status", handle_ai_status)
     app.router.add_get("/api/docs", handle_docs)
     app.router.add_get("/api/spherex-allsky-map", handle_spherex_allsky_map)
     app.router.add_get("/api/hips/spherex/{channel}/{tail:.*}", handle_spherex_hips_tile)

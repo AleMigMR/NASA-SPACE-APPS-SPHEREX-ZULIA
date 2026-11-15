@@ -224,6 +224,9 @@ const I18N = {
     qChip3: "📈 ¿Hay variabilidad real?",
     btnAiSend: "Enviar",
     i18nAiKeySummary: "🔑 Conectar API Key opcional (Gemini / OpenAI)",
+    i18nBtnAiKeyConfirm: "Confirmar",
+    i18nBtnAiKeyClear: "Quitar",
+    i18nAiKeyNote: "La clave se guarda solo en esta pestaña del navegador y se envía a tu servidor SkyChrono, que la pasa a Google u OpenAI en una cabecera. No se escribe en disco ni en Git.",
     i18nPresetModalBadge: "OBJETIVO PERSONALIZADO",
     addPresetModalTitle: "Agregar Nuevo Objetivo de Referencia",
     i18nBtnClosePreset: "Cerrar",
@@ -251,6 +254,37 @@ const I18N = {
     resourcesModalTitle: "Centro Oficial de Recursos NASA, IRSA/IPAC y Herramientas de Misión",
     i18nBtnCloseRes: "Cerrar",
     i18nResLiveTitle: "Puente Directo en Vivo a Archivos Oficiales NASA/IPAC para la Coordenada Actual",
+    resTag1: "NASA DATA · NASA/IPAC IRSA",
+    resTitle1: "SPHEREx Mission at IRSA",
+    resDesc1: "Archivo oficial: imágenes espectrales L2b (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), cubo All-Sky DR1, Suplemento Explicativo y servicios TAP/SIA.",
+    resTag2: "NASA DATA · TUTORIALES OFICIALES",
+    resTitle2: "SPHEREx Tutorial Notebooks",
+    resDesc2: "Notebooks de IRSA en Python (acceso SIA/TAP, recortes, PSF, cubo HiPS, mosaicos). SkyChrono sigue los mismos métodos: SIA con colecciones DR1/QR3 y lectura en S3.",
+    resTag3: "NASA DATA · HERRAMIENTAS OFICIALES DE IRSA",
+    resTitle3: "SPHEREx Data Explorer · MOST · Espectrofotometría",
+    resDesc3: "Para contrastar resultados: el explorador oficial de datos, MOST (busca las imágenes de SPHEREx que cubren la órbita de un objeto del Sistema Solar, el camino para buscar objetos tipo Planeta X) y la herramienta oficial de fotometría forzada.",
+    resTag4: "NASA DATA · MODELO DE HERRAMIENTA",
+    resTitle4: "WiseView",
+    resDesc4: "Visor de parpadeo (blink) de datos de WISE usado por el público para cientos de descubrimientos de movimiento propio. Inspiración del modo Blink de SkyChrono.",
+    resTag5: "NASA DATA · GAIA DR3 EN MAST",
+    resTitle5: "Gaia Mission Data (Data Release 3)",
+    resDesc5: "SkyChrono consulta Gaia DR3 en MAST para identificar fuentes, propagar posiciones y dar distancias solo cuando la paralaje es fiable (π/σ ≥ 5).",
+    resTag6: "DOIs · DATOS UTILIZADOS",
+    resTitle6: "DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES",
+    resDesc6: "Citas de los productos usados: imágenes DR1, cubo All-Sky DR1, imágenes QR3 y la lista de objetivos de hielos SPLICES.",
+    resTag7: "IAU MINOR PLANET CENTER",
+    resTitle7: "Formato de observaciones desde satélite",
+    resDesc7: "Código de observatorio de SPHEREx: 288. Las observaciones espaciales requieren una segunda línea con el vector geocéntrico del satélite. El MPC solo acepta objetos del Sistema Solar.",
+    resTag8: "SOCIO · AGENCIA ESPACIAL CANADIENSE (CSA)",
+    resTitle8: "NEOSSat · CADC",
+    resDesc8: "NEOSSat, primer telescopio espacial dedicado a asteroides, cometas y basura espacial, y el Canadian Astronomy Data Centre con su tutorial y conjunto de datos.",
+    resTag9: "RETO OFICIAL · NASA SPACE APPS 2026",
+    resTitle9: "Planet X and SPHEREx",
+    resDesc9: "Página del reto con la lista oficial de recursos. NASA no respalda entidades ajenas al Gobierno de EE. UU.; respeta las condiciones de uso de cada sitio.",
+    linkIrsaSpherexLive: "🔭 Abrir Misión SPHEREx en IRSA",
+    linkIrsaViewerLive: "🌌 Abrir Coordenada en IRSA Viewer (Firefly)",
+    linkSimbadLive: "✦ Consultar Campo en SIMBAD (CDS)",
+    linkVizierLive: "◈ Catálogos Gaia DR3 / AllWISE en VizieR",
     i18nDocsBadge: "DOCUMENTACIÓN OFICIAL",
     docsModalTitle: "Centro de Documentación SPHEREx SkyChrono",
     i18nBtnRawMd: "Abrir Markdown",
@@ -392,6 +426,9 @@ const I18N = {
     qChip3: "📈 Is there real variability?",
     btnAiSend: "Send",
     i18nAiKeySummary: "🔑 Connect optional API Key (Gemini / OpenAI)",
+    i18nBtnAiKeyConfirm: "Confirm",
+    i18nBtnAiKeyClear: "Remove",
+    i18nAiKeyNote: "The key is kept only in this browser tab and is sent to your SkyChrono server, which passes it to Google or OpenAI in a header. It is never written to disk or Git.",
     i18nPresetModalBadge: "CUSTOM TARGET",
     addPresetModalTitle: "Add New Reference Target",
     i18nBtnClosePreset: "Close",
@@ -419,6 +456,37 @@ const I18N = {
     resourcesModalTitle: "Official NASA, IRSA/IPAC & Mission Tools Resource Hub",
     i18nBtnCloseRes: "Close",
     i18nResLiveTitle: "Live Direct Bridge to Official NASA/IPAC Archives for Current Coordinates",
+    resTag1: "NASA DATA · NASA/IPAC IRSA",
+    resTitle1: "SPHEREx Mission at IRSA",
+    resDesc1: "Official archive: L2b spectral images (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), DR1 All-Sky cube, Explanatory Supplement and TAP/SIA services.",
+    resTag2: "NASA DATA · OFFICIAL TUTORIALS",
+    resTitle2: "SPHEREx Tutorial Notebooks",
+    resDesc2: "IRSA Python notebooks (SIA/TAP access, cutouts, PSF, HiPS cube, mosaics). SkyChrono follows the same methods: SIA with DR1/QR3 collections and reads from S3.",
+    resTag3: "NASA DATA · OFFICIAL IRSA TOOLS",
+    resTitle3: "SPHEREx Data Explorer · MOST · Spectrophotometry",
+    resDesc3: "To cross-check results: the official data explorer, MOST (finds the SPHEREx images that cover a Solar System object's orbit, the way to search for Planet X-like objects) and the official forced-photometry tool.",
+    resTag4: "NASA DATA · TOOL MODEL",
+    resTitle4: "WiseView",
+    resDesc4: "Blink viewer for WISE data used by the public for hundreds of proper-motion discoveries. Inspiration for SkyChrono's Blink mode.",
+    resTag5: "NASA DATA · GAIA DR3 AT MAST",
+    resTitle5: "Gaia Mission Data (Data Release 3)",
+    resDesc5: "SkyChrono queries Gaia DR3 at MAST to identify sources, propagate positions and give distances only when the parallax is reliable (π/σ ≥ 5).",
+    resTag6: "DOIs · DATA USED",
+    resTitle6: "DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES",
+    resDesc6: "Citations of the products used: DR1 images, DR1 All-Sky cube, QR3 images and the SPLICES ice target list.",
+    resTag7: "IAU MINOR PLANET CENTER",
+    resTitle7: "Format for observations from satellites",
+    resDesc7: "SPHEREx observatory code: 288. Space-based observations need a second line with the satellite's geocentric vector. The MPC only accepts Solar System objects.",
+    resTag8: "PARTNER · CANADIAN SPACE AGENCY (CSA)",
+    resTitle8: "NEOSSat · CADC",
+    resDesc8: "NEOSSat, the first space telescope dedicated to asteroids, comets and space debris, and the Canadian Astronomy Data Centre with its tutorial and dataset.",
+    resTag9: "OFFICIAL CHALLENGE · NASA SPACE APPS 2026",
+    resTitle9: "Planet X and SPHEREx",
+    resDesc9: "Challenge page with the official list of resources. NASA does not endorse non-U.S. Government entities; follow each site's terms of use.",
+    linkIrsaSpherexLive: "🔭 Open SPHEREx Mission at IRSA",
+    linkIrsaViewerLive: "🌌 Open Coordinate in IRSA Viewer (Firefly)",
+    linkSimbadLive: "✦ Query Field in SIMBAD (CDS)",
+    linkVizierLive: "◈ Gaia DR3 / AllWISE Catalogs in VizieR",
     i18nDocsBadge: "OFFICIAL DOCUMENTATION",
     docsModalTitle: "SPHEREx SkyChrono Documentation Center",
     i18nBtnRawMd: "Open Markdown",
@@ -829,6 +897,7 @@ function fmtNum(v, digits = 2, fallback = "—") {
 document.addEventListener("DOMContentLoaded", async () => {
   readUrlParams();
   bindEvents();
+  initAiKeyPanel();
   syncCanvasSize();
   const stageEl = document.getElementById("canvasStage");
   if (stageEl && "ResizeObserver" in window) {
@@ -961,6 +1030,8 @@ function applyLanguage(lang) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
   }
+  renderAiKeyStatus();
+  updateAiEngineTag();
 
   // Traducir opciones de selects dinámicamente (los 7 niveles de FOV hasta Gran Angular 1.60°)
   const fovSel = document.getElementById("selectFov");
@@ -2425,6 +2496,10 @@ async function handleSearchResolve() {
 
 async function loadSkyPatch(opts = {}) {
   const silent = Boolean(opts && opts.silent);
+  if (STATE.irsaRetryTimer) {
+    clearTimeout(STATE.irsaRetryTimer);
+    STATE.irsaRetryTimer = null;
+  }
   STATE.panFetchInProgress = true;
   if (!silent) {
     showLoading(true);
@@ -2520,14 +2595,22 @@ async function loadSkyPatch(opts = {}) {
     setStatus(
       cube.data_mode === "dr1_static"
         ? STATE.lang === "en"
-          ? `Static DR1 (no L2b available) · ${cube.elapsed_sec}s`
-          : `DR1 estático (sin L2b disponible) · ${cube.elapsed_sec}s`
+          ? `Static DR1 (no L2b available)${cube.retry_after_s ? " · retrying IRSA automatically" : ""} · ${cube.elapsed_sec}s`
+          : `DR1 estático (sin L2b disponible)${cube.retry_after_s ? " · reintento automático de IRSA" : ""} · ${cube.elapsed_sec}s`
         : `${cube.epochs.length} ${STATE.lang === "en" ? "epochs" : "épocas"} · ${cube.used_exposures} exp (${cube.elapsed_sec}s)`,
       false
     );
 
     fetchExternalCatalogs();
     fetchDr1Spectrum();
+    // IRSA no respondió: reintento automático del mismo campo (el cubo DR1 estático no tiene épocas reales)
+    if (cube.retry_after_s && cube.data_mode === "dr1_static") {
+      const stamp = STATE.cubeStamp;
+      STATE.irsaRetryTimer = setTimeout(() => {
+        STATE.irsaRetryTimer = null;
+        if (STATE.cubeStamp === stamp && STATE.mode !== "allsky") loadSkyPatch({ silent: false });
+      }, cube.retry_after_s * 1000);
+    }
   } catch (err) {
     console.error("Error construyendo cubo SPHEREx:", err);
     showLoading(false);
@@ -4782,6 +4865,147 @@ function renderAutoAiSummary() {
   document.getElementById("aiTipBox").innerHTML = formatMarkdownLite(analysis.tip || "");
 }
 
+// ============================================================================
+// CLAVE DE IA OPCIONAL (Gemini / OpenAI): confirmación con el proveedor y estado visible
+// ============================================================================
+const AI_KEY_STORE = "skychrono_ai_key";
+
+function aiKeyStorageGet() {
+  try {
+    return sessionStorage.getItem(AI_KEY_STORE) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function aiKeyStorageSet(value) {
+  try {
+    if (value) sessionStorage.setItem(AI_KEY_STORE, value);
+    else sessionStorage.removeItem(AI_KEY_STORE);
+  } catch (e) {
+    /* almacenamiento no disponible: la clave vive solo en memoria */
+  }
+}
+
+function renderAiKeyStatus() {
+  const el = document.getElementById("aiKeyStatus");
+  if (!el) return;
+  const en = STATE.lang === "en";
+  el.classList.remove("ok", "err", "pending", "muted");
+  const info = STATE.aiKeyInfo;
+  if (STATE.aiKeyChecking) {
+    el.textContent = en ? "⏳ Checking the key with the provider…" : "⏳ Verificando la clave con el proveedor…";
+    el.classList.add("pending");
+  } else if (info) {
+    const icon = info.ok ? (info.warning ? "⚠️" : "✅") : "❌";
+    el.textContent = `${icon} ${en ? info.message_en : info.message_es}`;
+    el.classList.add(info.ok ? (info.warning ? "pending" : "ok") : "err");
+  } else if (STATE.aiServerKey && STATE.aiServerKey.server_key) {
+    const prov = STATE.aiServerKey.provider === "openai" ? "OpenAI" : "Google Gemini";
+    el.textContent = en
+      ? `🔐 The server has its own key (.env) for ${prov}: the copilot uses it unless you confirm another one here.`
+      : `🔐 El servidor tiene su propia clave (.env) de ${prov}: el copiloto la usa salvo que confirmes otra aquí.`;
+    el.classList.add("ok");
+  } else {
+    el.textContent = en
+      ? "No key: the copilot answers with the local deterministic engine (it works without AI)."
+      : "Sin clave: el copiloto responde con el motor local determinista (funciona sin IA).";
+    el.classList.add("muted");
+  }
+  const btnOk = document.getElementById("btnAiKeyConfirm");
+  const btnClr = document.getElementById("btnAiKeyClear");
+  if (btnOk) btnOk.disabled = Boolean(STATE.aiKeyChecking);
+  if (btnClr) btnClr.disabled = Boolean(STATE.aiKeyChecking);
+}
+
+function updateAiEngineTag() {
+  const tag = document.getElementById("aiEngineTag");
+  if (!tag) return;
+  const en = STATE.lang === "en";
+  const info = STATE.aiKeyInfo;
+  if (info && info.ok) tag.textContent = `${info.provider_label} · ${info.model}`;
+  else if (STATE.aiServerKey && STATE.aiServerKey.server_key) tag.textContent = en ? "AI with server key (.env)" : "IA con clave del servidor (.env)";
+  else tag.textContent = en ? "Local engine (no AI key)" : "Motor local (sin clave de IA)";
+}
+
+async function confirmAiKey() {
+  const inp = document.getElementById("inputApiKey");
+  const key = inp ? inp.value.trim() : "";
+  if (!key) {
+    clearAiKey();
+    return false;
+  }
+  STATE.aiKeyChecking = true;
+  renderAiKeyStatus();
+  try {
+    const r = await fetch("/api/ai/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key }),
+    });
+    STATE.aiKeyInfo = await r.json();
+  } catch (err) {
+    STATE.aiKeyInfo = {
+      ok: false,
+      message_es: "No se pudo contactar con el servidor SkyChrono para comprobar la clave.",
+      message_en: "Could not reach the SkyChrono server to check the key.",
+    };
+  }
+  STATE.aiKeyChecking = false;
+  STATE.aiKeyTyped = STATE.aiKeyInfo && STATE.aiKeyInfo.reason === "network" ? "" : key;
+  if (STATE.aiKeyInfo && STATE.aiKeyInfo.ok) {
+    STATE.aiKey = key;
+    aiKeyStorageSet(key);
+  } else {
+    STATE.aiKey = "";
+    aiKeyStorageSet("");
+  }
+  renderAiKeyStatus();
+  updateAiEngineTag();
+  return Boolean(STATE.aiKeyInfo && STATE.aiKeyInfo.ok);
+}
+
+function clearAiKey() {
+  const inp = document.getElementById("inputApiKey");
+  if (inp) inp.value = "";
+  STATE.aiKey = "";
+  STATE.aiKeyTyped = "";
+  STATE.aiKeyInfo = null;
+  aiKeyStorageSet("");
+  renderAiKeyStatus();
+  updateAiEngineTag();
+}
+
+async function initAiKeyPanel() {
+  const btnOk = document.getElementById("btnAiKeyConfirm");
+  const btnClr = document.getElementById("btnAiKeyClear");
+  const inp = document.getElementById("inputApiKey");
+  if (btnOk) btnOk.addEventListener("click", () => confirmAiKey());
+  if (btnClr) btnClr.addEventListener("click", () => clearAiKey());
+  if (inp) {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirmAiKey();
+      }
+    });
+  }
+  try {
+    const r = await fetch("/api/ai/status");
+    STATE.aiServerKey = await r.json();
+  } catch (e) {
+    STATE.aiServerKey = null;
+  }
+  const saved = aiKeyStorageGet();
+  if (saved && inp) {
+    inp.value = saved;
+    await confirmAiKey();
+  } else {
+    renderAiKeyStatus();
+    updateAiEngineTag();
+  }
+}
+
 async function sendAiQuestion(question) {
   const log = document.getElementById("aiChatLog");
   const userDiv = document.createElement("div");
@@ -4791,10 +5015,15 @@ async function sendAiQuestion(question) {
 
   const botDiv = document.createElement("div");
   botDiv.className = "ai-msg bot";
+  const usingAi = Boolean(STATE.aiKey || (STATE.aiServerKey && STATE.aiServerKey.server_key));
   botDiv.textContent =
     STATE.lang === "en"
-      ? "Analyzing SPHEREx FITS image & live L2b telemetry..."
-      : "Analizando imagen FITS y telemetría SPHEREx L2b...";
+      ? usingAi
+        ? "Analyzing with the AI and the SPHEREx telemetry (it may take up to a minute if the provider is busy)..."
+        : "Analyzing the SPHEREx telemetry with the local engine..."
+      : usingAi
+      ? "Analizando con la IA y la telemetría SPHEREx (puede tardar hasta un minuto si el proveedor está saturado)..."
+      : "Analizando la telemetría SPHEREx con el motor local...";
   log.appendChild(botDiv);
   log.scrollTop = log.scrollHeight;
 
@@ -4851,7 +5080,12 @@ async function sendAiQuestion(question) {
   }
 
   try {
-    const apiKey = document.getElementById("inputApiKey").value.trim();
+    const inpKey = document.getElementById("inputApiKey");
+    const typed = inpKey ? inpKey.value.trim() : "";
+    if (typed && typed !== STATE.aiKeyTyped && !STATE.aiKeyChecking) {
+      await confirmAiKey();
+    }
+    const apiKey = STATE.aiKey || "";
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4865,8 +5099,13 @@ async function sendAiQuestion(question) {
       }),
     });
     const data = await r.json();
-    const replyText = data.reply || "Sin respuesta.";
-    botDiv.innerHTML = formatMarkdownLite(replyText);
+    const replyText = data.reply || (STATE.lang === "en" ? "No answer." : "Sin respuesta.");
+    let warn = "";
+    if (data.ai_error) {
+      const m = STATE.lang === "en" ? data.ai_error.message_en : data.ai_error.message_es;
+      warn = `⚠️ ${m} ${STATE.lang === "en" ? "Answer from the local engine:" : "Respuesta del motor local:"}\n\n`;
+    }
+    botDiv.innerHTML = formatChatMarkdown(warn + replyText);
     STATE.chatHistory.push({ role: "user", text: question });
     STATE.chatHistory.push({ role: "model", text: replyText });
     if (data.engine) {
@@ -4929,6 +5168,14 @@ function _beautifyLatexInline(expr) {
     .replace(/\\star(?![a-zA-Z])/g, "⋆")
     .replace(/\\langle(?![a-zA-Z])/g, "⟨")
     .replace(/\\rangle(?![a-zA-Z])/g, "⟩")
+    .replace(/\^\\circ(?![a-zA-Z])|\\circ(?![a-zA-Z])|\\degree(?![a-zA-Z])/g, "°")
+    .replace(/\\prime\\prime(?![a-zA-Z])|\\arcsec(?![a-zA-Z])/g, "″")
+    .replace(/\\prime(?![a-zA-Z])|\\arcmin(?![a-zA-Z])/g, "′")
+    .replace(/\\odot(?![a-zA-Z])/g, "☉")
+    .replace(/\\lesssim(?![a-zA-Z])/g, "≲")
+    .replace(/\\gtrsim(?![a-zA-Z])/g, "≳")
+    .replace(/\\propto(?![a-zA-Z])/g, "∝")
+    .replace(/\\sim(?![a-zA-Z])/g, "~")
     .replace(/\\cos(?![a-zA-Z])/g, "cos")
     .replace(/\\sin(?![a-zA-Z])/g, "sin")
     .replace(/\\ln(?![a-zA-Z])/g, "ln")
@@ -4936,6 +5183,30 @@ function _beautifyLatexInline(expr) {
     .replace(/\\log(?![a-zA-Z])/g, "log")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function _renderInlineMath(s, pushToken) {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const a = s.indexOf("$", i);
+    if (a < 0) {
+      out += s.slice(i);
+      break;
+    }
+    out += s.slice(i, a);
+    const money = /^\d[\d.,]*(?:\s|$)/.test(s.slice(a + 1));
+    const b = money ? -1 : s.indexOf("$", a + 1);
+    const nl = s.indexOf("\n", a + 1);
+    if (b > a + 1 && (nl < 0 || b < nl)) {
+      out += pushToken(`<code>${_beautifyLatexInline(s.slice(a + 1, b))}</code>`);
+      i = b + 1;
+    } else {
+      out += "$";
+      i = a + 1;
+    }
+  }
+  return out;
 }
 
 function formatMarkdownInline(text) {
@@ -4950,10 +5221,8 @@ function formatMarkdownInline(text) {
     pushToken(`<code>${code}</code>`)
   );
 
-  // Inline LaTeX $...$ (evitando montos monetarios como $0 o $10)
-  s = s.replace(/\$(?!\d+[\s.,)])([^$\n]+?)\$/g, (_m, expr) =>
-    pushToken(`<code>${_beautifyLatexInline(expr)}</code>`)
-  );
+  // Inline LaTeX $...$ (un "$" seguido de un número y un espacio o fin, como "$10 ", es un monto y no abre fórmula)
+  s = _renderInlineMath(s, pushToken);
 
   // Links Markdown [label](url)
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|#[^\s)]+)\)/g, (_m, label, url) => {
@@ -4975,6 +5244,11 @@ function formatMarkdownInline(text) {
 
 function formatMarkdownLite(text) {
   return formatMarkdownInline(text).replace(/\n/g, "<br/>");
+}
+
+// Respuestas del copiloto: títulos, listas, tablas y fórmulas con el mismo intérprete (con HTML escapado) de la documentación
+function formatChatMarkdown(text) {
+  return renderMarkdownDocument(String(text || ""), STATE.lang);
 }
 
 // ============================================================================

@@ -30,7 +30,8 @@ import re
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -86,7 +87,10 @@ def _load_dotenv() -> None:
                     s = line.strip()
                     if s and not s.startswith("#") and "=" in s:
                         k, v = s.split("=", 1)
-                        os.environ.setdefault(k.strip(), v.strip())
+                        v = v.strip()
+                        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                            v = v[1:-1]  # GEMINI_API_KEY="..." también es válido
+                        os.environ.setdefault(k.strip(), v)
         except Exception:
             pass
 
@@ -488,6 +492,7 @@ _finalize_landmarks()
 
 CUSTOM_TARGETS_FILE = os.path.join(CACHE_DIR, "custom_targets.json")
 _CUBE_RESP_CACHE: Dict[str, Dict[str, Any]] = {}
+_CUBE_RESP_T: Dict[str, float] = {}
 
 
 _PROTECTED_TARGET_KEYS = (
@@ -766,7 +771,8 @@ def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr:
 # Descubrimiento de exposiciones (IRSA TAP)
 # ---------------------------------------------------------------------------
 _TAP_STATUS: Dict[str, Any] = {"ok": None, "error": None, "t": 0.0, "via": None, "tap_fail_t": 0.0, "sia_fail_t": 0.0}
-SERVICE_RETRY_S = 300.0
+EXPOSURE_CACHE_TTL_S = 7 * 86400.0  # listas de exposiciones y cubos en caché se rehacen cada 7 días (nuevas épocas)
+SERVICE_RETRY_S = 60.0  # tras un fallo de TAP o SIA no se vuelve a esperar ese servicio durante 1 minuto
 
 
 def query_spherex_exposures(
@@ -776,17 +782,23 @@ def query_spherex_exposures(
     release: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Consulta IRSA TAP (spherex.artifact ⋈ spherex.plane) por las exposiciones L2b cuyo polígono
-    contiene (ra, dec). Cachea en disco solo respuestas válidas. Si IRSA no responde devuelve []
-    y deja constancia en `_TAP_STATUS` (la UI lo comunica en vez de inventar datos).
+    Exposiciones L2b cuyo polígono contiene (ra, dec): caché local → IRSA TAP (spherex.artifact ⋈ spherex.plane)
+    → IRSA SIA → lista oficial guardada en `data/spherex_exposure_index/` (solo objetivos del reto). Cachea en disco
+    solo respuestas en vivo. Si nada está disponible devuelve [] y deja constancia en `_TAP_STATUS` (la UI lo
+    comunica en vez de inventar datos).
     """
     key_str = f"tap_v2_{ra:.4f}_{dec:.4f}"
     cache_file = os.path.join(CACHE_DIR, "tap", f"{key_str}.json")
     all_rows: Optional[List[Dict[str, Any]]] = None
+    stale_rows: Optional[List[Dict[str, Any]]] = None  # caché caducada: solo se usa si IRSA no responde
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
-                all_rows = json.load(f)
+                cached_rows = json.load(f)
+            if time.time() - os.path.getmtime(cache_file) < EXPOSURE_CACHE_TTL_S:
+                all_rows = cached_rows
+            else:
+                stale_rows = cached_rows
         except Exception:
             all_rows = None
 
@@ -808,7 +820,11 @@ def query_spherex_exposures(
         if best_file and best_dist <= 0.05:
             try:
                 with open(best_file, "r", encoding="utf-8") as f:
-                    all_rows = json.load(f)
+                    near_rows = json.load(f)
+                if time.time() - os.path.getmtime(best_file) < EXPOSURE_CACHE_TTL_S:
+                    all_rows = near_rows
+                elif stale_rows is None:
+                    stale_rows = near_rows
             except Exception:
                 all_rows = None
 
@@ -817,35 +833,63 @@ def query_spherex_exposures(
         # de fallar no se vuelve a esperar durante SERVICE_RETRY_S (cortacircuito), para no bloquear cada consulta.
         now = time.time()
         errors: List[str] = []
+        # TAP y SIA se consultan A LA VEZ y gana el primero que responda: un TAP colgado (30 s) ya no retrasa a SIA.
+        futs: Dict[Any, str] = {}
         if now - float(_TAP_STATUS.get("tap_fail_t") or 0.0) >= SERVICE_RETRY_S:
-            all_rows, tap_err = _query_tap_exposures(ra, dec)
-            if all_rows is None:
-                _TAP_STATUS["tap_fail_t"] = time.time()
-                errors.append("TAP: " + str(tap_err))
-            else:
-                _TAP_STATUS["via"] = "TAP"
+            futs[_DISCOVERY_POOL.submit(_query_tap_exposures, ra, dec)] = "TAP"
         else:
-            errors.append("TAP: falló hace menos de 5 min (no se reintenta todavía)")
+            errors.append("TAP: falló hace menos de 1 min (no se reintenta todavía)")
+        if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
+            futs[_DISCOVERY_POOL.submit(_query_sia_exposures, ra, dec)] = "SIA"
+        else:
+            errors.append("SIA: falló hace menos de 1 min (no se reintenta todavía)")
+        pending = set(futs)
+        try:
+            for fut in as_completed(futs, timeout=max(TAP_TIMEOUT_S, SIA_TIMEOUT_S) + 30.0):
+                pending.discard(fut)
+                svc = futs[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:  # error inesperado del hilo
+                    res = (None, str(exc)[:200]) if svc == "TAP" else None
+                rows_svc, err_svc = res if svc == "TAP" else (res, "sin respuesta válida")
+                if rows_svc is None:
+                    _TAP_STATUS[("tap" if svc == "TAP" else "sia") + "_fail_t"] = time.time()
+                    errors.append(f"{svc}: {err_svc}")
+                    continue
+                all_rows = rows_svc
+                _TAP_STATUS["via"] = svc
+                break
+        except FuturesTimeout:
+            for fut in pending:
+                svc = futs[fut]
+                _TAP_STATUS[("tap" if svc == "TAP" else "sia") + "_fail_t"] = time.time()
+                errors.append(f"{svc}: tiempo de espera agotado")
+        snap_info = None
+        if all_rows is None and stale_rows:
+            # IRSA no responde: una lista de IRSA de hace más de 7 días sigue siendo oficial (quizá sin las épocas más nuevas)
+            all_rows = stale_rows
+            _TAP_STATUS["via"] = "caché"
+            errors.append("se usa la lista guardada en caché de hace más de 7 días")
         if all_rows is None:
-            if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
-                all_rows = _query_sia_exposures(ra, dec)
-                if all_rows is None:
-                    _TAP_STATUS["sia_fail_t"] = time.time()
-                    errors.append("SIA: sin respuesta válida")
-                else:
-                    _TAP_STATUS["via"] = "SIA"
-            else:
-                errors.append("SIA: falló hace menos de 5 min (no se reintenta todavía)")
+            # Último respaldo: lista OFICIAL de exposiciones guardada en el proyecto para los objetivos del reto
+            # (respuesta real de IRSA SIA). Las imágenes se siguen leyendo en vivo desde AWS S3.
+            snap = _query_snapshot_exposures(ra, dec)
+            if snap is not None:
+                all_rows, snap_info = snap
         if all_rows is None:
-            _TAP_STATUS.update({"ok": False, "error": " · ".join(errors), "t": time.time()})
+            _TAP_STATUS.update({"ok": False, "via": None, "error": " · ".join(errors), "t": time.time(), "snapshot": None})
             return []
-        _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time()})
-        if all_rows:  # una respuesta vacía no se cachea: puede cambiar con nuevas versiones de datos
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(all_rows, f)
-            except Exception:
-                pass
+        if snap_info is not None:
+            _TAP_STATUS.update({"ok": True, "via": "snapshot", "snapshot": snap_info, "error": " · ".join(errors), "t": time.time()})
+        else:
+            _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time(), "snapshot": None})
+            if all_rows and all_rows is not stale_rows:  # ni respuestas vacías ni listas caducadas se reescriben como nuevas
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(all_rows, f)
+                except Exception:
+                    pass
     else:
         _TAP_STATUS.update({"ok": True, "error": None, "via": "caché"})
 
@@ -856,6 +900,56 @@ def query_spherex_exposures(
     if release and release.lower() != "all":
         filtered = [r for r in filtered if (r.get("release") or "").lower() == release.lower()]
     return filtered
+
+
+SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "spherex_exposure_index")
+SNAPSHOT_MATCH_DEG = 0.3  # cada exposición cubre 3.5° × 3.5°; la cobertura real se comprueba luego con el WCS
+_SNAPSHOTS: Optional[List[Dict[str, Any]]] = None
+
+
+def _load_exposure_snapshots() -> List[Dict[str, Any]]:
+    """Listas oficiales de exposiciones L2b (respuestas de IRSA SIA) incluidas en el proyecto para los objetivos del reto."""
+    global _SNAPSHOTS
+    if _SNAPSHOTS is not None:
+        return _SNAPSHOTS
+    snaps: List[Dict[str, Any]] = []
+    if os.path.isdir(SNAPSHOT_DIR):
+        for fn in sorted(os.listdir(SNAPSHOT_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(SNAPSHOT_DIR, fn), "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                cols = d["columns"]
+                rows = []
+                for vals in d["rows"]:
+                    r = dict(zip(cols, vals))
+                    r["band_full"] = f"SPHEREx-{r['band']}"
+                    r["date_iso"] = Time(float(r["t_min"]), format="mjd").isot[:19] if r.get("t_min") else ""
+                    r.setdefault("exptime", EXPTIME_S)
+                    rows.append(r)
+                snaps.append({"target_id": d.get("target_id"), "ra": float(d["ra"]), "dec": float(d["dec"]),
+                              "date_utc": (d.get("query") or {}).get("date_utc"), "rows": rows})
+            except Exception:
+                continue
+    _SNAPSHOTS = snaps
+    return snaps
+
+
+def _query_snapshot_exposures(ra: float, dec: float) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    """Exposiciones de la lista guardada más cercana (≤ SNAPSHOT_MATCH_DEG), o None si no hay ninguna aplicable."""
+    best, best_d = None, 999.0
+    for snap in _load_exposure_snapshots():
+        d = float(np.hypot(((ra - snap["ra"] + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(dec)), dec - snap["dec"]))
+        if d < best_d:
+            best, best_d = snap, d
+    if best is None or best_d > SNAPSHOT_MATCH_DEG:
+        return None
+    info = {"target_id": best["target_id"], "date_utc": best["date_utc"], "sep_deg": round(best_d, 4), "n_rows": len(best["rows"])}
+    return [dict(r) for r in best["rows"]], info
+
+
+_DISCOVERY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="irsa-discovery")
 
 
 def _query_tap_exposures(ra: float, dec: float) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -906,8 +1000,15 @@ def _query_sia_exposures(ra: float, dec: float) -> Optional[List[Dict[str, Any]]
     params: List[Tuple[str, str]] = [("POS", f"CIRCLE {ra:.6f} {dec:.6f} 0.0005"), ("RESPONSEFORMAT", "CSV")]
     params += [("COLLECTION", c) for c in SIA_COLLECTIONS]
     try:
-        r = requests.get(SIA_URL, params=params, timeout=SIA_TIMEOUT_S)
-        if not r.ok or "access_url" not in r.text[:4000]:
+        # Una sola consulta con las 4 colecciones (por colección en paralelo IRSA responde 502). Los 502/503/504 de
+        # su proxy suelen durar segundos: se reintenta con pausas crecientes. Un tiempo agotado no se repite.
+        r = None
+        for pause in (1.0, 2.0, 3.0, 5.0, 8.0, None):  # hasta 6 intentos en ~19 s: los 502 de IRSA llegan en ráfagas
+            r = requests.get(SIA_URL, params=params, timeout=SIA_TIMEOUT_S)
+            if r.ok or r.status_code not in (502, 503, 504) or pause is None:
+                break
+            time.sleep(pause)
+        if r is None or not r.ok or "access_url" not in r.text[:4000]:
             return None
         out: List[Dict[str, Any]] = []
         for row in csv.DictReader(io.StringIO(r.text)):
@@ -2716,15 +2817,16 @@ def build_sky_cube_and_spectrum(
     ).hexdigest()[:16]
     cube_cache_path = os.path.join(CACHE_DIR, "cubes", f"cube_{cube_hash}.json")
     if not force_reproject:
-        if cube_hash in _CUBE_RESP_CACHE:
+        if cube_hash in _CUBE_RESP_CACHE and time.time() - _CUBE_RESP_T.get(cube_hash, 0.0) < EXPOSURE_CACHE_TTL_S:
             cached = dict(_CUBE_RESP_CACHE[cube_hash])
             cached["elapsed_sec"] = round(time.time() - t0, 3)
             return cached
-        if os.path.exists(cube_cache_path):
+        if os.path.exists(cube_cache_path) and time.time() - os.path.getmtime(cube_cache_path) < EXPOSURE_CACHE_TTL_S:
             try:
                 with open(cube_cache_path, "r", encoding="utf-8") as f:
                     cached = json.load(f)
                 _CUBE_RESP_CACHE[cube_hash] = cached
+                _CUBE_RESP_T[cube_hash] = os.path.getmtime(cube_cache_path)
                 out_c = dict(cached)
                 out_c["elapsed_sec"] = round(time.time() - t0, 3)
                 return out_c
@@ -2924,8 +3026,8 @@ def build_sky_cube_and_spectrum(
                 "dr1_channels": dr1_info.get("channels", []), "dr1_tiles": dr1_info.get("tiles", []),
             })
             notes.append({"level": "warn",
-                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA TAP no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales.",
-                          "en": "No L2b exposures available" + (" (IRSA TAP is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve."})
+                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales." + (" La app reintentará IRSA automáticamente en alrededor de un minuto." if not tap_ok else ""),
+                          "en": "No L2b exposures available" + (" (IRSA is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve." + (" The app will retry IRSA automatically in about a minute." if not tap_ok else "")})
         else:
             return {"error": ("IRSA TAP no responde y no se pudo leer el cubo DR1." if not tap_ok else "No hay datos SPHEREx en esta posición."),
                     "tap_status": dict(_TAP_STATUS)}
@@ -2984,6 +3086,11 @@ def build_sky_cube_and_spectrum(
         notes.append({"level": "warn", "es": "IRSA (TAP y SIA) no respondió: " + str(_TAP_STATUS.get("error") or "sin detalle"), "en": "IRSA (TAP and SIA) did not respond: " + str(_TAP_STATUS.get("error") or "no detail")})
     elif tap_ok and _TAP_STATUS.get("via") == "SIA":
         notes.append({"level": "info", "es": "Exposiciones obtenidas con el servicio SIA de IRSA (TAP no respondió).", "en": "Exposures retrieved with the IRSA SIA service (TAP did not respond)."})
+    elif tap_ok and _TAP_STATUS.get("via") == "snapshot":
+        snap_d = str((_TAP_STATUS.get("snapshot") or {}).get("date_utc") or "")[:10]
+        notes.append({"level": "info",
+                      "es": f"IRSA no responde: se usa la lista oficial de exposiciones de este objetivo guardada en el proyecto (consulta IRSA SIA del {snap_d}). Las imágenes L2b se leen en vivo desde AWS S3.",
+                      "en": f"IRSA is not responding: using this target's official exposure list stored in the project (IRSA SIA query of {snap_d}). The L2b images are read live from AWS S3."})
 
     light_curve = build_light_curve(photometry)
     quality = _build_data_quality(items, epochs_out, photometry, all_rows, tap_ok, data_mode)
@@ -3000,7 +3107,8 @@ def build_sky_cube_and_spectrum(
         "data_mode": data_mode,
         "data_source": {"l2b": "SPHEREx L2b (IRSA / AWS S3)", "dr1_static": "SPHEREx DR1 All-Sky Cube (co-adición estática)"}.get(data_mode, "—"),
         "notes": notes,
-        "tap_status": {"ok": tap_ok, "error": _TAP_STATUS.get("error")},
+        "tap_status": {"ok": tap_ok, "error": _TAP_STATUS.get("error"), "via": _TAP_STATUS.get("via"), "snapshot": _TAP_STATUS.get("snapshot")},
+        "retry_after_s": (int(SERVICE_RETRY_S) + 5) if (data_mode != "l2b" and not tap_ok) else None,
         "requested_bands": norm_bands, "release": release,
         "total_matching_irsa": len(all_rows), "total_all_bands_irsa": len(all_cov) if tap_ok else None,
         "used_exposures": len(items),
@@ -3042,6 +3150,7 @@ def build_sky_cube_and_spectrum(
 
     if data_mode == "l2b":
         _CUBE_RESP_CACHE[cube_hash] = result_payload
+        _CUBE_RESP_T[cube_hash] = time.time()
         try:
             with open(cube_cache_path, "w", encoding="utf-8") as f:
                 json.dump(result_payload, f)
@@ -3383,8 +3492,11 @@ def _build_data_quality(items: List[Dict[str, Any]], epochs: List[Dict[str, Any]
     he_hits = sum(1 for p in photometry if p.get("wavelength_um") and p.get("bandwidth_um") and abs(p["wavelength_um"] - 1.083) <= p["bandwidth_um"])
     sat = sum(1 for p in photometry if p["quality"] == "saturated")
     zodi = [it["zodi"] for it in items]
-    via = {"TAP": "TAP", "SIA": "SIA", "caché": "caché local de una consulta TAP/SIA"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
-    via_en = {"TAP": "TAP", "SIA": "SIA", "caché": "local cache of a TAP/SIA query"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    snap_d = str((_TAP_STATUS.get("snapshot") or {}).get("date_utc") or "")[:10]
+    via = {"TAP": "TAP", "SIA": "SIA", "caché": "caché local de una consulta TAP/SIA",
+           "snapshot": f"lista oficial guardada, consulta SIA del {snap_d}"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    via_en = {"TAP": "TAP", "SIA": "SIA", "caché": "local cache of a TAP/SIA query",
+              "snapshot": f"stored official list, SIA query of {snap_d}"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
     checks = [
         {"id": "source", "status": data_mode.upper(), "title_es": "Origen de los datos", "title_en": "Data origin",
          "metric": f"{len(items)} exp L2b" if data_mode == "l2b" else "DR1 estático",
@@ -3703,6 +3815,276 @@ _AI_RULES_EN = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Proveedores de IA (opcional): validación de la clave, elección del modelo y errores visibles
+# ---------------------------------------------------------------------------
+_AI_MODEL_CACHE: Dict[str, Dict[str, Any]] = {}   # huella SHA-256 de la clave → proveedor y modelos (nunca la clave)
+_AI_CACHE_TTL_S = 3600.0
+_AI_KEY_PATTERN = re.compile(r"(sk-[A-Za-z0-9_\-\*\.]{3,}|AIza[0-9A-Za-z_\-]{6,})")
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+OPENAI_API_BASE = "https://api.openai.com/v1"
+OPENAI_PREFERRED_MODELS = ("gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-5")
+_AI_BUSY_UNTIL: Dict[str, float] = {}  # modelo → hasta cuándo se considera saturado (503/429/tiempo agotado)
+_AI_BUSY_S = 90.0
+
+
+def _ai_by_availability(ranked: List[str]) -> List[str]:
+    """Primero los modelos que no fallaron por saturación en los últimos _AI_BUSY_S segundos (sin descartar ninguno)."""
+    now = time.time()
+    return [m for m in ranked if _AI_BUSY_UNTIL.get(m, 0.0) <= now] + [m for m in ranked if _AI_BUSY_UNTIL.get(m, 0.0) > now]
+
+
+def _ai_mark_busy(model: str, err: Optional[Dict[str, Any]]) -> None:
+    if err and (err.get("status") in (429, 500, 502, 503, 504) or err.get("reason") == "network"):
+        _AI_BUSY_UNTIL[model] = time.time() + _AI_BUSY_S
+
+
+def ai_provider_for_key(key: str) -> str:
+    """Las claves de OpenAI empiezan por 'sk-' (incluidas las 'sk-proj-'); el resto se trata como clave de Google Gemini."""
+    return "openai" if (key or "").strip().startswith("sk-") else "gemini"
+
+
+def _key_fingerprint(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
+
+
+def _sanitize_provider_message(msg: Any) -> str:
+    """Mensaje de error del proveedor sin fragmentos de la clave (OpenAI incluye sus últimos caracteres)."""
+    return _AI_KEY_PATTERN.sub("[clave]", str(msg or "")).strip()[:220]
+
+
+def _provider_error(provider: str, status: Optional[int], payload: Any = None, exc: Optional[BaseException] = None) -> Dict[str, Any]:
+    name = "Google Gemini" if provider == "gemini" else "OpenAI"
+    detail, reason = "", "error"
+    if isinstance(payload, dict):
+        err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        detail = _sanitize_provider_message(err.get("message"))
+        code = str(err.get("code") or err.get("status") or "")
+        details = err.get("details") or []
+        reasons = " ".join(str(d.get("reason", "")) for d in details if isinstance(d, dict))
+        if "API_KEY_INVALID" in reasons or code == "invalid_api_key" or (status in (401,) and provider == "openai"):
+            reason = "invalid_key"
+        elif status == 403:
+            reason = "permission"
+        elif status == 404:
+            reason = "model_not_found"
+        elif status == 429 or "insufficient_quota" in code or "RESOURCE_EXHAUSTED" in code:
+            reason = "quota"
+    elif exc is not None:
+        reason = "network"
+        detail = ("tiempo de espera agotado" if "Timeout" in type(exc).__name__ else "sin conexión") + f" ({type(exc).__name__})"
+    if status == 400 and provider == "gemini" and reason == "error" and "API key" in detail:
+        reason = "invalid_key"
+    es = {"invalid_key": f"{name} rechazó la clave: no es válida.",
+          "permission": f"{name} rechazó el acceso (403): la clave no tiene permiso para esta API.",
+          "model_not_found": f"{name} no encontró el modelo solicitado (404).",
+          "quota": f"La clave es válida, pero {name} indica que no hay cuota o se superó el límite de uso (429).",
+          "network": f"No se pudo conectar con {name}. Inténtalo de nuevo en unos segundos.",
+          "error": f"{name} devolvió un error" + (f" ({status})" if status else "") + "."}[reason]
+    en = {"invalid_key": f"{name} rejected the key: it is not valid.",
+          "permission": f"{name} denied access (403): the key has no permission for this API.",
+          "model_not_found": f"{name} could not find the requested model (404).",
+          "quota": f"The key is valid, but {name} reports no quota or the usage limit was exceeded (429).",
+          "network": f"Could not connect to {name}. Try again in a few seconds.",
+          "error": f"{name} returned an error" + (f" ({status})" if status else "") + "."}[reason]
+    if detail:
+        es += f" Detalle: {detail}"
+        en += f" Detail: {detail}"
+    return {"ok": False, "provider": provider, "status": status, "reason": reason, "message_es": es, "message_en": en}
+
+
+def _rank_gemini_models(names: List[str]) -> List[str]:
+    """Modelos Gemini de texto ordenados: GEMINI_MODEL, alias estable 'flash-latest', Flash estables y luego preview."""
+    skip = ("tts", "image", "embedding", "live", "audio", "computer-use", "robotics", "-exp", "learnlm", "aqa", "veo", "imagen",
+            "transcribe", "banana", "customtools", "tuning")
+    usable = [n for n in names if n.startswith("gemini") and not any(k in n for k in skip)]
+
+    def _ver(n: str) -> float:
+        m = re.match(r"gemini-(\d+(?:\.\d+)?)", n)
+        return float(m.group(1)) if m else 0.0
+
+    pref = (os.environ.get("GEMINI_MODEL") or "").strip()
+    ranked: List[str] = [pref] if pref in usable else []
+    for alias in ("gemini-flash-latest",):
+        if alias in usable and alias not in ranked:
+            ranked.append(alias)
+    flash = [n for n in usable if "flash" in n and "lite" not in n and n not in ranked]
+    flash.sort(key=lambda n: ("preview" in n, -_ver(n), len(n)))
+    ranked += flash
+    lite = sorted([n for n in usable if "flash" in n and "lite" in n and n not in ranked], key=lambda n: ("preview" in n, -_ver(n)))
+    ranked += lite
+    ranked += sorted([n for n in usable if n not in ranked], key=lambda n: ("preview" in n, -_ver(n)))
+    return ranked
+
+
+def _list_provider_models(provider: str, key: str) -> Tuple[Optional[List[str]], Optional[Dict[str, Any]]]:
+    ranked, err = _list_provider_models_once(provider, key)
+    if err and err.get("reason") == "network":
+        time.sleep(1.0)
+        ranked, err = _list_provider_models_once(provider, key)
+    return ranked, err
+
+
+def _list_provider_models_once(provider: str, key: str) -> Tuple[Optional[List[str]], Optional[Dict[str, Any]]]:
+    try:
+        if provider == "gemini":
+            r = requests.get(f"{GEMINI_API_BASE}/models", params={"pageSize": 200}, headers={"x-goog-api-key": key}, timeout=20)
+            if not r.ok:
+                return None, _provider_error(provider, r.status_code, _safe_json(r))
+            names = [m.get("name", "").split("/", 1)[-1] for m in r.json().get("models", [])
+                     if "generateContent" in (m.get("supportedGenerationMethods") or [])]
+            return _rank_gemini_models(names), None
+        r = requests.get(f"{OPENAI_API_BASE}/models", headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        if not r.ok:
+            return None, _provider_error(provider, r.status_code, _safe_json(r))
+        ids = {m.get("id", "") for m in r.json().get("data", [])}
+        pref = (os.environ.get("OPENAI_MODEL") or "").strip()
+        ranked = ([pref] if pref in ids else []) + [m for m in OPENAI_PREFERRED_MODELS if m in ids and m != pref]
+        return ranked or ["gpt-4o-mini"], None
+    except Exception as exc:  # red caída o proveedor inaccesible
+        return None, _provider_error(provider, None, exc=exc)
+
+
+def _safe_json(r: Any) -> Any:
+    try:
+        return r.json()
+    except Exception:
+        return None
+
+
+def _gemini_generate(key: str, model: str, sys_prompt: str, contents: List[Dict[str, Any]], max_tokens: int,
+                     timeout: float = 50.0) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    # La clave va en la cabecera x-goog-api-key (nunca en la URL: evita que quede en registros o errores)
+    try:
+        r = requests.post(f"{GEMINI_API_BASE}/models/{model}:generateContent",
+                          headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                          json={"systemInstruction": {"parts": [{"text": sys_prompt}]}, "contents": contents,
+                                "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}},
+                          timeout=timeout)
+    except Exception as exc:
+        return None, _provider_error("gemini", None, exc=exc)
+    if not r.ok:
+        return None, _provider_error("gemini", r.status_code, _safe_json(r))
+    data = _safe_json(r) or {}
+    cands = data.get("candidates") or []
+    if not cands:
+        block = (data.get("promptFeedback") or {}).get("blockReason")
+        err = _provider_error("gemini", 200, None)
+        err["message_es"] = "Google Gemini no devolvió respuesta" + (f" (bloqueo: {block})." if block else ".")
+        err["message_en"] = "Google Gemini returned no answer" + (f" (blocked: {block})." if block else ".")
+        return None, err
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    ans = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    if not ans:
+        err = _provider_error("gemini", 200, None)
+        err["message_es"] = f"Google Gemini terminó sin texto (motivo: {cands[0].get('finishReason', '—')})."
+        err["message_en"] = f"Google Gemini finished without text (reason: {cands[0].get('finishReason', '—')})."
+        return None, err
+    return ans, None
+
+
+def _openai_chat(key: str, model: str, messages: List[Dict[str, Any]], max_tokens: int,
+                 timeout: float = 50.0) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    body: Dict[str, Any] = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
+    if not (model.startswith("gpt-5") or re.match(r"^o\d", model)):
+        body["temperature"] = 0.2  # los modelos de razonamiento solo admiten la temperatura por defecto
+    try:
+        r = requests.post(f"{OPENAI_API_BASE}/chat/completions",
+                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, json=body, timeout=timeout)
+    except Exception as exc:
+        return None, _provider_error("openai", None, exc=exc)
+    if not r.ok:
+        return None, _provider_error("openai", r.status_code, _safe_json(r))
+    try:
+        ans = (r.json()["choices"][0]["message"].get("content") or "").strip()
+    except Exception:
+        ans = ""
+    if not ans:
+        err = _provider_error("openai", 200, None)
+        err["message_es"], err["message_en"] = "OpenAI terminó sin texto.", "OpenAI finished without text."
+        return None, err
+    return ans, None
+
+
+def _resolve_ai_key(api_key: Optional[str]) -> Tuple[str, str]:
+    """Clave de la interfaz (sesión del navegador) o, si no hay, la del servidor (.env). Devuelve (clave, origen)."""
+    _load_dotenv()
+    k = (api_key or "").strip()
+    if k:
+        return k, "browser"
+    k = (os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    return k, ("server" if k else "none")
+
+
+def ai_server_key_status() -> Dict[str, Any]:
+    """Indica si el servidor tiene una clave en .env/entorno (sin revelarla)."""
+    key, origin = _resolve_ai_key(None)
+    return {"server_key": bool(key), "provider": ai_provider_for_key(key) if key else None}
+
+
+def validate_ai_key(api_key: Optional[str] = None, use_server_key: bool = False) -> Dict[str, Any]:
+    """
+    Comprueba la clave con el proveedor: lista los modelos disponibles para esa clave, elige el más adecuado y hace
+    una consulta mínima (verifica también la cuota). Nunca devuelve la clave ni fragmentos de ella.
+    """
+    key, origin = _resolve_ai_key(None if use_server_key else api_key)
+    if not key:
+        return {"ok": False, "provider": None, "reason": "empty", "message_es": "No hay clave para comprobar.", "message_en": "There is no key to check."}
+    provider = ai_provider_for_key(key)
+    name = "Google Gemini" if provider == "gemini" else "OpenAI"
+    ranked, err = _list_provider_models(provider, key)
+    if err:
+        return err
+    if not ranked:
+        return {"ok": False, "provider": provider, "reason": "no_models",
+                "message_es": f"La clave es válida, pero {name} no ofrece modelos de texto para ella.",
+                "message_en": f"The key is valid, but {name} offers no text models for it."}
+    last_err = None
+    t_end = time.time() + 60.0
+    for model in _ai_by_availability(ranked)[:6]:
+        remaining = t_end - time.time()
+        if remaining < 5.0:
+            break
+        if provider == "gemini":
+            ans, err = _gemini_generate(key, model, "Responde solo: OK", [{"role": "user", "parts": [{"text": "ping"}]}], 256, timeout=min(20.0, remaining))
+        else:
+            ans, err = _openai_chat(key, model, [{"role": "user", "content": "Reply only: OK"}], 256, timeout=min(20.0, remaining))
+        # Un 200 sin texto (p. ej. modelo de razonamiento con pocos tokens) también confirma clave, modelo y cuota
+        if ans is not None or (err and err.get("status") == 200):
+            _AI_MODEL_CACHE[_key_fingerprint(key)] = {"provider": provider, "ranked": [model] + [m for m in ranked if m != model], "t": time.time()}
+            return {"ok": True, "provider": provider, "provider_label": name, "model": model, "origin": origin,
+                    "message_es": f"Conectado a {name} · modelo {model}. El copiloto usará esta IA.",
+                    "message_en": f"Connected to {name} · model {model}. The copilot will use this AI."}
+        last_err = err
+        _ai_mark_busy(model, err)
+        if err and err.get("reason") in ("invalid_key", "permission"):
+            break
+    if last_err and (last_err.get("status") in (429, 500, 502, 503, 504) or last_err.get("reason") in ("quota", "model_not_found", "network")):
+        # La lista de modelos ya confirmó la clave: el fallo es de capacidad o cuota del proveedor, no de la clave
+        _AI_MODEL_CACHE[_key_fingerprint(key)] = {"provider": provider, "ranked": ranked, "t": time.time()}
+        return {"ok": True, "warning": True, "provider": provider, "provider_label": name, "model": ranked[0], "origin": origin,
+                "message_es": f"Clave válida: {name} la aceptó, pero ahora mismo sus modelos están saturados o sin cuota "
+                              f"({last_err.get('status') or 'tiempo de espera agotado'}). El copiloto la usará y probará otros modelos en cada pregunta.",
+                "message_en": f"Valid key: {name} accepted it, but its models are overloaded or out of quota right now "
+                              f"({last_err.get('status') or 'timeout'}). The copilot will use it and try other models on each question."}
+    return last_err or _provider_error(provider, None)
+
+
+def _ai_models_for(key: str) -> Tuple[str, List[str], Optional[Dict[str, Any]]]:
+    provider = ai_provider_for_key(key)
+    cached = _AI_MODEL_CACHE.get(_key_fingerprint(key))
+    if cached and time.time() - cached["t"] < _AI_CACHE_TTL_S:
+        return provider, cached["ranked"], None
+    ranked, err = _list_provider_models(provider, key)
+    if err:
+        if err.get("reason") == "network":
+            default = ["gemini-flash-latest", "gemini-flash-lite-latest"] if provider == "gemini" else ["gpt-4o-mini", "gpt-4.1-mini"]
+            return provider, default, err
+        return provider, [], err
+    _AI_MODEL_CACHE[_key_fingerprint(key)] = {"provider": provider, "ranked": ranked, "t": time.time()}
+    return provider, ranked, None
+
+
 def answer_ai_chat(
     message: str,
     context: Dict[str, Any],
@@ -3711,88 +4093,93 @@ def answer_ai_chat(
     image_b64: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    """Copiloto multimodal (Gemini u OpenAI) con telemetría real; sin clave usa el motor determinista local."""
-    _load_dotenv()
+    """
+    Copiloto multimodal (Gemini u OpenAI) con la telemetría medida. Sin clave usa el motor determinista local. Si el
+    proveedor falla, responde el motor local y devuelve `ai_error` para que la interfaz lo muestre (nunca en silencio).
+    """
     msg = (message or "").strip()
-    key = (api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    key, origin = _resolve_ai_key(api_key)
     hist = history or []
+    en = lang == "en"
     q_low = msg.lower()
     wants_concise = any(w in q_low for w in ["breve", "resum", "corto", "concis", "short", "brief", "quick", "una linea", "solo dime", "just tell"]) or (
         len(msg) < 42 and not any(w in q_low for w in ["analiz", "analyz", "profund", "deep", "explica", "explain", "detall", "detail", "espectro", "spectr"])
     )
-    telemetry_summary = json.dumps(context, ensure_ascii=False)[:60000]
+    ai_error: Optional[Dict[str, Any]] = None
     if key:
-        depth = ("Responde en 60–160 palabras." if wants_concise else "Responde con detalle (300–700 palabras), con subtítulos y viñetas.") if lang != "en" else (
+        telemetry_summary = json.dumps(context, ensure_ascii=False, default=str)[:60000]
+        depth = ("Responde en 60–160 palabras." if wants_concise else "Responde con detalle (300–700 palabras), con subtítulos y viñetas.") if not en else (
             "Answer in 60–160 words." if wants_concise else "Answer in detail (300–700 words) with headings and bullets.")
         sys_prompt = (
             ("Eres AstroAI Copilot, astrofísico especialista en el telescopio espacial SPHEREx (102 canales LVF, 0.75–5.0 µm, píxeles de 6.15″). "
-             if lang != "en" else "You are AstroAI Copilot, an astrophysicist specialised in the SPHEREx space telescope (102 LVF channels, 0.75–5.0 µm, 6.15″ pixels). ")
-            + (_AI_RULES_EN if lang == "en" else _AI_RULES_ES) + depth
-            + ("\nIdioma: " + ("inglés" if lang == "en" else "español"))
+             if not en else "You are AstroAI Copilot, an astrophysicist specialised in the SPHEREx space telescope (102 LVF channels, 0.75–5.0 µm, 6.15″ pixels). ")
+            + (_AI_RULES_EN if en else _AI_RULES_ES) + depth
+            + ("\nIdioma: " + ("inglés" if en else "español"))
             + "\n\nTELEMETRÍA MEDIDA (JSON):\n" + telemetry_summary
         )
-        if key.startswith("sk-"):
-            try:
-                oa_msgs: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
+        max_tokens = 2048 if wants_concise else 8192
+        provider, ranked, ai_error = _ai_models_for(key)
+        name = "Google" if provider == "gemini" else "OpenAI"
+        img_data = image_b64.split(",", 1)[-1].strip() if image_b64 and "," in image_b64 else None
+        t_end = time.time() + 80.0
+        for model in _ai_by_availability(ranked)[:5]:
+            remaining = t_end - time.time()
+            if remaining < 8.0:
+                break
+            call_timeout = min(50.0, remaining)
+            if provider == "gemini":
+                contents: List[Dict[str, Any]] = []
+                for h_turn in hist[-8:]:
+                    t_txt = (h_turn.get("text") or "").strip()
+                    if not t_txt:
+                        continue
+                    g_role = "model" if h_turn.get("role") in ("model", "bot", "assistant") else "user"
+                    if not contents and g_role == "model":
+                        continue
+                    if contents and contents[-1]["role"] == g_role:
+                        contents[-1]["parts"][0]["text"] += "\n" + t_txt
+                    else:
+                        contents.append({"role": g_role, "parts": [{"text": t_txt}]})
+                user_parts: List[Dict[str, Any]] = []
+                if img_data:
+                    mime = "image/jpeg" if "image/jpeg" in (image_b64 or "")[:40] else "image/png"
+                    user_parts.append({"inline_data": {"mime_type": mime, "data": img_data}})
+                user_parts.append({"text": msg})
+                if contents and contents[-1]["role"] == "user":
+                    contents[-1]["parts"].extend(user_parts)
+                else:
+                    contents.append({"role": "user", "parts": user_parts})
+                ans, err = _gemini_generate(key, model, sys_prompt, contents, max_tokens, timeout=call_timeout)
+            else:
+                oa_msgs: List[Dict[str, Any]] = [{"role": "system", "content": sys_prompt}]
                 for h_turn in hist[-8:]:
                     if h_turn.get("text"):
                         oa_msgs.append({"role": "assistant" if h_turn.get("role") in ("model", "bot", "assistant") else "user", "content": h_turn["text"]})
-                oa_msgs.append({"role": "user", "content": msg})
-                r = requests.post("https://api.openai.com/v1/chat/completions",
-                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                                  json={"model": "gpt-4o-mini", "messages": oa_msgs, "temperature": 0.2}, timeout=40)
-                if r.ok:
-                    return {"reply": r.json()["choices"][0]["message"]["content"], "engine": "OpenAI gpt-4o-mini + telemetría SPHEREx"}
-            except Exception:
-                pass
-        else:
-            contents_list: List[Dict[str, Any]] = []
-            for h_turn in hist[-8:]:
-                t_txt = (h_turn.get("text") or "").strip()
-                if not t_txt:
-                    continue
-                g_role = "model" if h_turn.get("role") in ("model", "bot", "assistant") else "user"
-                if not contents_list and g_role == "model":
-                    continue
-                if contents_list and contents_list[-1]["role"] == g_role:
-                    contents_list[-1]["parts"][0]["text"] += "\n" + t_txt
-                else:
-                    contents_list.append({"role": g_role, "parts": [{"text": t_txt}]})
-            user_parts: List[Dict[str, Any]] = []
-            if image_b64:
-                mime = "image/jpeg" if "image/jpeg" in image_b64[:40] else "image/png"
-                user_parts.append({"inline_data": {"mime_type": mime, "data": image_b64.split(",")[-1].strip()}})
-            user_parts.append({"text": msg})
-            if contents_list and contents_list[-1]["role"] == "user":
-                contents_list[-1]["parts"].extend(user_parts)
-            else:
-                contents_list.append({"role": "user", "parts": user_parts})
-            pref_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
-            candidate_models: List[str] = []
-            for m in [pref_model, "gemini-3-flash-preview", "gemini-flash-lite-latest"]:
-                if m and m not in candidate_models:
-                    candidate_models.append(m)
-            for model_name in candidate_models:
-                try:
-                    gen_cfg: Dict[str, Any] = {"temperature": 0.2, "maxOutputTokens": 700 if wants_concise else 2400}
-                    if "gemini-3" in model_name or "gemini-2.5" in model_name:
-                        gen_cfg["thinkingConfig"] = {"thinkingBudget": 64 if wants_concise else 128}
-                    # La clave va en la cabecera x-goog-api-key (nunca en la URL: evita que quede en registros o errores)
-                    r = requests.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-                        headers={"Content-Type": "application/json", "x-goog-api-key": key},
-                        json={"systemInstruction": {"parts": [{"text": sys_prompt}]}, "contents": contents_list, "generationConfig": gen_cfg},
-                        timeout=40,
-                    )
-                    if r.ok:
-                        cand = r.json().get("candidates", [{}])[0]
-                        parts = cand.get("content", {}).get("parts", [])
-                        ans = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip() or "".join(p.get("text", "") for p in parts).strip()
-                        if ans:
-                            return {"reply": ans, "engine": f"Google {model_name}{' + visión' if image_b64 else ''} + telemetría SPHEREx"}
-                except Exception:
-                    continue
-    return {"reply": _expert_astrophysics_response(msg, context, lang), "engine": "Motor local determinista (sin IA generativa)"}
+                user_content: Any = msg
+                if img_data:
+                    user_content = [{"type": "text", "text": msg}, {"type": "image_url", "image_url": {"url": image_b64, "detail": "low"}}]
+                oa_msgs.append({"role": "user", "content": user_content})
+                ans, err = _openai_chat(key, model, oa_msgs, max_tokens, timeout=call_timeout)
+                if err and img_data and err.get("status") == 400:
+                    oa_msgs[-1] = {"role": "user", "content": msg}  # modelo sin visión: se reintenta solo con texto
+                    ans, err = _openai_chat(key, model, oa_msgs, max_tokens, timeout=call_timeout)
+            if ans:
+                fp = _key_fingerprint(key)
+                if fp in _AI_MODEL_CACHE:
+                    _AI_MODEL_CACHE[fp]["ranked"] = [model] + [m for m in _AI_MODEL_CACHE[fp]["ranked"] if m != model]
+                vision = (" + visión" if not en else " + vision") if img_data else ""
+                return {"reply": ans, "engine": f"{name} {model}{vision} + telemetría SPHEREx" if not en else f"{name} {model}{vision} + SPHEREx telemetry",
+                        "provider": provider, "model": model, "key_origin": origin}
+            ai_error = err
+            _ai_mark_busy(model, err)
+            if err and err.get("reason") in ("invalid_key", "permission"):
+                break
+    reply = _expert_astrophysics_response(msg, context, lang)
+    out = {"reply": reply, "engine": "Motor local determinista (sin IA generativa)" if not en else "Local deterministic engine (no generative AI)",
+           "provider": None, "model": None, "key_origin": origin}
+    if ai_error:
+        out["ai_error"] = {k: ai_error.get(k) for k in ("provider", "status", "reason", "message_es", "message_en")}
+    return out
 
 
 def _expert_astrophysics_response(msg: str, ctx: Dict[str, Any], lang: str) -> str:
@@ -3816,8 +4203,12 @@ def _expert_astrophysics_response(msg: str, ctx: Dict[str, Any], lang: str) -> s
                           if en else f"SPHEREx mide **{meas_m['arcsec']} ± {meas_m['err_arcsec']}″** (AP {meas_m['pa_deg']}°) entre {meas_m['date_first']} y {meas_m['date_last']}, frente a {meas_m['predicted_arcsec']}″ predichos para esas fechas."))
         if cands:
             for c in cands[:4]:
-                notes = " ".join((c.get("notes_en") if en else c.get("notes_es")) or [])
-                lines.append(f"- **#{c['rank']}** {c['label_en'] if en else c['label_es']} · {c['snr_diff']}σ · RA {c['ra']}°, Dec {c['dec']}°. {notes}")
+                notes_l = (c.get("notes_en") if en else c.get("notes_es")) or c.get("notes") or []
+                notes = " ".join(notes_l) if isinstance(notes_l, list) else str(notes_l)
+                label = c.get("label") or (c.get("label_en") if en else c.get("label_es")) or c.get("verification") or ""
+                pos = f" · RA {c['ra']}°, Dec {c['dec']}°" if c.get("ra") is not None and c.get("dec") is not None else ""
+                shift = f" · ePSF {c['psf_shift_arcsec']}″ ± {c.get('psf_shift_err_arcsec')}″" if c.get("psf_shift_arcsec") is not None else ""
+                lines.append(f"- **#{c.get('rank', '?')}** {label} · {c.get('snr_diff', '—')}σ{shift}{pos}. {notes}".rstrip())
             lines.append("A candidate is a hypothesis: confirm it in Blink/Difference mode and against Gaia." if en else "Un candidato es una hipótesis: confírmalo en modo Blink/Diferencia y contra Gaia.")
         else:
             lines.append("No ≥5σ difference-image candidates in this field." if en else "No hay candidatos ≥5σ en la imagen de diferencia de este campo.")
@@ -3834,13 +4225,17 @@ def _expert_astrophysics_response(msg: str, ctx: Dict[str, Any], lang: str) -> s
     if any(w in q for w in ["curva", "luz", "variab", "brillo", "pulsa", "eclips", "light", "curve", "bright"]):
         sc = (ctx.get("light_curve") or {}).get("strongest_change")
         if sc:
-            lines.append((f"Largest same-wavelength change: {sc['max_change_sigma']}σ at {sc['wavelength_um']} µm (ratio {sc.get('max_ratio')})."
-                          if en else f"Mayor cambio a la misma λ: {sc['max_change_sigma']}σ en {sc['wavelength_um']} µm (razón {sc.get('max_ratio')})."))
+            lam_sc = round(float(sc["wavelength_um"]), 3) if sc.get("wavelength_um") is not None else "—"
+            verdict_en = "significant (≥5σ)" if (sc.get("max_change_sigma") or 0) >= 5 else "not significant (<5σ)"
+            verdict_es = "significativo (≥5σ)" if (sc.get("max_change_sigma") or 0) >= 5 else "no significativo (<5σ)"
+            lines.append((f"Largest same-wavelength change: {sc['max_change_sigma']}σ at {lam_sc} µm (ratio {sc.get('max_ratio')}): {verdict_en}."
+                          if en else f"Mayor cambio a la misma λ: {sc['max_change_sigma']}σ en {lam_sc} µm (razón {sc.get('max_ratio')}): {verdict_es}."))
         else:
             lines.append("There are not enough same-wavelength measurements in different epochs to assess variability." if en else "No hay suficientes mediciones a la misma λ en épocas distintas para evaluar la variabilidad.")
         if ps.get("n_saturated"):
             lines.append("Saturated exposures were excluded: their fluxes are not reliable." if en else "Se excluyeron las exposiciones saturadas: sus flujos no son fiables.")
         return "\n".join(lines)
-    ep_lines = [f"- E{e['index'] + 1} {e['date']}: {e['n_exp']} exp, λ {e.get('lam_min_um')}–{e.get('lam_max_um')} µm, ZODI {e['mean_zodi']} MJy/sr" for e in epochs]
+    ep_lines = [f"- E{e.get('index', i) + 1} {e.get('date', '—')}: {e.get('n_exp', 0)} exp, λ {e.get('lam_min_um')}–{e.get('lam_max_um')} µm, ZODI {e.get('mean_zodi', '—')} MJy/sr"
+                for i, e in enumerate(epochs)]
     head = f"### {name}\n" + (f"Data: {ctx.get('data_source', '—')}\n" if en else f"Datos: {ctx.get('data_source', '—')}\n")
     return head + ("\n".join(ep_lines) if ep_lines else ("No epochs." if en else "Sin épocas."))

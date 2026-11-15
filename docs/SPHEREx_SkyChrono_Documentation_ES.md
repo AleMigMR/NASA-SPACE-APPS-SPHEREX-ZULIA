@@ -55,7 +55,7 @@ El universo no tiene un "arriba" absoluto. El visor ofrece tres planos estándar
 ## Capítulo 2 · Manual de Usuario
 
 ### 2.1 Cabecera y objetivos de referencia
-- **🏛️ Recursos NASA / IRSA:** enlaces oficiales del reto (IRSA, notebooks de tutoriales, WiseView, Gaia DR3 en MAST, recursos de la Agencia Espacial Canadiense) y enlaces en vivo a la coordenada actual.
+- **🏛️ Recursos NASA / IRSA:** enlaces oficiales del reto (IRSA, notebooks de tutoriales, herramientas oficiales de IRSA como el Data Explorer y MOST, WiseView, Gaia DR3 en MAST, recursos de la Agencia Espacial Canadiense) y enlaces en vivo a la coordenada actual.
 - **📐 Reporte MPC:** borrador en el formato oficial de dos líneas para satélites (código de SPHEREx **288**). Solo se genera para candidatos con movimiento confirmado y sin contrapartida estelar; en otro caso la ventana explica por qué está vacío.
 - **🔗 Compartir** y **🎞️ GIF:** enlace reproducible y animación de las épocas.
 - **Objetivos de referencia:** al elegir uno, la app centra el campo en su **posición propagada a la época 2026.0** y propaga su posición a la fecha de **cada** exposición para medirlo. El tooltip explica a qué época corresponden las coordenadas de referencia (p. ej. las de WISE 0855 del enunciado son de 2010.6).
@@ -77,7 +77,7 @@ Tres vistas sincronizadas: **Hammer-Aitoff** (proporción real 2:1), **globo 3D*
 - **Espectro del objetivo:** cada punto es una exposición L2b medida con la ePSF a su λ real (en µJy, error 1σ). ▼ indica un límite superior a 3σ y × una medición saturada. La línea amarilla es el espectro de 102 canales de la co-adición DR1 en la misma posición.
 - **Profundidad aparente de banda:** τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm sobre el espectro DR1, con su error y su interpretación (gas o hielo).
 - **Curva de luz por canal:** flujo / mediana para cada canal (misma λ). Solo son comparables los puntos del mismo color.
-- **Copiloto:** usa Gemini (si hay clave) o un motor local determinista. En ambos casos recibe solo telemetría medida y tiene prohibido inventar valores.
+- **Copiloto:** usa Gemini u OpenAI (si hay clave) o un motor local determinista. En ambos casos recibe solo telemetría medida y tiene prohibido inventar valores. Para usar tu clave: abre **🔑 Conectar API Key**, pégala y pulsa **Confirmar** (o Enter). La app la comprueba con el proveedor y muestra ✅ (conectada, con el modelo elegido), ⚠️ (clave válida pero modelos saturados o sin cuota en ese momento) o ❌ (clave rechazada, con el motivo). **Quitar** la borra. El modelo se elige solo entre los que tu clave tiene disponibles; si uno está saturado se prueba el siguiente, y si el proveedor falla la respuesta lo indica antes de usar el motor local.
 
 ### 2.5 Calidad de datos
 El panel **🛡️ Calidad de datos** resume, con datos del cubo actual: origen (L2b o DR1 estático), luz zodiacal restada, porcentaje de píxeles rechazados (lista oficial), PSF usada (ePSF oficial o gaussiana), saturación del objetivo, satélites y artefactos (`STREAK`, `SATELLITE_HALO`, `BLOOM`, `SNOWBALL`) y avisos de borde dicroico y He I.
@@ -87,9 +87,9 @@ El panel **🛡️ Calidad de datos** resume, con datos del cubo actual: origen 
 ## Capítulo 3 · Métodos, Matemática y API
 
 ### 3.1 Flujo de datos
-1. **Búsqueda de exposiciones:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). Si TAP falla se usa **IRSA SIA** con las colecciones `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` y `spherex_qr3_deep`, el método de los tutoriales oficiales. Un servicio que acaba de fallar no se vuelve a esperar durante 5 minutos. Una misma observación publicada en varias versiones se usa una sola vez (prioridad DR1 > QR3 > QR2).
-2. **Recortes:** lectura parcial (HTTP Range) de `s3://nasa-irsa-spherex/` con respaldo en el servicio de recortes IBE de IRSA. Se leen `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, la tabla `WCS-WAVE`, la fila de la **ePSF** de la zona del detector (~9 KB) y la cabecera completa: `MJD-AVG`, `PSF_FWHM` y la posición geocéntrica de la nave.
-3. **Sin exposiciones L2b** (o IRSA caído): se muestra **una** imagen estática del cubo All-Sky DR1, claramente señalada. No hay blink ni diferencia, porque el cubo no tiene información temporal.
+1. **Búsqueda de exposiciones:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). Si TAP falla se usa **IRSA SIA** con las colecciones `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` y `spherex_qr3_deep`, el método de los tutoriales oficiales. TAP y SIA se consultan **a la vez** y se usa el primero que responda; ante errores 502 de IRSA (llegan en ráfagas) SIA se reintenta hasta 6 veces en ~19 s, y un servicio que acaba de fallar no se vuelve a esperar durante 1 minuto. Las listas y los cubos en caché se rehacen cada 7 días para incorporar las épocas nuevas (si IRSA no responde, se usa la lista anterior). Si ninguno responde, para los cinco objetivos del reto se usa la **lista oficial de exposiciones guardada** en `data/spherex_exposure_index/` (la respuesta real de IRSA SIA, con su fecha de consulta), así que el blink sigue funcionando: IRSA solo hace falta para saber qué imágenes cubren un punto, porque las imágenes mismas se leen de AWS S3. Una misma observación publicada en varias versiones se usa una sola vez (prioridad DR1 > QR3 > QR2).
+2. **Recortes:** lectura parcial (HTTP Range) de `s3://nasa-irsa-spherex/` con respaldo en el servicio de recortes IBE de IRSA. Se leen `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, la tabla `WCS-WAVE`, la fila de la **ePSF** de la zona del detector (~9 KB; la zona se elige con sus columnas `XCENTER`/`YCENTER`, así que no le afecta el error de cabecera de la PSF de QR1/QR2 descrito por IRSA) y la cabecera completa: `MJD-AVG`, `PSF_FWHM` y la posición geocéntrica de la nave.
+3. **Sin exposiciones L2b** (un punto sin lista guardada mientras IRSA no responde): se muestra **una** imagen estática del cubo All-Sky DR1, claramente señalada, y la app reintenta IRSA automáticamente cada ~1 minuto. No hay blink ni diferencia, porque el cubo no tiene información temporal.
 
 ### 3.2 Fórmulas implementadas
 1. **Imagen limpia:** $I = \text{IMAGE} - \text{ZODI}$. Para visualizar se rechazan los píxeles con la lista oficial usada al construir el cubo DR1: `TRANSIENT, SUR_ERROR, NONFUNC, DICHROIC, MISSING_DATA, HOT, COLD, PHANMISS, NONLINEAR, PERSIST, CROSSTALK, STREAK, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
@@ -125,6 +125,8 @@ El cubo DR1 se organiza en teselas HEALPix NESTED de orden 5 (512×512 píxeles 
 | `GET` | `/api/catalogs` | Gaia DR3 (MAST → VizieR) y AllWISE (VizieR → IRSA Gator) proyectados en la grilla |
 | `GET` | `/api/gif` | GIF de las épocas |
 | `POST` | `/api/ai/chat` | Copiloto (clave de Gemini en la cabecera `x-goog-api-key`, nunca en la URL) |
+| `POST` | `/api/ai/validate` | Comprueba una clave con su proveedor y elige el modelo (nunca devuelve la clave) |
+| `GET` | `/api/ai/status` | Indica si el servidor tiene una clave en `.env` (sin revelarla) |
 | `GET` | `/api/docs?lang=` | Esta documentación |
 | `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
 | `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
@@ -142,10 +144,10 @@ El cubo DR1 se organiza en teselas HEALPix NESTED de orden 5 (512×512 píxeles 
    - **RW Aur** y **R Dra** (saturadas, casi sin movimiento propio): 0.56 ± 1.23″ y 1.82 ± 0.83″, ambos compatibles con cero.
 - **Verificación de candidatos:** una fuente sintética de 5 mJy que se movía 12″, inyectada en exposiciones reales, se recuperó como *movimiento confirmado 12.0″ ± 0.4″*. Las estrellas estáticas cuyo pico cambiaba por la fase subpíxel quedaron como *no confirmadas*.
 - **Objetivos del reto:** ver la tabla del capítulo 5 y la herramienta `tools/validate_targets.py`.
-- **Pruebas unitarias:** `python -m pytest tests/` (o `python tests/test_science.py`) comprueba HEALPix, propagación de WISE 0855 a la época AllWISE, bits oficiales, punto cero AB, formato MPC, ausencia de sesgo en τ y recuperación de flujo inyectado.
+- **Pruebas unitarias:** `python -m pytest tests/` (o `python tests/test_science.py` y `python tests/test_copilot.py`) comprueba HEALPix, propagación de WISE 0855 a la época AllWISE, bits oficiales, punto cero AB, formato MPC, ausencia de sesgo en τ, recuperación de flujo inyectado, el respaldo cuando IRSA no responde y el copiloto con proveedores simulados (clave válida, inválida, sin cuota y modelo inexistente).
 
 ### 4.2 Seguridad
-- `.env` está en `.gitignore`. La clave de Gemini viaja en la cabecera `x-goog-api-key` y nunca en la URL, para que no quede en registros. Los mensajes de error no reproducen la petición.
+- `.env` está en `.gitignore`. La clave de Gemini viaja en la cabecera `x-goog-api-key` (la de OpenAI en `Authorization`) y nunca en la URL, para que no quede en registros. La clave pegada en la interfaz se guarda solo en esa pestaña del navegador (`sessionStorage`), no se escribe en disco y los mensajes de error del proveedor se muestran sin fragmentos de la clave.
 - Sin clave, todas las funciones científicas siguen operativas y el copiloto usa el motor local.
 
 ### 4.3 Instalación y despliegue
@@ -155,13 +157,13 @@ source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py                      # http://localhost:8050
 ```
-Variables opcionales: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30), `SPHEREX_SIA_TIMEOUT` (s, por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
+Variables opcionales: `GEMINI_API_KEY` u `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (solo para forzar un modelo; por defecto se elige solo), `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30), `SPHEREX_SIA_TIMEOUT` (s, por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
 
 ### 4.4 Limitaciones conocidas
 - **Saturación:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) y R Dra saturan SPHEREx en casi todos los canales. Su **posición** se mide con el núcleo saturado y su movimiento se ve en el blink, pero sus flujos no son fiables.
 - **Mezcla de fuentes:** en 2025–2026 WISE 0855 pasa a **8″** de la estrella Gaia DR3 5756956644387831296 (G = 16.3). Con píxeles de 6.15″ se mezclan; la fotometría L2b separa ambas fuentes con la ePSF, pero el espectro DR1 (apertura de 25.8″) incluye a la vecina.
 - **WISE 0855** es débil en SPHEREx (≈ 0.5 mJy a 4.6 µm, W2 ≈ 13.9): espera S/N bajo por exposición e invisibilidad por debajo de ~3.5 µm.
-- **Planeta X / Nueve** es hipotético y nadie lo ha detectado. A ~500 UA su movimiento paraláctico sería de ~7″ por día. Entre visitas separadas seis meses saldría de un campo de 0.1°, así que debe buscarse comparando exposiciones de una misma visita (días).
+- **Planeta X / Nueve** es hipotético y nadie lo ha detectado. A ~500 UA su movimiento paraláctico sería de ~7″ por día. Entre visitas separadas seis meses saldría de un campo de 0.1°, así que debe buscarse comparando exposiciones de una misma visita (días). Para objetos del Sistema Solar con órbita conocida, la herramienta oficial **MOST** de IRSA encuentra las imágenes de SPHEREx que los cubren.
 - **Cubo DR1:** píxeles de 12.9″ y sin información temporal. Sus PNG HiPS sirven solo para visualizar.
 
 ### 4.5 Texto de presentación (EN)
@@ -199,6 +201,7 @@ Las coordenadas se verificaron en SIMBAD y JPL Horizons. **Elias 16** está en 6
 10. Rustamkulov, Z. et al. 2026, *SPHEREx 0.75 to 5 µm Spectra for a Sequence of Nearby Brown Dwarfs*, arXiv:2607.00543.
 11. Lisse, C. M. et al. 2026, ApJL 1000, L52 (3I/ATLAS con SPHEREx).
 12. Górski, K. M. et al. 2005, ApJ 622, 759 (HEALPix).
+13. Artículos canónicos de SPHEREx (según IRSA): misión, Bock et al. 2026, ApJ 999, 139; pipeline, Akeson et al. 2026, ApJS 285, 67; instrumento y calibración, Korngut et al. 2026, arXiv:2603.29835; simulador del cielo, Crill et al. 2025, ApJS 281, 10.
 
 ### 5.4 DOIs de los datos
 - SPHEREx DR1 Spectral Images: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678)

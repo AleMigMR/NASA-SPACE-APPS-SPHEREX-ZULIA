@@ -28,7 +28,7 @@
 | Módulo | Qué muestra | Método y fuente |
 | :--- | :--- | :--- |
 | **Visor 360°** | Mapa del cielo completo en planos galáctico, eclíptico e ICRS (Hammer-Aitoff 2:1, globo 3D, Aladin Lite) | PNG HiPS oficiales del cubo All-Sky DR1 (solo para visualizar) |
-| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita: Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP, con respaldo SIA; recortes por HTTP Range desde AWS S3 (respaldo IBE) |
+| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita (hasta 8 visitas repartidas en todo el período): Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP → SIA → lista oficial guardada (objetivos del reto); recortes por HTTP Range desde AWS S3 (respaldo IBE) |
 | **Pantalla completa** | Visor de imágenes a pantalla completa: botón **⛶**, tecla **F**, **Esc** para salir | Fullscreen API; la imagen se dibuja siempre con píxeles cuadrados |
 | **Objetivo con movimiento propio** | ✚ posición predicha del objetivo en cada exposición | `SkyCoord.apply_space_motion` con astrometría Gaia DR3 o de la literatura |
 | **Fotometría** | Flujo en µJy con error 1σ, S/N, magnitud AB o límite superior a 3σ | ePSF oficial, mínimos cuadrados con pesos 1/VARIANCE, *deblending* con Gaia, 3 % sistemático, máscara oficial |
@@ -41,7 +41,7 @@
 | **Fuentes del campo** | Gaia DR3 y AllWISE; distancia solo si π/σ ≥ 5 o hay una distancia publicada | MAST con respaldo VizieR; VizieR con respaldo IRSA Gator |
 | **Calidad de datos** | Origen, luz zodiacal restada, píxeles rechazados, PSF usada, saturación y artefactos | Bits `FLAGS` oficiales (Tabla 16 del Suplemento Explicativo) |
 | **Reporte MPC** | Borrador en formato de satélite (dos líneas, código 288), solo para movimiento confirmado sin contrapartida estelar | Vector geocéntrico de la nave `X/Y/Z_SC` interpolado a mitad de exposición |
-| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini opcional (clave en la cabecera `x-goog-api-key`) o motor local determinista |
+| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini u OpenAI opcional (botón **Confirmar** que comprueba la clave y elige el modelo; errores visibles) o motor local determinista |
 
 ---
 
@@ -145,11 +145,14 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 │   ├── index.html         # Interfaz bilingüe
 │   ├── app.js             # Visores, gráficos, pantalla completa y lógica de la UI
 │   └── styles.css         # Estilos
+├── data/
+│   └── spherex_exposure_index/  # Listas oficiales de exposiciones (IRSA SIA) de los 5 objetivos: respaldo si IRSA no responde
 ├── docs/
 │   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documentación completa (5 capítulos, ES)
 │   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
 ├── tests/
-│   └── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ y fotometría
+│   ├── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ, fotometría y respaldo sin IRSA
+│   └── test_copilot.py    # Copiloto con proveedores simulados: clave válida/inválida, sin cuota, modelo inexistente
 ├── tools/
 │   └── validate_targets.py  # Validación de los objetivos del reto con datos reales de SPHEREx
 └── poc/                   # Pruebas de concepto iniciales
@@ -170,6 +173,8 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 | `GET` | `/api/catalogs` | Gaia DR3 y AllWISE proyectados en el campo |
 | `GET` | `/api/gif` | Animación GIF de las épocas |
 | `POST` | `/api/ai/chat` | Copiloto |
+| `POST` | `/api/ai/validate` | Comprueba una clave de IA con su proveedor (nunca la devuelve) |
+| `GET` | `/api/ai/status` | Indica si el servidor tiene clave en `.env` (sin revelarla) |
 | `GET` | `/api/docs?lang=es\|en` | Documentación integrada |
 | `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
 | `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
@@ -196,7 +201,9 @@ La app funciona al 100 % sin claves: el copiloto usa entonces su motor local. Pa
 ```bash
 cp .env.example .env
 ```
-Variables disponibles: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos). También puedes dar una clave temporal desde la interfaz: solo vive en la sesión del navegador.
+Variables disponibles: `GEMINI_API_KEY` u `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (solo para forzar un modelo; por defecto se elige solo), `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos).
+
+También puedes usar tu clave sin `.env`: en el panel del copiloto abre **🔑 Conectar API Key**, pégala y pulsa **Confirmar**. La app la comprueba con Google u OpenAI y muestra ✅ (conectada, con el modelo elegido), ⚠️ (válida, pero modelos saturados o sin cuota en ese momento) o ❌ (rechazada, con el motivo). La clave vive solo en esa pestaña del navegador; **Quitar** la borra.
 
 ### 3. Ejecutar
 ```bash
@@ -214,6 +221,9 @@ node --check static/app.js
 ```bash
 python tests/test_science.py
 ```
+```bash
+python tests/test_copilot.py
+```
 
 ### 5. Docker o Render
 ```bash
@@ -230,7 +240,7 @@ Para Render, [`render.yaml`](render.yaml) ya está configurado; añade `GEMINI_A
 
 - **Saturación:** Barnard, RW Aur y R Dra saturan SPHEREx. Su posición se mide, pero su flujo no es fiable.
 - **WISE 0855** es débil para SPHEREx y está mezclado con una estrella G = 16.3 a 8″: espera S/N bajo por exposición.
-- **IRSA:** si TAP y SIA no responden, la app muestra una sola imagen estática del cubo DR1, claramente señalada, y nunca simula épocas.
+- **IRSA:** IRSA solo hace falta para saber qué exposiciones cubren un punto; las imágenes se leen de AWS S3. Si TAP y SIA no responden, los cinco objetivos del reto usan su lista oficial guardada en `data/spherex_exposure_index/` y el blink sigue funcionando. En cualquier otro punto, si IRSA no responde en ese momento, la app muestra una sola imagen estática del cubo DR1, claramente señalada, nunca simula épocas y reintenta IRSA automáticamente cada ~1 minuto (TAP y SIA se consultan a la vez, con reintentos). Cuando IRSA responde, cualquier punto muestra todas sus épocas.
 - **Planeta X / Nueve** es hipotético y no se ha detectado. A ~500 UA se movería ~7″ por día: hay que buscarlo dentro de una misma visita (días), no entre visitas separadas seis meses.
 - **Cubo DR1:** píxeles de 12.9″, sin información temporal. Sus PNG HiPS sirven solo para visualizar.
 
@@ -251,6 +261,8 @@ La documentación completa (conceptos, manual de usuario, métodos y fórmulas, 
 
 - Archivo SPHEREx en IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
 - Tutoriales oficiales de SPHEREx: https://caltech-ipac.github.io/irsa-tutorials/spherex/
+- Herramientas oficiales de IRSA: [SPHEREx Data Explorer](https://irsa.ipac.caltech.edu/applications/spherex) · [MOST](https://irsa.ipac.caltech.edu/applications/MOST) (imágenes de SPHEREx que cubren un objeto del Sistema Solar) · [Spectrophotometry Tool](https://irsa.ipac.caltech.edu/applications/spherex/tool-spectrophotometry)
+- Artículos canónicos de SPHEREx: Bock et al. 2026 (misión), Akeson et al. 2026 (pipeline), Korngut et al. 2026 (instrumento y calibración), Crill et al. 2025 (simulador del cielo)
 - Recursos del reto: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
 - Gaia DR3 en MAST: https://archive.stsci.edu/missions-and-data/gaia
 - WiseView: http://byw.tools/wiseview

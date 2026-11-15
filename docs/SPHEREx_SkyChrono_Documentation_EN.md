@@ -55,7 +55,7 @@ The universe has no absolute "up". The viewer offers three standard planes: **Ga
 ## Chapter 2 · User Manual
 
 ### 2.1 Header and reference targets
-- **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
+- **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, official IRSA tools such as the Data Explorer and MOST, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
 - **📐 MPC Report:** draft in the official two-line satellite format (SPHEREx code **288**). It is only generated for candidates with confirmed motion and no stellar counterpart; otherwise the window explains why it is empty.
 - **🔗 Share** and **🎞️ GIF:** reproducible link and animation of the epochs.
 - **Reference targets:** when you choose one, the app centres the field on its **position propagated to epoch 2026.0** and propagates its position to the date of **each** exposure to measure it. The tooltip explains which epoch the reference coordinates belong to (e.g. the WISE 0855 coordinates in the challenge statement are from 2010.6).
@@ -77,7 +77,7 @@ Three synchronised views: **Hammer-Aitoff** (true 2:1 aspect ratio), **3D globe*
 - **Target spectrum:** each point is one L2b exposure measured with the ePSF at its real λ (in µJy, 1σ error). ▼ marks a 3σ upper limit and × a saturated measurement. The yellow line is the 102-channel spectrum of the DR1 co-add at the same position.
 - **Apparent band depth:** τ of H₂O 3.0, CH₄ 3.3, CO₂ 4.27 and CO 4.67 µm on the DR1 spectrum, with its error and its interpretation (gas or ice).
 - **Light curve per channel:** flux / median for each channel (same λ). Only points of the same colour are comparable.
-- **Copilot:** uses Gemini (if a key is available) or a deterministic local engine. In both cases it receives only measured telemetry and is forbidden from inventing values.
+- **Copilot:** uses Gemini or OpenAI (if a key is available) or a deterministic local engine. In both cases it receives only measured telemetry and is forbidden from inventing values. To use your key: open **🔑 Connect API Key**, paste it and press **Confirm** (or Enter). The app checks it with the provider and shows ✅ (connected, with the chosen model), ⚠️ (valid key but models overloaded or out of quota at that moment) or ❌ (key rejected, with the reason). **Remove** deletes it. The model is chosen automatically among those available to your key; if one is overloaded the next one is tried, and if the provider fails the answer says so before using the local engine.
 
 ### 2.5 Data quality
 The **🛡️ Data quality** panel summarises, with data from the current cube: origin (L2b or static DR1), zodiacal light subtracted, percentage of rejected pixels (official list), PSF used (official ePSF or Gaussian), target saturation, satellites and artefacts (`STREAK`, `SATELLITE_HALO`, `BLOOM`, `SNOWBALL`) and warnings about the dichroic edge and He I.
@@ -87,9 +87,9 @@ The **🛡️ Data quality** panel summarises, with data from the current cube: 
 ## Chapter 3 · Methods, Mathematics and API
 
 ### 3.1 Data flow
-1. **Exposure search:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). If TAP fails, **IRSA SIA** is used with the collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` and `spherex_qr3_deep`, the method of the official tutorials. A service that has just failed is not waited for again for 5 minutes. An observation published in several releases is used only once (priority DR1 > QR3 > QR2).
-2. **Cutouts:** partial reads (HTTP Range) from `s3://nasa-irsa-spherex/`, with IRSA's IBE cutout service as fallback. The app reads `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, the `WCS-WAVE` table, the **ePSF** row of the detector zone (~9 KB) and the full header: `MJD-AVG`, `PSF_FWHM` and the geocentric position of the spacecraft.
-3. **No L2b exposures** (or IRSA down): **one** static image from the DR1 All-Sky cube is shown, clearly labelled. There is no blink or difference, because the cube has no time information.
+1. **Exposure search:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). If TAP fails, **IRSA SIA** is used with the collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` and `spherex_qr3_deep`, the method of the official tutorials. TAP and SIA are queried **at the same time** and the first answer is used; on IRSA 502 errors (they come in bursts) SIA is retried up to 6 times in ~19 s, and a service that has just failed is not waited for again for 1 minute. Cached lists and cubes are rebuilt every 7 days to include new epochs (if IRSA does not respond, the previous list is used). If neither responds, for the five challenge targets the app uses the **stored official exposure list** in `data/spherex_exposure_index/` (the real IRSA SIA response, with its query date), so the blink keeps working: IRSA is only needed to know which images cover a point, because the images themselves are read from AWS S3. An observation published in several releases is used only once (priority DR1 > QR3 > QR2).
+2. **Cutouts:** partial reads (HTTP Range) from `s3://nasa-irsa-spherex/`, with IRSA's IBE cutout service as fallback. The app reads `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, the `WCS-WAVE` table, the **ePSF** row of the detector zone (~9 KB; the zone is chosen with its `XCENTER`/`YCENTER` columns, so it is not affected by the QR1/QR2 PSF header error described by IRSA) and the full header: `MJD-AVG`, `PSF_FWHM` and the geocentric position of the spacecraft.
+3. **No L2b exposures** (a point without a stored list while IRSA is not responding): **one** static image from the DR1 All-Sky cube is shown, clearly labelled, and the app retries IRSA automatically every ~1 minute. There is no blink or difference, because the cube has no time information.
 
 ### 3.2 Implemented formulas
 1. **Clean image:** $I = \text{IMAGE} - \text{ZODI}$. For display, pixels are rejected with the official list used to build the DR1 cube: `TRANSIENT, SUR_ERROR, NONFUNC, DICHROIC, MISSING_DATA, HOT, COLD, PHANMISS, NONLINEAR, PERSIST, CROSSTALK, STREAK, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
@@ -125,6 +125,8 @@ The DR1 cube is organised in order-5 NESTED HEALPix tiles (512×512 pixels of 12
 | `GET` | `/api/catalogs` | Gaia DR3 (MAST → VizieR) and AllWISE (VizieR → IRSA Gator) projected onto the grid |
 | `GET` | `/api/gif` | GIF of the epochs |
 | `POST` | `/api/ai/chat` | Copilot (Gemini key in the `x-goog-api-key` header, never in the URL) |
+| `POST` | `/api/ai/validate` | Checks a key with its provider and chooses the model (never returns the key) |
+| `GET` | `/api/ai/status` | Tells whether the server has a key in `.env` (without revealing it) |
 | `GET` | `/api/docs?lang=` | This documentation |
 | `GET` | `/api/spherex-allsky-map` | Equirectangular map of the DR1 cube (visualisation) |
 | `GET` | `/api/hips/spherex/{channel}/{path}` | HiPS proxy for Aladin Lite |
@@ -142,10 +144,10 @@ The DR1 cube is organised in order-5 NESTED HEALPix tiles (512×512 pixels of 12
    - **RW Aur** and **R Dra** (saturated, almost no proper motion): 0.56 ± 1.23″ and 1.82 ± 0.83″, both consistent with zero.
 - **Candidate verification:** a synthetic 5 mJy source moving 12″, injected into real exposures, was recovered as *motion confirmed 12.0″ ± 0.4″*. Static stars whose peak changed with the sub-pixel phase stayed *not confirmed*.
 - **Challenge targets:** see the table in chapter 5 and the `tools/validate_targets.py` tool.
-- **Unit tests:** `python -m pytest tests/` (or `python tests/test_science.py`) checks HEALPix, the propagation of WISE 0855 to the AllWISE epoch, the official bits, the AB zero point, the MPC format, the absence of bias in τ and the recovery of an injected flux.
+- **Unit tests:** `python -m pytest tests/` (or `python tests/test_science.py` and `python tests/test_copilot.py`) checks HEALPix, the propagation of WISE 0855 to the AllWISE epoch, the official bits, the AB zero point, the MPC format, the absence of bias in τ, the recovery of an injected flux, the fallback when IRSA does not respond and the copilot with simulated providers (valid key, invalid key, no quota and missing model).
 
 ### 4.2 Security
-- `.env` is in `.gitignore`. The Gemini key travels in the `x-goog-api-key` header and never in the URL, so it does not end up in logs. Error messages do not echo the request.
+- `.env` is in `.gitignore`. The Gemini key travels in the `x-goog-api-key` header (the OpenAI key in `Authorization`) and never in the URL, so it does not end up in logs. A key pasted in the interface is kept only in that browser tab (`sessionStorage`), is never written to disk, and provider error messages are shown without fragments of the key.
 - Without a key, every scientific function keeps working and the copilot uses the local engine.
 
 ### 4.3 Installation and deployment
@@ -155,13 +157,13 @@ source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py                      # http://localhost:8050
 ```
-Optional variables: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, default 30), `SPHEREX_SIA_TIMEOUT` (s, default 60) and `SPHEREX_PREWARM=0` (disables pre-loading). With Docker: `docker build -t spherex-skychrono .` and `docker run -p 8050:8050 spherex-skychrono`.
+Optional variables: `GEMINI_API_KEY` or `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (only to force a model; by default it is chosen automatically), `PORT`, `SPHEREX_TAP_TIMEOUT` (s, default 30), `SPHEREX_SIA_TIMEOUT` (s, default 60) and `SPHEREX_PREWARM=0` (disables pre-loading). With Docker: `docker build -t spherex-skychrono .` and `docker run -p 8050:8050 spherex-skychrono`.
 
 ### 4.4 Known limitations
 - **Saturation:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) and R Dra saturate SPHEREx in almost every channel. Their **position** is measured from the saturated core and their motion is visible in the blink, but their fluxes are not reliable.
 - **Blending:** in 2025–2026 WISE 0855 passes **8″** from the star Gaia DR3 5756956644387831296 (G = 16.3). With 6.15″ pixels they blend; the L2b photometry separates both sources with the ePSF, but the DR1 spectrum (25.8″ aperture) includes the neighbour.
 - **WISE 0855** is faint in SPHEREx (≈ 0.5 mJy at 4.6 µm, W2 ≈ 13.9): expect low S/N per exposure and invisibility below ~3.5 µm.
-- **Planet X / Nine** is hypothetical and nobody has detected it. At ~500 AU its parallactic motion would be ~7″ per day. Between visits six months apart it would leave a 0.1° field, so it must be searched for by comparing exposures from the same visit (days).
+- **Planet X / Nine** is hypothetical and nobody has detected it. At ~500 AU its parallactic motion would be ~7″ per day. Between visits six months apart it would leave a 0.1° field, so it must be searched for by comparing exposures from the same visit (days). For Solar System objects with a known orbit, IRSA's official **MOST** tool finds the SPHEREx images that cover them.
 - **DR1 cube:** 12.9″ pixels and no time information. Its HiPS PNGs are for visualisation only.
 
 ### 4.5 Submission text (EN)
@@ -199,6 +201,7 @@ The coordinates were verified in SIMBAD and JPL Horizons. **Elias 16** is at 69.
 10. Rustamkulov, Z. et al. 2026, *SPHEREx 0.75 to 5 µm Spectra for a Sequence of Nearby Brown Dwarfs*, arXiv:2607.00543.
 11. Lisse, C. M. et al. 2026, ApJL 1000, L52 (3I/ATLAS with SPHEREx).
 12. Górski, K. M. et al. 2005, ApJ 622, 759 (HEALPix).
+13. Canonical SPHEREx papers (per IRSA): mission, Bock et al. 2026, ApJ 999, 139; pipeline, Akeson et al. 2026, ApJS 285, 67; instrument and calibration, Korngut et al. 2026, arXiv:2603.29835; sky simulator, Crill et al. 2025, ApJS 281, 10.
 
 ### 5.4 Data DOIs
 - SPHEREx DR1 Spectral Images: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678)
