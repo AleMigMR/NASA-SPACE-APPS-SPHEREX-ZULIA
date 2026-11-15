@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SPHEREx SkyChrono · NASA Space Apps Challenge · Explorador Infrarrojo Multi-Época</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=22" />
+  <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
+  <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
+</head>
+<body>
+  <!-- Fondo cósmico sutil -->
+  <div class="bg-nebula"></div>
+
+  <!-- CABECERA SUPERIOR -->
+  <header class="topbar">
+    <div class="brand-group">
+      <div class="logo-orb" aria-hidden="true">
+        <span class="orb-ring"></span>
+        <span class="orb-core"></span>
+      </div>
+      <div class="brand-titles">
+        <div class="brand-row">
+          <h1>SPHEREx <span class="accent-gradient">SkyChrono</span></h1>
+          <span class="mission-badge" id="i18nBadgeMission">NASA SPACE APPS · PLANET X &amp; SPHEREx</span>
+          <span class="irsa- badge-subtle" id="i18nBadgeIrsa">IRSA TAP + AWS S3 + WCS-WAVE</span>
+        </div>
+        <p class="subtitle" id="i18nSubtitle">
+          Explorador Interactivo de Cielo Completo, Blinking Multi-Época, Espectroscopía LVF (0.75–5.0 µm) y Detector IA de Anomalías · Delegación Zuliana de Astronomía
+        </p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btnQuickTour" class="btn btn-ghost" type="button" title="Recorrido guiado por las funciones científicas de SPHEREx SkyChrono">
+        🎯 <span id="i18nBtnTour">Guía Rápida</span>
+      </button>
+      <button id="btnOpenResources" class="btn btn-ghost" type="button" title="Abrir Portal de Recursos Oficiales NASA Space Apps &amp; IRSA SPHEREx (con enlaces en vivo a la coordenada actual)">
+        🏛️ <span id="i18nBtnResources">Recursos NASA / IRSA</span>
+      </button>
+      <button id="btnOpenDocs" class="btn btn-docs" type="button" title="Abrir Centro de Documentación (Manual de Usuario, Guía para Principiantes y Manual Técnico para Jueces NASA)">
+        📚 <span id="i18nBtnDocs">Manuales y Docs</span>
+      </button>
+      <button id="btnExportMpc" class="btn btn-ghost" type="button" title="Generar reporte astrométrico oficial de 80 columnas para el Minor Planet Center (IAU MPC)">
+        📐 <span id="i18nBtnMpc">Reporte MPC 80-Col</span>
+      </button>
+      <button id="btnShareUrl" class="btn btn-ghost" type="button" title="Copiar enlace directo a este objetivo, época y configuración">
+        🔗 <span id="i18nBtnShare">Compartir</span>
+      </button>
+      <button id="btnExportGif" class="btn btn-primary" type="button" title="Descargar animación GIF de las épocas actuales">
+        🎞️ <span id="i18nBtnGif">Exportar GIF Blink</span>
+      </button>
+      <button id="btnLangToggle" class="btn btn-lang" type="button" title="Cambiar idioma Español / English">
+        🌐 <span id="langLabel">EN</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- BARRA DE OBJETIVOS DE REFERENCIA DEL RETO (PRESETS) -->
+  <section class="presets-bar" aria-label="Objetivos científicos de referencia">
+    <div class="presets-header-inline">
+      <div class="presets-title-stack">
+        <span class="presets-label" id="i18nPresetsTitle">Objetivos de Referencia</span>
+        <span class="presets-sub" id="i18nPresetsSub">Misión SPHEREx · Clic para explorar</span>
+      </div>
+      <div class="presets-action-stack">
+        <button class="btn-add-preset" id="btnOpenAddPreset" type="button" title="Agregar un nuevo objetivo de referencia personalizado">
+          + <span id="i18nBtnNewPreset">Nuevo</span>
+        </button>
+        <button class="btn-manage-presets" id="btnOpenManagePresets" type="button" title="Administrar, editar, eliminar o restaurar objetivos de referencia">
+          ⚙️ <span id="i18nBtnManagePresets">Administrar</span>
+        </button>
+      </div>
+    </div>
+    <div id="presetsContainer" class="presets-list">
+      <!-- Renderizado dinámicamente desde /api/targets -->
+    </div>
+  </section>
+
+  <!-- GRID PRINCIPAL DE 3 COLUMNAS -->
+  <main class="workspace-grid">
+
+    <!-- COLUMNA IZQUIERDA: COORDENADAS, FILTROS ESPECTRALES Y CAPAS -->
+    <aside class="panel panel-left">
+      <div class="panel-section">
+        <div class="section-header">
+          <span class="section-step">01</span>
+          <h2 id="i18nSec1">Navegación Celeste</h2>
+        </div>
+
+        <label class="field-label" for="inputQuery" id="i18nLabelQuery">Coordenadas (RA, Dec) o Nombre (SIMBAD)</label>
+        <div class="search-row">
+          <input
+            id="inputQuery"
+            type="text"
+            class="text-input"
+            placeholder="Ej: 08h55m10.83s -07d14m42.5s o Barnard's Star"
+            value="133.79513, -7.24515"
+          />
+          <button id="btnResolve" class="btn btn-accent" type="button" title="Resolver y cargar cubo SPHEREx">
+            🔍 <span id="i18nBtnGo">Explorar</span>
+          </button>
+        </div>
+
+        <div class="coord-readout" id="coordReadout">
+          <div><span class="k" id="i18nLblRa">RA (ICRS):</span> <strong id="valRa">133.79513°</strong></div>
+          <div><span class="k" id="i18nLblDec">Dec (ICRS):</span> <strong id="valDec">-7.24515°</strong></div>
+          <div><span class="k" id="i18nLblPm">Mov. Propio:</span> <strong id="valPm">-8118, +680 mas/yr</strong></div>
+        </div>
+
+        <div class="control-grid-2">
+          <div>
+            <label class="field-label" for="selectFov" id="i18nLabelFov">Campo de Visión (FOV)</label>
+            <select id="selectFov" class="select-input">
+              <option value="0.06">3.6′ × 3.6′ (Zoom Alto)</option>
+              <option value="0.10" selected>6.0′ × 6.0′ (Óptimo)</option>
+              <option value="0.12">7.2′ × 7.2′ (Estándar)</option>
+              <option value="0.18">10.8′ × 10.8′ (Amplio)</option>
+              <option value="0.35">21.0′ × 21.0′ (Gran Campo)</option>
+              <option value="0.80">48.0′ × 48.0′ (Panorámico)</option>
+              <option value="1.60">1.6° × 1.6° (Mosaico Regional)</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="selectDepth" id="i18nLabelDepth">Exposiciones / Época</label>
+            <select id="selectDepth" class="select-input">
+              <option value="5" selected>5 exp/época (Rápido)</option>
+              <option value="8">8 exp/época (Balanceado)</option>
+              <option value="12">12 exp/época (Profundo)</option>
+              <option value="20">20 exp/época (Ultra S/N)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="control-grid-2">
+          <div>
+            <label class="field-label" for="selectGap" id="i18nLabelGap">Separación Temporal</label>
+            <select id="selectGap" class="select-input">
+              <option value="15">15 días (Cadencia Fina)</option>
+              <option value="30">30 días (Mensual)</option>
+              <option value="45" selected>45 días (Multi-Mes)</option>
+              <option value="90">90 días (Semestral)</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="selectRelease" id="i18nLabelRelease">Lanzamiento IRSA</label>
+            <select id="selectRelease" class="select-input">
+              <option value="all" selected id="optRelAll">QR1 + QR2 / DR1 (Todo)</option>
+              <option value="qr2" id="optRelQr2">Solo QR2 / DR1</option>
+              <option value="qr1" id="optRelQr1">Solo QR1</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- SELECTOR DE DETECTORES LVF D1-D6 -->
+      <div class="panel-section">
+        <div class="section-header">
+          <span class="section-step">02</span>
+          <h2 id="i18nSec2">Bandas Infrarrojas LVF</h2>
+        </div>
+        <p class="section-hint" id="i18nBandHint">
+          Selecciona los detectores SPHEREx para construir el cubo temporal (SWIR: D1–D3 · MWIR: D4–D6):
+        </p>
+
+        <div class="band-quick-bar">
+          <button type="button" class="chip-btn" data-preset-bands="D1,D2,D3,D4,D5,D6" id="btnBandsAll">Todas (D1–D6)</button>
+          <button type="button" class="chip-btn" data-preset-bands="D1,D2,D3" id="btnBandsSwir">SWIR (Estrellas)</button>
+          <button type="button" class="chip-btn" data-preset-bands="D5,D6" id="btnBandsThermal">Térmico (Enanas Y/T)</button>
+        </div>
+
+        <div class="bands-grid" id="bandsGrid">
+          <label class="band-card" data-band="D1">
+            <input type="checkbox" value="D1" />
+            <div class="band-head">
+              <span class="band-tag d1">D1</span>
+              <span class="band-range">0.75–1.11 µm</span>
+              <span class="band-count" id="cnt-D1">—</span>
+            </div>
+            <span class="band-mol" id="mol-D1">Continuo óptico / Hα / Metales</span>
+          </label>
+
+          <label class="band-card" data-band="D2">
+            <input type="checkbox" value="D2" />
+            <div class="band-head">
+              <span class="band-tag d2">D2</span>
+              <span class="band-range">1.10–1.65 µm</span>
+              <span class="band-count" id="cnt-D2">—</span>
+            </div>
+            <span class="band-mol" id="mol-D2">H₂O (1.4 µm) · CH₄ (1.15, 1.6 µm)</span>
+          </label>
+
+          <label class="band-card" data-band="D3">
+            <input type="checkbox" value="D3" />
+            <div class="band-head">
+              <span class="band-tag d3">D3</span>
+              <span class="band-range">1.63–2.43 µm</span>
+              <span class="band-count" id="cnt-D3">—</span>
+            </div>
+            <span class="band-mol" id="mol-D3">H₂O (1.9 µm) · CO (2.3 µm)</span>
+          </label>
+
+          <label class="band-card" data-band="D4">
+            <input type="checkbox" value="D4" />
+            <div class="band-head">
+              <span class="band-tag d4">D4</span>
+              <span class="band-range">2.40–3.85 µm</span>
+              <span class="band-count" id="cnt-D4">—</span>
+            </div>
+            <span class="band-mol" id="mol-D4">Hielo H₂O (3.0 µm) · CH₄ · PAH</span>
+          </label>
+
+          <label class="band-card" data-band="D5">
+            <input type="checkbox" value="D5" />
+            <div class="band-head">
+              <span class="band-tag d5">D5</span>
+              <span class="band-range">3.81–4.43 µm</span>
+              <span class="band-count" id="cnt-D5">—</span>
+            </div>
+            <span class="band-mol" id="mol-D5">Hielo CO₂ (4.27 µm) · Continuo IR</span>
+          </label>
+
+          <label class="band-card active" data-band="D6">
+            <input type="checkbox" value="D6" checked />
+            <div class="band-head">
+              <span class="band-tag d6">D6</span>
+              <span class="band-range">4.41–5.01 µm</span>
+              <span class="band-count" id="cnt-D6">—</span>
+            </div>
+            <span class="band-mol" id="mol-D6">CO (4.67 µm) · Pico Enanas Y / Planeta X</span>
+          </label>
+        </div>
+
+        <button id="btnUpdateCube" class="btn btn-primary btn-full" type="button">
+          ⚡ <span id="i18nBtnRebuild">Reconstruir Cubo SPHEREx</span>
+        </button>
+      </div>
+
+      <!-- SUPERPOSICIONES Y ESCALA DE IMAGEN -->
+      <div class="panel-section">
+        <div class="section-header">
+          <span class="section-step">03</span>
+          <h2 id="i18nSec3">Capas, Catálogos y FLAGS</h2>
+        </div>
+
+        <div class="toggle-list">
+          <label class="toggle-row">
+            <input type="checkbox" id="chkAiDetector" checked />
+            <span id="i18nChkAiDetector">🧠 Detector IA de Anomalías y Dipolos</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkStarRecognizer" checked />
+            <span id="i18nChkStarRecognizer">🔭 Reconocedor Automático de Astros y Distancias (pc/ly)</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkCandidates" checked />
+            <span id="i18nChkCandidates">🎯 Candidatos en Movimiento / Variables</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkGaia" checked />
+            <span id="i18nChkGaia">✦ Estrellas Gaia DR3 + Vectores Mov. Propio</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkWise" checked />
+            <span id="i18nChkWise">◈ Fuentes Infrarrojas AllWISE (W1/W2)</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkAperture" checked />
+            <span id="i18nChkAperture">⭕ Apertura Fotométrica + Anillo de Cielo</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkGrid" checked />
+            <span id="i18nChkGrid">🧭 Grilla WCS y Brújula Astronómica (N/E)</span>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" id="chkFlags" />
+            <span id="i18nChkFlags">⚠️ Mapa de Bits de Contaminación (FLAGS)</span>
+          </label>
+        </div>
+
+        <div class="control-grid-2" style="margin-top: 10px;">
+          <div>
+            <label class="field-label" for="selectColormap" id="i18nLabelCmap">Paleta Científica</label>
+            <select id="selectColormap" class="select-input">
+              <option value="inferno" selected id="optCmapInferno">Inferno (Térmico)</option>
+              <option value="viridis" id="optCmapViridis">Viridis (Perceptual)</option>
+              <option value="cyanHot" id="optCmapCyan">Cyan-Hot (Profundo)</option>
+              <option value="grayscale" id="optCmapGray">Gris Invertido (FITS)</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="selectStretch" id="i18nLabelStretch">Estiramiento (Stretch)</label>
+            <select id="selectStretch" class="select-input">
+              <option value="zscale" selected id="optStrZ">ZScale + Asinh (IRSA HDR)</option>
+              <option value="asinh" id="optStrAsinh">Asinh (Rango Dinámico)</option>
+              <option value="sqrt" id="optStrSqrt">Raíz Cuadrada (Suave)</option>
+              <option value="linear" id="optStrLin">Lineal (P1–P99.5)</option>
+              <option value="log" id="optStrLog">Logarítmico (Halo)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="control-grid-2" style="margin-top: 8px;">
+          <div>
+            <label class="field-label" for="rangeContrast">
+              <span id="i18nLabelContrast">Contraste Cielo</span>: <strong id="lblContrast">1.0×</strong>
+            </label>
+            <input id="rangeContrast" type="range" min="0.4" max="2.5" step="0.1" value="1.0" class="range-slider" />
+          </div>
+          <div style="display:flex; flex-direction:column; justify-content:center; padding-top:14px;">
+            <label class="toggle-row" style="font-size:0.75rem;">
+              <input type="checkbox" id="chkSmooth" checked />
+              <span id="i18nLabelSmooth">Interpolación Bicúbica Suave</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Desglose en vivo de FLAGS de contaminación -->
+        <div class="flags-inspector" id="flagsInspector">
+          <div class="flags-title" id="i18nFlagsTitle">Diagnóstico de Calidad y Luz Zodiacal</div>
+          <div id="flagsSummaryText" class="flags-summary">Luz zodiacal sustraída: — MJy/sr</div>
+          <div id="flagsChips" class="flags-chips"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- COLUMNA CENTRAL: VISOR CELESTE INTERACTIVO Y CONTROL DE BLINKING -->
+    <section class="panel panel-center">
+      <!-- Barra de modos de visualización + Detector IA Integrado -->
+      <div class="viewer-toolbar">
+        <div class="mode-tabs" role="tablist">
+          <button type="button" class="mode-tab" data-mode="allsky" id="modeAllsky" title="Explorar el plano completo 360° del Universo Observable al estilo IRSA/IPAC">
+            🌌 <span id="i18nModeAllsky">Universo 360°</span>
+          </button>
+          <button type="button" class="mode-tab active" data-mode="blink" id="modeBlink">
+            🎬 <span id="i18nModeBlink">Blink Video</span>
+          </button>
+          <button type="button" class="mode-tab" data-mode="diff" id="modeDiff">
+            ➖ <span id="i18nModeDiff">Diferencia</span>
+          </button>
+          <button type="button" class="mode-tab" data-mode="rgb" id="modeRgb" title="Composición RGB Cronológica (Rojo=Última época, Verde=Intermedia, Azul=Primera época)">
+            🌈 <span id="i18nModeRgb">Falso Color RGB</span>
+          </button>
+          <button type="button" class="mode-tab" data-mode="sum" id="modeSum">
+            ➕ <span id="i18nModeSum">Co-Adición</span>
+          </button>
+          <button type="button" class="mode-tab" data-mode="split" id="modeSplit">
+            🌓 <span id="i18nModeSplit">Cortina A/B</span>
+          </button>
+        </div>
+
+        <div class="viewer-right-controls">
+          <button type="button" id="btnToggleAiDetector" class="btn-ai-detector active" title="Activar o desactivar el Detector Super-Inteligente de Anomalías y Dipolos sobre la imagen">
+            🧠 <span id="i18nBtnAiDetector">Detector IA: ON</span>
+          </button>
+          <button type="button" id="btnToggleStarRecognizer" class="btn-star-recognizer active" title="Reconocer automáticamente estrellas, enanas marrones, galaxias y su distancia en parsecs / años luz">
+            🔭 <span id="i18nBtnStarRecognizer">Astros: ON</span>
+          </button>
+          <button type="button" id="btnToggleDistanceRuler" class="btn-distance-ruler" title="Medir distancia desde el telescopio SPHEREx (pc / años luz) y distancia espacial 3D entre dos cuerpos celestes (A ↔ B)">
+            📏 <span id="i18nBtnDistanceRuler">Medir Distancia A↔B</span>
+          </button>
+          <button type="button" id="btnScanWithGemini" class="btn-ai-gemini-scan" title="Enviar telemetría de anomalías e imagen actual al Copiloto Gemini para diagnóstico profundo">
+            ✨ <span id="i18nBtnScanGemini">Consultar a Gemini</span>
+          </button>
+          <div class="viewer-status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Listo</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Contenedor del Lienzo WCS + Visor All-Sky 360° -->
+      <div class="canvas-stage" id="canvasStage">
+        <canvas id="skyCanvas" width="760" height="760"></canvas>
+
+        <!-- Visor Interactivo 360° del Universo Observable (Cubo All-Sky Oficial SPHEREx DR1 de NASA/IPAC IRSA + Aladin Lite v3) -->
+        <div id="allskyStage" class="allsky-stage" hidden>
+          <div class="allsky-hud-bar">
+            <div class="allsky-hud-left">
+              <span class="allsky-badge" id="i18nAllskyBadge">🌌 CUBO ALL-SKY OFICIAL SPHEREx DR1 (DOI: 10.26131/IRSA679)</span>
+              <label class="allsky-ctrl-lbl" for="selectAllskyEngine" id="i18nAllskyEngineLbl">Vista:</label>
+              <select id="selectAllskyEngine" class="select-input select-sm" title="Conmutar entre Proyección Esférica 360° Aitoff, Esfera 3D Isótropa y Mosaico HiPS Aladin Lite v3">
+                <option value="aitoff_canvas" selected id="optEngineAitoff">Proyección 360° Aitoff (FITS DR1 Oficial)</option>
+                <option value="globe_3d" id="optEngineGlobe">Esfera 3D Isótropa (Rotación Libre SO(3))</option>
+                <option value="aladin_hips" id="optEngineAladin">Mosaico Progresivo HiPS (Aladin Lite v3)</option>
+              </select>
+              <label class="allsky-ctrl-lbl" for="selectAllskyFrame" id="i18nAllskyFrameLbl">Plano:</label>
+              <select id="selectAllskyFrame" class="select-input select-sm" title="Seleccionar plano observacional de referencia">
+                <option value="galactic" selected id="optFrameGal">Galáctico (l, b · Vía Láctea)</option>
+                <option value="ecliptic" id="optFrameEc">Eclíptico (λ, β · Campos Profundos SPHEREx)</option>
+                <option value="equatorial" id="optFrameEq">Ecuatorial ICRS (RA, Dec)</option>
+              </select>
+              <label class="allsky-ctrl-lbl" for="selectAllskySurvey" id="i18nAllskySurveyLbl">Canal DR1:</label>
+              <select id="selectAllskySurvey" class="select-input select-sm" title="Seleccionar canal espectral del Cubo All-Sky Oficial SPHEREx DR1 (102 canales) o relevamiento IRSA">
+                <option value="rgb_dr1" selected id="optAllskyDr1Rgb">SPHEREx DR1 Tricolor Oficial (0.91 + 3.29 PAH + 4.67 µm)</option>
+                <option value="ch62" id="optAllskyCh62">SPHEREx DR1 · 3.29 µm PAH Galáctico (Ch 62)</option>
+                <option value="ch59" id="optAllskyCh59">SPHEREx DR1 · 3.03 µm Hielo H₂O (Ch 59)</option>
+                <option value="ch80" id="optAllskyCh80">SPHEREx DR1 · 4.26 µm Hielo CO₂ (Ch 80)</option>
+                <option value="ch92" id="optAllskyCh92">SPHEREx DR1 · 4.67 µm CO / Enanas Y (Ch 92)</option>
+                <option value="ch8" id="optAllskyCh8">SPHEREx DR1 · 0.91 µm Continuo D1 (Ch 8)</option>
+                <option value="ch25" id="optAllskyCh25">SPHEREx DR1 · 1.35 µm Cercano IR D2 (Ch 25)</option>
+                <option value="ch42" id="optAllskyCh42">SPHEREx DR1 · 2.00 µm Banda K D3 (Ch 42)</option>
+                <option value="P/allWISE/color" id="optAllskyWise">IRSA AllWISE Infrarrojo (3.4–22 µm HiPS)</option>
+                <option value="P/2MASS/color" id="optAllsky2mass">IRSA 2MASS Cercano IR (JHK HiPS)</option>
+              </select>
+            </div>
+            <div class="allsky-hud-right">
+              <button type="button" id="btnAllskyGalCenter" class="btn btn-xs btn-ghost" title="Centrar orientación en el Centro Galáctico Sgr A* (l=0°, b=0°)">🌌 <span id="i18nBtnGalCenter">Centro Galáctico</span></button>
+              <button type="button" id="btnAllskyNep" class="btn btn-xs btn-ghost" title="Centrar en el Campo Profundo Eclíptico Norte de SPHEREx (NEP · β=+90°)">🔭 <span id="i18nBtnNep">Campo NEP</span></button>
+              <button type="button" id="btnAllskySep" class="btn btn-xs btn-ghost" title="Centrar en el Campo Profundo Eclíptico Sur de SPHEREx (SEP · β=−90°)">🔭 <span id="i18nBtnSep">Campo SEP</span></button>
+              <button type="button" id="btnAllskyRotLeft" class="btn btn-xs btn-ghost" title="Rotar longitud -30°">⟲ -30°</button>
+              <button type="button" id="btnAllskyRotRight" class="btn btn-xs btn-ghost" title="Rotar longitud +30°">⟳ +30°</button>
+              <button type="button" id="btnAllskyReset" class="btn btn-xs btn-ghost" title="Restablecer orientación isótropa 360° (0°, 0°)">
+                🎯 <span id="i18nAllskyReset">Vista Isótropa 360°</span>
+              </button>
+              <button type="button" id="btnAllskyExtract" class="btn btn-xs btn-accent" title="Extraer y analizar el cubo FITS oficial SPHEREx DR1 (Norder5/Npix_cube.fits) en la coordenada central actual">
+                🔬 <span id="i18nAllskyExtract">Extraer Cubo FITS DR1 Aquí</span>
+              </button>
+            </div>
+          </div>
+          <!-- Contenedor WebGL para cuando el usuario elige Mosaico Progresivo HiPS Aladin Lite v3 -->
+          <div id="allskyAladinDiv" class="allsky-aladin-box" hidden></div>
+        </div>
+
+        <!-- HUD Flotante del Medidor de Distancias Cósmicas (Telescopio → Astro y Astro A ↔ Astro B) -->
+        <div id="distanceRulerHud" class="distance-ruler-hud" hidden>
+          <div class="ruler-hud-header">
+            <span>📏 <strong id="i18nRulerHudTitle">Telémetro Cósmico 3D (SPHEREx / Gaia)</strong></span>
+            <div style="display:flex; gap:4px;">
+              <button type="button" id="btnClearRuler" class="btn btn-xs btn-ghost" title="Reiniciar puntos A y B">↺</button>
+              <button type="button" id="btnCloseRuler" class="btn btn-xs btn-ghost" title="Cerrar medidor de distancias">✕</button>
+            </div>
+          </div>
+          <div id="distanceRulerBody" class="ruler-hud-body">
+            Haz clic en un primer cuerpo celeste (Punto A) para medir su distancia al telescopio SPHEREx, y en un segundo cuerpo (Punto B) para calcular la distancia angular y espacial 3D entre ambos.
+          </div>
+        </div>
+
+        <!-- Controles flotantes de Zoom y Navegación Libre estilo IRSA -->
+        <div class="canvas-zoom-controls">
+          <button type="button" id="btnZoomIn" class="zoom-btn" title="Acercar (Rueda del ratón arriba)">＋</button>
+          <button type="button" id="btnZoomOut" class="zoom-btn" title="Alejar (Rueda del ratón abajo)">－</button>
+          <button type="button" id="btnZoomReset" class="zoom-btn" title="Restablecer vista 1:1">1:1</button>
+          <button type="button" id="btnRecenterHere" class="zoom-btn zoom-btn-wide" title="Cargar nuevo cubo SPHEREx centrado en el punto actual">
+            🎯 <span id="i18nBtnRecenter">Re-centrar Aquí</span>
+          </button>
+        </div>
+
+        <div class="canvas-nav-hint" id="hudNavHint">
+          🖱️ <span id="i18nNavHint">Arrastra para mover / rotar 360° · Rueda para zoom · Clic para espectro · Doble clic para explorar región</span>
+        </div>
+
+        <!-- Overlay HUD superior sobre la imagen -->
+        <div class="hud-top-left" id="hudTopLeft">
+          <div class="hud-chip" id="hudEpochTitle">ÉPOCA 1 / —</div>
+          <div class="hud-chip hud-chip-sub" id="hudDateMjd">MJD — · — exp</div>
+        </div>
+
+        <div class="hud-top-right" id="hudTopRight">
+          <div class="hud-chip" id="hudFovScale">FOV 6.0′ · 3.08″/px</div>
+          <div class="hud-chip hud-chip-snr" id="hudSnrPeak">Pico: — MJy/sr (S/N —)</div>
+        </div>
+
+        <!-- HUD Flotante del Detector IA de Anomalías sobre el Lienzo -->
+        <div class="ai-detector-hud" id="aiDetectorHud">
+          <div class="ai-hud-header">
+            <span class="ai-hud-pulse"></span>
+            <strong id="i18nAiHudTitle">Detector IA de Anomalías</strong>
+            <span class="ai-hud-badge" id="aiHudCountBadge">0 detectadas</span>
+          </div>
+          <div class="ai-hud-pills" id="aiDetectorHudPills">
+            <!-- Píldoras interactivas de anomalías (#1, #2) con botón directo a Gemini -->
+          </div>
+        </div>
+
+        <!-- Slider de cortina cuando el modo es 'split' -->
+        <div class="split-slider-wrap" id="splitControlWrap" hidden>
+          <label for="rangeSplit" id="i18nSplitLabel">Cortina Comparadora (Izquierda = Época 1 · Derecha = Época Actual):</label>
+          <input id="rangeSplit" type="range" min="5" max="95" value="50" />
+        </div>
+
+        <!-- Overlay de carga -->
+        <div class="loading-overlay" id="loadingOverlay" hidden>
+          <div class="spinner-ring"></div>
+          <p class="loading-title" id="loadingTitle">Consultando IRSA TAP + AWS S3...</p>
+          <p class="loading-sub" id="loadingSub">Descargando recortes FITS L2b, restando luz zodiacal y reproyectando WCS</p>
+        </div>
+
+        <!-- Barra de información de píxel bajo el cursor y barra de color -->
+        <div class="hud-bottom-bar">
+          <div class="cursor-readout" id="cursorReadout">
+            <span id="i18nCursorPrompt">Pasa el cursor sobre la imagen para medir coordenadas sexagesimales/decimales, flujo (MJy/sr, µJy) y magnitud AB</span>
+          </div>
+          <div class="colorbar-box">
+            <span id="cbarMin">0.0</span>
+            <div class="colorbar-gradient" id="colorbarGradient"></div>
+            <span id="cbarMax">1.0</span>
+            <span class="cbar-unit">MJy/sr</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- CONTROLES DE REPRODUCCIÓN MULTI-ÉPOCA (BLINK PLAYER) -->
+      <div class="blink-player">
+        <div class="player-buttons">
+          <button id="btnPrevEpoch" class="btn btn-icon" type="button" title="Época anterior (Flecha Izquierda)">⏮</button>
+          <button id="btnPlayPause" class="btn btn-play" type="button" title="Iniciar / Pausar Blinking (Espacio)">
+            ⏸ <span id="playLabel">Pausar</span>
+          </button>
+          <button id="btnNextEpoch" class="btn btn-icon" type="button" title="Siguiente época (Flecha Derecha)">⏭</button>
+        </div>
+
+        <div class="epoch-timeline" id="epochTimeline">
+          <!-- Píldoras de época generadas dinámicamente -->
+        </div>
+
+        <div class="speed-control">
+          <label for="rangeSpeed"><span id="i18nSpeed">Cadencia</span>: <strong id="lblSpeed">650 ms</strong></label>
+          <input id="rangeSpeed" type="range" min="180" max="1500" step="50" value="650" class="range-slider" />
+        </div>
+      </div>
+
+      <!-- Nota científica contextual del objetivo activo -->
+      <div class="science-banner" id="scienceBanner">
+        <div class="science-icon">🔭</div>
+        <div class="science-text">
+          <strong id="scienceTitle">WISE 0855−0714 (Enana marrón Y4)</strong>
+          <p id="scienceDesc">
+            Cargando datos reales de SPHEREx desde NASA/IPAC IRSA...
+          </p>
+        </div>
+      </div>
+
+      <!-- ESCUDO ANTI-ARTEFACTOS L2b, FOTOMETRÍA TRACTOR 15x15 Y MOTOR MATEMÁTICO EN VIVO -->
+      <details class="math-shield-details" id="mathShieldDetails">
+        <summary id="i18nMathShieldSummary">🛡️ Escudo Anti-Artefactos L2b, Fotometría Forzada Tractor (15×15) y Ecuaciones en Vivo</summary>
+        <div class="math-shield-body">
+          <div class="shield-header-row">
+            <span class="shield-sub-title" id="i18nShieldSubTitle">Verificación de Integridad Instrumental H2RG (Teledyne 2048×2048) y Ambiente Espacial LEO</span>
+            <span class="doi-pills">
+              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx QR2 / DR1 Spectral Images DOI">DOI: 10.26131/IRSA678</a>
+              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx Shared Tools DOI">DOI: 10.26131/IRSA679</a>
+              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx Cutout Service DOI">DOI: 10.26131/IRSA662</a>
+            </span>
+          </div>
+          <div class="artifact-shield-grid" id="artifactShieldGrid">
+            <!-- Tarjetas de los 6 módulos del Escudo Anti-Artefactos generadas dinámicamente -->
+          </div>
+          <div class="math-equations-header" id="i18nMathEqHeader">🧮 Motor Matemático en Vivo (Evaluación Cuantitativa sobre el Cubo Actual)</div>
+          <div class="math-telemetry-grid" id="mathEquationsGrid">
+            <!-- 6 ecuaciones evaluadas en tiempo real -->
+          </div>
+        </div>
+      </details>
+
+      <!-- Tabla desplegable de exposiciones individuales de la época -->
+      <details class="exposure-log-details">
+        <summary id="i18nExpSummary">📋 Ver registro detallado de exposiciones FITS L2b y longitudes de onda LVF</summary>
+        <div class="table-scroll">
+          <table class="exp-table">
+            <thead>
+              <tr>
+                <th id="thEpoch">Época</th>
+                <th id="thObsId">ID Observación (OBS_ID)</th>
+                <th id="thBand">Banda</th>
+                <th id="thDate">Fecha UTC</th>
+                <th id="thWave">λ Central (µm)</th>
+                <th id="thZodi">Zodi (MJy/sr)</th>
+                <th id="thFlags">Flags Malos</th>
+                <th id="thSource">Origen</th>
+              </tr>
+            </thead>
+            <tbody id="expTableBody"></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <!-- COLUMNA DERECHA: ESPECTROSCOPÍA LVF, CURVA DE LUZ Y ASTRO-AI COPILOT -->
+    <aside class="panel panel-right">
+      <!-- GRÁFICA 1: ESPECTRO INFRARROJO LVF (SIMETRÍA PERFECTA ES/EN) -->
+      <div class="panel-section chart-section">
+        <div class="section-header-compact">
+          <div class="section-title-left">
+            <span class="section-step">04</span>
+            <h2 id="i18nSec4">Espectro Infrarrojo LVF (WCS-WAVE)</h2>
+          </div>
+          <button id="btnDownloadSpecCsv" class="btn btn-xs btn-ghost btn-csv-fixed" type="button" title="Descargar espectro en CSV">⬇ CSV</button>
+        </div>
+        <div class="spec-sub-toolbar">
+          <label class="toggle-inline-xs" title="Superponer curva teórica de Cuerpo Negro + bandas de absorción de hielos biogénicos (H2O, CH4, CO2, CO)">
+            <input type="checkbox" id="chkShowBlackbody" checked />
+            <span id="i18nChkBlackbody">Modelo Planck + Hielos τ(λ)</span>
+          </label>
+          <span class="spec-teff-badge" id="specTeffBadge">T_eff ≈ — K</span>
+        </div>
+        <p class="chart-sub" id="spectrumSubtitle">
+          Brillo superficial vs. longitud de onda (0.75–5.0 µm) · Haz clic en cualquier fuente del mapa para extraer su espectro
+        </p>
+        <div class="chart-box">
+          <canvas id="spectrumCanvas" width="460" height="215"></canvas>
+        </div>
+        <div class="mol-legend" id="molLegendBar">
+          <span class="mol-pill" id="i18nMolBands">Bandas Moleculares y Profundidad Óptica τ(λ):</span>
+          <span class="mol-item" id="tauPillH2O">💧 H₂O (1.4, 1.9, 3.05 µm)</span>
+          <span class="mol-item" id="tauPillCH4">🔥 CH₄ (1.65, 3.32 µm)</span>
+          <span class="mol-item" id="tauPillCO2">❄️ CO₂ (4.27 µm) · CO (4.67 µm)</span>
+        </div>
+      </div>
+
+      <!-- GRÁFICA 2: CURVA DE LUZ MULTI-ÉPOCA + ASTROS RECONOCIDOS Y DISTANCIAS -->
+      <div class="panel-section chart-section">
+        <div class="section-header-compact">
+          <div class="section-title-left">
+            <span class="section-step">05</span>
+            <h2 id="i18nSec5">Curva de Luz y Fotometría Tractor</h2>
+          </div>
+          <span class="aperture-badge" id="apertureCoordBadge">Centro (r = 2.5 px)</span>
+        </div>
+        <p class="chart-sub" id="i18nLcSub">
+          Evolución temporal del brillo superficial (MJy/sr) y magnitud AB · Clic en un candidato o astro reconocido para medir distancia y espectro:
+        </p>
+        <div class="candidates-bar" id="candidatesBar">
+          <!-- Píldoras de candidatos detectados automáticamente -->
+        </div>
+        <div class="recognized-objects-bar" id="recognizedObjectsBar">
+          <!-- Píldoras de astros reconocidos automáticamente con su distancia en pc / años luz -->
+        </div>
+        <div class="chart-box">
+          <canvas id="lightcurveCanvas" width="460" height="175"></canvas>
+        </div>
+      </div>
+
+      <!-- MÓDULO 3: ASTRO-AI COPILOT (DIAGNÓSTICO AUTOMÁTICO + CHAT) -->
+      <div class="panel-section ai-section">
+        <div class="section-header-compact">
+          <div class="ai-header-title">
+            <span class="ai-pulse"></span>
+            <h2 id="i18nAiTitle">AstroAI Copilot · Diagnóstico Científico</h2>
+          </div>
+          <span class="ai-engine-tag" id="aiEngineTag">Telemetría SPHEREx Activa</span>
+        </div>
+
+        <!-- Resumen automático del cubo actual -->
+        <div class="ai-auto-card" id="aiAutoCard">
+          <div class="ai-auto-title" id="aiAutoTitle">Analizando telemetría del cubo...</div>
+          <ul class="ai-bullet-list" id="aiBulletList"></ul>
+          <div class="ai-tip-box" id="aiTipBox"></div>
+        </div>
+
+        <!-- Preguntas rápidas sugeridas -->
+        <div class="ai-quick-prompts">
+          <button type="button" class="prompt-chip" data-q-es="¿Qué objeto se mueve o forma un dipolo en esta región?" data-q-en="Which object is moving or forming a dipole in this region?" id="qChip1">
+            🚀 ¿Qué se mueve aquí?
+          </button>
+          <button type="button" class="prompt-chip" data-q-es="Interpreta el espectro LVF, la temperatura efectiva y las bandas de H2O, CH4 y CO2." data-q-en="Interpret the LVF spectrum, effective temperature, and H2O, CH4, CO2 bands." id="qChip2">
+            🌈 Analizar espectro LVF
+          </button>
+          <button type="button" class="prompt-chip" data-q-es="¿Existe variabilidad real en la curva de luz o algún artefacto en el Escudo L2b?" data-q-en="Is there real variability in the light curve or any artifact in the L2b Shield?" id="qChip3">
+            📈 Evaluar curva y Escudo L2b
+          </button>
+        </div>
+
+        <!-- Historial de conversación y entrada -->
+        <div class="ai-chat-log" id="aiChatLog"></div>
+
+        <form id="aiChatForm" class="ai-chat-form">
+          <input
+            id="aiChatInput"
+            type="text"
+            class="text-input"
+            placeholder="Pregunta a AstroAI sobre este campo, dipolos o espectro..."
+          />
+          <button type="submit" class="btn btn-accent" id="btnAiSend">Enviar</button>
+        </form>
+
+        <details class="ai-key-details">
+          <summary id="i18nAiKeySummary">🔑 Conectar API Key opcional (Gemini / OpenAI)</summary>
+          <input
+            id="inputApiKey"
+            type="password"
+            class="text-input"
+            placeholder="Pega tu GEMINI_API_KEY o OPENAI_API_KEY (opcional)"
+          />
+        </details>
+      </div>
+    </aside>
+  </main>
+
+  <!-- MODAL PARA AGREGAR O EDITAR OBJETIVO DE REFERENCIA -->
+  <div id="addPresetModal" class="docs-modal-backdrop" hidden>
+    <div class="docs-modal preset-modal-box" role="dialog" aria-modal="true" aria-labelledby="addPresetModalTitle">
+      <div class="docs-modal-header">
+        <div class="docs-modal-title-group">
+          <span class="mission-badge" id="i18nPresetModalBadge">OBJETIVO PERSONALIZADO</span>
+          <h2 id="addPresetModalTitle">Agregar Nuevo Objetivo de Referencia</h2>
+        </div>
+        <button id="btnCloseAddPreset" class="btn btn-ghost" type="button">✕ <span id="i18nBtnClosePreset">Cerrar</span></button>
+      </div>
+      <form id="formAddPreset" class="preset-form">
+        <input type="hidden" id="presetEditId" value="" />
+        <div class="preset-form-row">
+          <label class="field-label" for="presetName" id="i18nPresetNameLbl">Nombre del Objeto / Región *</label>
+          <input id="presetName" type="text" class="text-input" placeholder="Ej: Luhman 16, Vega, Trapecio de Orión..." required />
+        </div>
+        <div class="preset-form-row">
+          <label class="field-label" for="presetCoord" id="i18nPresetCoordLbl">Coordenadas (RA, Dec) o Nombre SIMBAD *</label>
+          <input id="presetCoord" type="text" class="text-input" placeholder="Ej: 10h49m18.9s -53d19m10s o M42" required />
+        </div>
+        <div class="control-grid-2">
+          <div class="preset-form-row">
+            <label class="field-label" for="presetSub" id="i18nPresetSubLbl">Subtítulo Corto (ES)</label>
+            <input id="presetSub" type="text" class="text-input" placeholder="Ej: Binaria marrón cercana a 2.0 pc" />
+          </div>
+          <div class="preset-form-row">
+            <label class="field-label" for="presetSubEn" id="i18nPresetSubEnLbl">Subtítulo Corto (EN)</label>
+            <input id="presetSubEn" type="text" class="text-input" placeholder="E.g.: Nearby binary brown dwarf at 2.0 pc" />
+          </div>
+        </div>
+        <div class="control-grid-2">
+          <div>
+            <label class="field-label" for="presetBands" id="i18nPresetBandsLbl">Bandas Recomendadas</label>
+            <input id="presetBands" type="text" class="text-input" value="D1,D2,D3,D4,D5,D6" />
+          </div>
+          <div>
+            <label class="field-label" for="presetFov" id="i18nPresetFovLbl">FOV Recomendado (grados)</label>
+            <select id="presetFov" class="select-input">
+              <option value="0.06">0.06° (3.6′ Zoom Alto)</option>
+              <option value="0.10" selected>0.10° (6.0′ Óptimo)</option>
+              <option value="0.12">0.12° (7.2′ Estándar)</option>
+              <option value="0.18">0.18° (10.8′ Gran Campo)</option>
+            </select>
+          </div>
+        </div>
+        <div class="preset-form-row">
+          <label class="field-label" for="presetNote" id="i18nPresetNoteLbl">Descripción Científica Completa (Aparecerá al pasar el cursor)</label>
+          <textarea id="presetNote" rows="3" class="text-input" placeholder="Describe qué hace especial a este objeto (movimiento propio, variabilidad, bandas moleculares)..."></textarea>
+        </div>
+        <div class="preset-form-actions">
+          <span id="presetFormStatus" class="preset-status-msg"></span>
+          <button type="submit" class="btn btn-primary" id="btnSavePreset">💾 <span id="i18nBtnSavePreset">Guardar y Explorar</span></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL ADMINISTRADOR COMPLETO DE OBJETIVOS DE REFERENCIA -->
+  <div id="managePresetsModal" class="docs-modal-backdrop" hidden>
+    <div class="docs-modal manage-presets-modal-box" role="dialog" aria-modal="true" aria-labelledby="managePresetsModalTitle">
+      <div class="docs-modal-header">
+        <div class="docs-modal-title-group">
+          <span class="mission-badge" id="i18nManageModalBadge">ADMINISTRADOR DE OBJETIVOS</span>
+          <h2 id="managePresetsModalTitle">Administrar Objetivos de Referencia</h2>
+        </div>
+        <div class="docs-modal-actions">
+          <button id="btnManageAddNew" class="btn btn-accent" type="button">+ <span id="i18nManageBtnAdd">Agregar Nuevo</span></button>
+          <button id="btnManageRestoreDefaults" class="btn btn-ghost" type="button" title="Restaurar todos los objetivos oficiales predeterminados de la misión">
+            ↺ <span id="i18nManageBtnRestore">Restaurar Predeterminados</span>
+          </button>
+          <button id="btnCloseManagePresets" class="btn btn-ghost" type="button">✕ <span id="i18nBtnCloseManage">Cerrar</span></button>
+        </div>
+      </div>
+      <div class="manage-presets-toolbar">
+        <input id="managePresetsSearch" type="text" class="text-input" placeholder="Filtrar objetivos por nombre, categoría, coordenadas o banda..." />
+        <span class="manage-count-badge" id="managePresetsCount">6 objetivos</span>
+      </div>
+      <div class="manage-presets-list" id="managePresetsList">
+        <!-- Lista interactiva renderizada dinámicamente -->
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL REPORTE ASTROMÉTRICO MPC 80 COLUMNAS -->
+  <div id="mpcModal" class="docs-modal-backdrop" hidden>
+    <div class="docs-modal preset-modal-box" role="dialog" aria-modal="true" aria-labelledby="mpcModalTitle">
+      <div class="docs-modal-header">
+        <div class="docs-modal-title-group">
+          <span class="mission-badge" id="i18nMpcModalBadge">IAU MINOR PLANET CENTER · 80 COLUMNAS</span>
+          <h2 id="mpcModalTitle">Reporte Astrométrico Oficial MPC (80 Columnas)</h2>
+        </div>
+        <button id="btnCloseMpcModal" class="btn btn-ghost" type="button">✕ <span id="i18nBtnCloseMpc">Cerrar</span></button>
+      </div>
+      <div class="preset-form">
+        <p class="section-hint" id="i18nMpcDesc">
+          Formato estricto de 80 columnas de la Unión Astronómica Internacional (IAU MPC) generado a partir del centroide sub-píxel WCS, época MJD y fotometría forzada AB (Observatorio Espacial SPHEREx):
+        </p>
+        <div class="mpc-ruler">12345678901234567890123456789012345678901234567890123456789012345678901234567890</div>
+        <textarea id="mpcReportText" rows="7" class="text-input mpc-textarea" readonly></textarea>
+        <div class="preset-form-actions">
+          <span id="mpcCopyStatus" class="preset-status-msg"></span>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn btn-ghost" id="btnDownloadMpcTxt">⬇ <span id="i18nBtnDownloadMpc">Descargar .TXT</span></button>
+            <button type="button" class="btn btn-primary" id="btnCopyMpcReport">📋 <span id="i18nBtnCopyMpc">Copiar Reporte MPC</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOOLTIP FLOTANTE QUE SIGUE EL CURSOR SOBRE LOS OBJETIVOS DE REFERENCIA -->
+  <div id="presetFloatingTooltip" class="preset-floating-tooltip" hidden></div>
+
+  <!-- MODAL DEL CENTRO DE DOCUMENTACIÓN INTEGRADO -->
+  <div id="docsModal" class="docs-modal-backdrop" hidden>
+    <div class="docs-modal" role="dialog" aria-modal="true" aria-labelledby="docsModalTitle">
+      <div class="docs-modal-header">
+        <div class="docs-modal-title-group">
+          <span class="mission-badge" id="i18nDocsBadge">DOCUMENTACIÓN OFICIAL</span>
+          <h2 id="docsModalTitle">Centro de Documentación SPHEREx SkyChrono</h2>
+        </div>
+        <div class="docs-modal-actions">
+          <button id="btnToggleDocLang" class="btn btn-lang" type="button" title="Cambiar idioma del documento (ES / EN)">
+            🌐 <span id="docLangBtnLabel">View in English</span>
+          </button>
+          <a id="btnDownloadDocRaw" href="/docs/SPHEREx_SkyChrono_Documentation_ES.md" target="_blank" class="btn btn-ghost">⬇ <span id="i18nBtnRawMd">Abrir Markdown</span></a>
+          <button id="btnCloseDocs" class="btn btn-primary" type="button">✕ <span id="i18nBtnCloseDocs">Cerrar</span></button>
+        </div>
+      </div>
+
+      <div class="docs-modal-tabs" id="docsModalTabs">
+        <button type="button" class="doc-tab doc-toc-btn active" data-chapter="1" id="docCh1">🌱 1. Conceptos Básicos</button>
+        <button type="button" class="doc-tab doc-toc-btn" data-chapter="2" id="docCh2">🔭 2. Manual de Usuario</button>
+        <button type="button" class="doc-tab doc-toc-btn" data-chapter="3" id="docCh3">🏛️ 3. Arquitectura y Matemática (NASA)</button>
+        <button type="button" class="doc-tab doc-toc-btn" data-chapter="4" id="docCh4">🚀 4. Despliegue y Pitch</button>
+        <button type="button" class="doc-tab doc-toc-btn" data-chapter="5" id="docCh5">🔗 5. DOIs y Referencias</button>
+      </div>
+
+      <div id="docsModalContent" class="docs-modal-body">
+        Cargando documentación...
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DE RECURSOS OFICIALES NASA SPACE APPS & IRSA SPHEREx -->
+  <div id="resourcesModal" class="docs-modal-backdrop" hidden>
+    <div class="docs-modal manage-presets-modal-box" role="dialog" aria-modal="true" aria-labelledby="resourcesModalTitle">
+      <div class="docs-modal-header">
+        <div class="docs-modal-title-group">
+          <span class="mission-badge" id="i18nResModalBadge">NASA SPACE APPS 2026 · PLANET X AND SPHEREx</span>
+          <h2 id="resourcesModalTitle">Portal de Recursos Oficiales NASA / IPAC IRSA &amp; Enlaces en Vivo</h2>
+        </div>
+        <button id="btnCloseResources" class="btn btn-primary" type="button">✕ <span id="i18nBtnCloseRes">Cerrar</span></button>
+      </div>
+      <div class="docs-modal-body" id="resourcesModalBody">
+        <div class="res-live-banner">
+          <div class="res-live-header">
+            🛰️ <strong id="i18nResLiveTitle">Inspección Directa de la Coordenada Activa en Portales Oficiales NASA / CDS:</strong>
+            <code id="resLiveCoordBadge">RA 133.79513°, Dec -7.24515°</code>
+          </div>
+          <div class="res-live-links">
+            <a id="linkIrsaSpherexLive" href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noopener" class="btn btn-xs btn-accent">
+              🔭 Abrir Misión SPHEREx en IRSA
+            </a>
+            <a id="linkIrsaViewerLive" href="https://irsa.ipac.caltech.edu/irsaviewer/" target="_blank" rel="noopener" class="btn btn-xs btn-primary">
+              🌌 Abrir Coordenada en IRSA Viewer (Firefly)
+            </a>
+            <a id="linkSimbadLive" href="https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=133.79513+-7.24515&Radius=6&Radius.unit=arcmin" target="_blank" rel="noopener" class="btn btn-xs btn-ghost">
+              ✦ Consultar Campo en SIMBAD (CDS)
+            </a>
+            <a id="linkVizierLive" href="https://vizier.cds.unistra.fr/viz-bin/VizieR-4?-c=133.79513-7.24515&-c.rm=6" target="_blank" rel="noopener" class="btn btn-xs btn-ghost">
+              ◈ Catálogos Gaia DR3 / AllWISE en VizieR
+            </a>
+          </div>
+        </div>
+
+        <div class="res-cards-grid">
+          <div class="res-card">
+            <span class="res-tag">NASA / IPAC IRSA · ARCHIVO PRINCIPAL</span>
+            <h3>SPHEREx Mission Archive at IRSA</h3>
+            <p>Portal oficial de NASA/IPAC con acceso a imágenes espectrales calibradas Nivel 2 (L2b), mapas de luz zodiacal (ZODI), máscaras de bits (FLAGS) y tablas LVF WCS-WAVE.</p>
+            <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noopener">irsa.ipac.caltech.edu/Missions/spherex.html ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">RETO OFICIAL · NASA SPACE APPS 2026</span>
+            <h3>Planet X and SPHEREx — Challenge Resources</h3>
+            <p>Guía oficial de recursos del reto: búsqueda de objetos transneptunianos distantes (Planeta X / KBOs), enanas marrones cercanas (Y/T/L) y variables infrarrojas.</p>
+            <a href="https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources" target="_blank" rel="noopener">spaceappschallenge.org · Planet X &amp; SPHEREx ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">DOI OFICIAL · DATOS QR1 / QR2 / DR1</span>
+            <h3>SPHEREx Spectral Images &amp; Cutout Service</h3>
+            <p>Acceso programático utilizado por SkyChrono mediante consultas ADQL en IRSA TAP (<code>spherex.artifact</code> + <code>spherex.plane</code>) y lecturas parciales HTTP Range en AWS S3 Open Data (<code>s3://nasa-irsa-spherex/</code>).</p>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA678</a>
+              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA679</a>
+              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA662</a>
+            </div>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">ESPECTROSCOPÍA LVF &amp; HIELOS BIOGÉNICOS (SPLICES)</span>
+            <h3>102 Bandas Espectrales (0.75–5.0 µm) &amp; Catálogo SPLICES</h3>
+            <p>Filtros Linealmente Variables (LVF D1–D6), divisor dicroico a 2.42 µm y catálogo <strong>SPLICES (SPHEREx Target List of Ice Sources)</strong> para medir profundidades ópticas τ(λ) de H₂O (3.05 µm), CH₄ (3.32 µm), CO₂ (4.27 µm) y CO (4.67 µm).</p>
+            <a href="https://irsa.ipac.caltech.edu/data/SPHEREx/" target="_blank" rel="noopener">irsa.ipac.caltech.edu/data/SPHEREx (SPLICES &amp; 3I/ATLAS) ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">CÓDIGO OFICIAL · CALTECH-IPAC &amp; ASTROPY</span>
+            <h3>SPHEREx Archive Tutorials &amp; Explanatory Supplement</h3>
+            <p>Guías oficiales de Caltech/IPAC implementadas en nuestro motor: evaluación 2D <code>WCS-WAVE</code> (FITS Tabular Lookup), reproyección WCS tangencial (<code>reproject_interp</code>) y apilado libre de artefactos.</p>
+            <a href="https://github.com/Caltech-IPAC/spherex-archive-tutorials" target="_blank" rel="noopener">github.com/Caltech-IPAC/spherex-archive-tutorials ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">CIENCIA CIUDADANA · MOVIMIENTO PROPIO &amp; PLANETA X</span>
+            <h3>Backyard Worlds: Planet 9 &amp; IAU Minor Planet Center</h3>
+            <p>Inspiración oficial del reto para detección de dipolos cinemáticos multi-época (Planeta X, KBOs, cometa interestelar 3I/ATLAS y enanas Y/T) con exportación astrométrica oficial de 80 columnas IAU MPC.</p>
+            <a href="https://www.minorplanetcenter.net/iau/info/OpticalObs.html" target="_blank" rel="noopener">IAU Minor Planet Center (Formato 80 Columnas) ↗</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=22"></script>
+</body>
+</html>

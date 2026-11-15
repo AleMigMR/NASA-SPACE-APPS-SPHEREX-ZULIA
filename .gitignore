@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+cache/
+*.fits
+poc/out/*.fits
+.DS_Store
+Thumbs.db
