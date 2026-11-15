@@ -60,9 +60,6 @@ const STATE = {
   activeCandidateRank: null,
   aiDetectorEnabled: true,
   starRecognizerEnabled: true,
-  distanceRulerActive: false,
-  rulerPointA: null,
-  rulerPointB: null,
   showBlackbodyModel: true,
   dr1Spectrum: null,
   dr1SpectrumKey: "",
@@ -116,10 +113,6 @@ const I18N = {
     i18nLabelFov: "Campo de Visión (FOV)",
     i18nLabelDepth: "Exposiciones / Época",
     i18nLabelGap: "Separación mínima entre épocas",
-    i18nLabelRelease: "Lanzamiento IRSA",
-    optRelAll: "DR1 + QR3 (recomendado)",
-    optRelQr2: "Solo DR1 (año 1)",
-    optRelQr1: "Solo QR3 (año 2)",
     i18nSec2: "Bandas Infrarrojas LVF",
     i18nBandHint: "Selecciona los detectores SPHEREx para construir el cubo temporal (SWIR: D1–D3 · MWIR: D4–D6):",
     btnBandsAll: "Todas (D1–D6)",
@@ -133,12 +126,8 @@ const I18N = {
     "mol-D6": "CO 4.67 µm · pico de enanas Y",
     i18nBtnRebuild: "Reconstruir Cubo SPHEREx",
     i18nSec3: "Capas, Catálogos y FLAGS",
-    i18nChkAiDetector: "🧠 Detector de candidatos (diferencia + verificación ePSF)",
-    i18nChkStarRecognizer: "🔭 Fuentes del campo (identificadas con Gaia DR3 / AllWISE)",
     i18nChkCandidates: "🎯 Candidatos en movimiento / variables",
     i18nChkGaia: "✦ Estrellas Gaia DR3 + Vectores Mov. Propio",
-    i18nChkWise: "◈ Fuentes Infrarrojas AllWISE (W1/W2)",
-    i18nChkAperture: "⭕ Apertura Fotométrica + Anillo de Cielo",
     i18nChkGrid: "🧭 Grilla WCS y Brújula Astronómica (N/E)",
     i18nChkFlags: "⚠️ Mapa de Bits de Contaminación (FLAGS)",
     i18nLabelCmap: "Paleta Científica",
@@ -161,8 +150,6 @@ const I18N = {
     i18nModeRgb: "Falso Color RGB",
     i18nModeSum: "Co-Adición",
     i18nModeSplit: "Cortina A/B",
-    i18nBtnDistanceRuler: "Medir Distancia A↔B",
-        i18nBtnScanGemini: "Consultar al copiloto",
     i18nAllskyBadge: "🌌 CUBO ALL-SKY OFICIAL SPHEREx DR1 (DOI: 10.26131/IRSA679)",
     i18nAllskyEngineLbl: "Vista:",
     optEngineAitoff: "Proyección 360° Aitoff (FITS DR1 Oficial)",
@@ -191,7 +178,6 @@ const I18N = {
     i18nBtnRecenter: "Re-centrar Aquí",
     i18nNavHint: "Arrastra para navegar continuo / rotar 360° · Rueda para zoom dinámico · Clic para espectro · Doble clic para centrar",
     i18nAiHudTitle: "Detector de candidatos (verificación ePSF)",
-    i18nRulerHudTitle: "Separación angular y distancia 3D (solo con paralaje medida)",
     i18nSplitLabel: "Cortina Comparadora (Izquierda = Época 1 · Derecha = Época Actual):",
     i18nCursorPrompt:
       "Pasa el cursor sobre la imagen para leer coordenadas y brillo superficial (MJy/sr)",
@@ -200,7 +186,7 @@ const I18N = {
       "🛡️ Calidad de datos (FLAGS oficiales), fotometría ePSF y ecuaciones en vivo",
     i18nShieldSubTitle:
       "Calculado con las banderas oficiales del pipeline SPHEREx (Suplemento Explicativo v2.1, Tabla 16)",
-    i18nMathEqHeader: "🧮 Ecuaciones usadas y su valor en este cubo",
+    i18nMathEqHeader: "🧮 Fórmulas aplicadas a esta calidad de datos (valor medido)",
     i18nExpSummary: "📋 Registro de exposiciones L2b: λ en la posición del objetivo, flujo ePSF y calidad",
     thEpoch: "Época",
     thObsId: "ID Observación (OBS_ID)",
@@ -290,7 +276,6 @@ const I18N = {
     i18nBtnCloseDocs: "Cerrar",
     thFlux: "Flujo (µJy)",
     thQual: "Calidad",
-    i18nBtnFullscreen: "Pantalla completa",
     i18nTrackLegend: "✚ Posición predicha por la astrometría de catálogo",
   },
   en: {
@@ -317,10 +302,6 @@ const I18N = {
     i18nLabelFov: "Field of View (FOV)",
     i18nLabelDepth: "Exposures / Epoch",
     i18nLabelGap: "Minimum gap between epochs",
-    i18nLabelRelease: "IRSA Data Release",
-    optRelAll: "DR1 + QR3 (recommended)",
-    optRelQr2: "DR1 only (year 1)",
-    optRelQr1: "QR3 only (year 2)",
     i18nSec2: "LVF Infrared Bands",
     i18nBandHint: "Select SPHEREx detector arrays to build the temporal cube (SWIR: D1–D3 · MWIR: D4–D6):",
     btnBandsAll: "All (D1–D6)",
@@ -334,12 +315,8 @@ const I18N = {
     "mol-D6": "CO 4.67 µm · Y-dwarf peak",
     i18nBtnRebuild: "Rebuild SPHEREx Cube",
     i18nSec3: "Layers, Catalogs & FLAGS",
-    i18nChkAiDetector: "🧠 Candidate detector (difference + ePSF verification)",
-    i18nChkStarRecognizer: "🔭 Field sources (identified with Gaia DR3 / AllWISE)",
     i18nChkCandidates: "🎯 Moving / variable candidates",
     i18nChkGaia: "✦ Gaia DR3 Stars + Proper Motion Vectors",
-    i18nChkWise: "◈ AllWISE Infrared Sources (W1/W2)",
-    i18nChkAperture: "⭕ Photometric Aperture + Sky Annulus",
     i18nChkGrid: "🧭 WCS Grid & Astronomical Compass (N/E)",
     i18nChkFlags: "⚠️ Contamination Bitmask Overlay (FLAGS)",
     i18nLabelCmap: "Scientific Colormap",
@@ -362,8 +339,6 @@ const I18N = {
     i18nModeRgb: "Chrono RGB",
     i18nModeSum: "Co-Add Stack",
     i18nModeSplit: "A/B Curtain",
-    i18nBtnDistanceRuler: "Measure Distance A↔B",
-      i18nBtnScanGemini: "Ask the copilot",
     i18nAllskyBadge: "🌌 OFFICIAL SPHEREx DR1 ALL-SKY CUBE (DOI: 10.26131/IRSA679)",
     i18nAllskyEngineLbl: "View:",
     optEngineAitoff: "360° Aitoff Projection (Official DR1 FITS)",
@@ -392,7 +367,6 @@ const I18N = {
     i18nBtnRecenter: "Recenter Here",
     i18nNavHint: "Drag for continuous sky pan / 360° rotation · Wheel for dynamic zoom · Click for spectrum · Double-click to center",
     i18nAiHudTitle: "Candidate detector (ePSF verification)",
-    i18nRulerHudTitle: "Angular separation and 3D distance (only with measured parallax)",
     i18nSplitLabel: "Split Comparator (Left = Epoch 1 · Right = Active Epoch):",
     i18nCursorPrompt:
       "Hover over the image to read coordinates and surface brightness (MJy/sr)",
@@ -401,7 +375,7 @@ const I18N = {
       "🛡️ Data quality (official FLAGS), ePSF photometry and live equations",
     i18nShieldSubTitle:
       "Computed from the official SPHEREx pipeline flags (Explanatory Supplement v2.1, Table 16)",
-    i18nMathEqHeader: "🧮 Equations used and their value in this cube",
+    i18nMathEqHeader: "🧮 Formulas behind this data quality (measured value)",
     i18nExpSummary: "📋 L2b exposure log: λ at the target position, ePSF flux and quality",
     thEpoch: "Epoch",
     thObsId: "Observation ID (OBS_ID)",
@@ -491,7 +465,6 @@ const I18N = {
     i18nBtnCloseDocs: "Close",
     thFlux: "Flux (µJy)",
     thQual: "Quality",
-    i18nBtnFullscreen: "Full screen",
     i18nTrackLegend: "✚ Position predicted by catalogue astrometry",
   },
 };
@@ -981,23 +954,6 @@ function updateStarRecognizerButtonText() {
   }
 }
 
-function updateDistanceRulerButtonText() {
-  const span = document.getElementById("i18nBtnDistanceRuler");
-  const btn = document.getElementById("btnToggleDistanceRuler");
-  if (span) {
-    span.textContent =
-      STATE.lang === "en"
-        ? STATE.distanceRulerActive
-          ? "Ruler: ON"
-          : "Measure A↔B"
-        : STATE.distanceRulerActive
-        ? "Regla: ON"
-        : "Medir A↔B";
-  }
-  if (btn) {
-    btn.classList.toggle("active", STATE.distanceRulerActive);
-  }
-}
 
 function updateLiveResourceLinks() {
   const ra = Number(STATE.ra || 0);
@@ -1116,7 +1072,6 @@ function applyLanguage(lang) {
 
   updateAiDetectorButtonText();
   updateStarRecognizerButtonText();
-  updateDistanceRulerButtonText();
   updateLiveResourceLinks();
   renderPresets();
   if (STATE.cube) {
@@ -1124,11 +1079,9 @@ function applyLanguage(lang) {
     renderAutoAiSummary();
     renderCandidatesBar();
     renderRecognizedObjectsBar();
-    renderDistanceRulerHud();
     renderAiDetectorHud();
     renderArtifactShieldAndMath();
     renderSpectrumChart();
-    renderLightCurveChart();
     renderCanvasFrame();
   }
 }
@@ -1141,7 +1094,6 @@ function syncViewportVisibility() {
   const aladinBox = document.getElementById("allskyAladinDiv");
   const splitWrap = document.getElementById("splitControlWrap");
   const aiHud = document.getElementById("aiDetectorHud");
-  const rulerHud = document.getElementById("distanceRulerHud");
   const hudTL = document.getElementById("hudTopLeft");
   const hudTR = document.getElementById("hudTopRight");
 
@@ -1154,7 +1106,6 @@ function syncViewportVisibility() {
     if (allskyStage) allskyStage.hidden = false;
     if (splitWrap) splitWrap.hidden = true;
     if (aiHud) aiHud.hidden = true;
-    if (rulerHud) rulerHud.hidden = true;
     if (hudTL) hudTL.hidden = true;
     if (hudTR) hudTR.hidden = true;
 
@@ -1172,7 +1123,6 @@ function syncViewportVisibility() {
     if (hudTL) hudTL.hidden = false;
     if (hudTR) hudTR.hidden = false;
     if (aiHud) aiHud.hidden = !STATE.aiDetectorEnabled;
-    if (rulerHud) rulerHud.hidden = !STATE.distanceRulerActive;
   }
 }
 
@@ -1789,10 +1739,6 @@ function bindEvents() {
     STATE.gapDays = parseFloat(e.target.value);
     loadSkyPatch();
   });
-  document.getElementById("selectRelease").addEventListener("change", (e) => {
-    STATE.release = e.target.value;
-    loadSkyPatch();
-  });
 
   // Selección rápida de bandas
   document.querySelectorAll(".chip-btn[data-preset-bands]").forEach((btn) => {
@@ -1867,49 +1813,9 @@ function bindEvents() {
     });
   }
 
-  const btnToggleRuler = document.getElementById("btnToggleDistanceRuler");
-  const btnClearRuler = document.getElementById("btnClearRuler");
-  const btnCloseRuler = document.getElementById("btnCloseRuler");
-  if (btnToggleRuler) {
-    btnToggleRuler.addEventListener("click", () => {
-      STATE.distanceRulerActive = !STATE.distanceRulerActive;
-      if (STATE.distanceRulerActive && !STATE.rulerPointA && STATE.cube && STATE.cube.recognized_objects && STATE.cube.recognized_objects.length >= 2) {
-        // Pre-cargar automáticamente una medición de ejemplo entre los 2 astros más prominentes del campo
-        STATE.rulerPointA = STATE.cube.recognized_objects[0];
-        STATE.rulerPointB = STATE.cube.recognized_objects[1];
-      }
-      updateDistanceRulerButtonText();
-      syncViewportVisibility();
-      renderDistanceRulerHud();
-      renderCanvasFrame();
-    });
-  }
-  if (btnClearRuler) {
-    btnClearRuler.addEventListener("click", () => {
-      STATE.rulerPointA = null;
-      STATE.rulerPointB = null;
-      renderDistanceRulerHud();
-      renderCanvasFrame();
-    });
-  }
-  if (btnCloseRuler) {
-    btnCloseRuler.addEventListener("click", () => {
-      STATE.distanceRulerActive = false;
-      updateDistanceRulerButtonText();
-      syncViewportVisibility();
-      renderCanvasFrame();
-    });
-  }
 
-  const btnScanGemini = document.getElementById("btnScanWithGemini");
-  if (btnScanGemini) {
-    btnScanGemini.addEventListener("click", () => {
-      const cands = (STATE.cube && STATE.cube.candidates) || [];
-      askGeminiAboutAnomaly(cands[0] || null);
-    });
-  }
 
-  ["chkCandidates", "chkGaia", "chkWise", "chkAperture", "chkGrid"].forEach((id) => {
+  ["chkCandidates", "chkGaia", "chkGrid"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("change", () => renderCanvasFrame());
   });
@@ -2541,7 +2447,8 @@ async function loadSkyPatch(opts = {}) {
       dec: STATE.dec.toFixed(6),
       fov: STATE.fov.toFixed(3),
       bands: STATE.bands.join(","),
-      max_per_epoch: String(STATE.maxPerEpoch),
+      // Navegación (arrastre/zoom): 3 exp/época para que el campo vecino llegue rápido; el selector sigue mandando al cargar a propósito
+      max_per_epoch: String(silent ? Math.min(3, STATE.maxPerEpoch) : STATE.maxPerEpoch),
       gap_days: String(STATE.gapDays),
       release: STATE.release,
     });
@@ -2584,10 +2491,6 @@ async function loadSkyPatch(opts = {}) {
     }
 
     // Si la regla 3D está activa, actualizar o inicializar los puntos A y B en el nuevo campo
-    if (STATE.distanceRulerActive && cube.recognized_objects && cube.recognized_objects.length >= 2) {
-      STATE.rulerPointA = cube.recognized_objects[0];
-      STATE.rulerPointB = cube.recognized_objects[1];
-    }
 
     syncViewportVisibility();
     renderEpochTimeline();
@@ -2595,11 +2498,9 @@ async function loadSkyPatch(opts = {}) {
     renderExposureTable();
     renderCandidatesBar();
     renderRecognizedObjectsBar();
-    renderDistanceRulerHud();
     renderAiDetectorHud();
     renderArtifactShieldAndMath();
     renderSpectrumChart();
-    renderLightCurveChart();
     renderAutoAiSummary();
     renderCanvasFrame();
     if (!silent) {
@@ -3453,7 +3354,7 @@ function drawVectorOverlays(ctx, cw, ch, nx, ny, ep) {
   }
 
   // 3. Fuentes Infrarrojas AllWISE (Rombo Ámbar)
-  if (document.getElementById("chkWise").checked && STATE.catalogs.allwise) {
+  if (false /* capa AllWISE retirada de la interfaz */ && STATE.catalogs.allwise) {
     ctx.save();
     ctx.strokeStyle = "rgba(255, 190, 11, 0.85)";
     ctx.lineWidth = 1.4;
@@ -3543,6 +3444,9 @@ function drawVectorOverlays(ctx, cw, ch, nx, ny, ep) {
       ctx.arc(cx, cy, 8.5, 0, Math.PI * 2);
       ctx.stroke();
 
+      // Etiqueta solo para el objetivo de referencia o la fuente bajo el cursor (imagen limpia)
+      const isHoverObj = STATE.hoverSourceKey === `${obj.px},${obj.py}`;
+      if (obj.obj_class !== "reference_target" && !isHoverObj) continue;
       const spType = STATE.lang === "en" ? obj.spectral_type_en : obj.spectral_type_es;
       const shortClass = spType ? spType.split("(")[0].trim() : "";
       const distStr = obj.dist_pc ? ` · d=${formatCosmicDistance(obj.dist_pc, obj.dist_ly)}` : "";
@@ -3641,70 +3545,6 @@ function drawVectorOverlays(ctx, cw, ch, nx, ny, ep) {
   }
 
   // 7. Regla de Distancia Cósmica 3D (Vector Láser A ↔ B en el Lienzo)
-  if (STATE.distanceRulerActive && STATE.rulerPointA) {
-    ctx.save();
-    const ptA = STATE.rulerPointA;
-    const { cx: ax, cy: ay } = gridToCanvas(ptA.px, ptA.py);
-
-    // Marcador A
-    ctx.strokeStyle = "#f472b6";
-    ctx.fillStyle = "rgba(244, 114, 182, 0.25)";
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.arc(ax, ay, 11, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#fbcfe8";
-    ctx.font = "700 11px 'JetBrains Mono', monospace";
-    ctx.fillText(`A: ${ptA.name}${ptA.dist_pc ? ` (${fmtNum(ptA.dist_pc, 2)} pc)` : ""}`, ax + 14, ay - 6);
-
-    if (STATE.rulerPointB) {
-      const ptB = STATE.rulerPointB;
-      const { cx: bx, cy: by } = gridToCanvas(ptB.px, ptB.py);
-
-      // Línea láser A <-> B
-      ctx.strokeStyle = "#f472b6";
-      ctx.lineWidth = 2.2;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Marcador B
-      ctx.fillStyle = "rgba(56, 189, 248, 0.25)";
-      ctx.strokeStyle = "#38bdf8";
-      ctx.beginPath();
-      ctx.arc(bx, by, 11, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#bae6fd";
-      ctx.fillText(`B: ${ptB.name}${ptB.dist_pc ? ` (${fmtNum(ptB.dist_pc, 2)} pc)` : ""}`, bx + 14, by + 14);
-
-      // Etiqueta central con separación angular y distancia 3D real
-      const tel = computePairTelemetry3D(ptA, ptB);
-      if (tel) {
-        const mx = 0.5 * (ax + bx);
-        const my = 0.5 * (ay + by);
-        const callout = tel.dist3dPc !== null
-          ? `📏 θ=${tel.thetaArcsec.toFixed(1)}″ · PA ${tel.paDeg.toFixed(1)}° · D_3D=${tel.dist3dPc.toFixed(2)} pc`
-          : `📏 θ=${tel.thetaArcsec.toFixed(1)}″ · PA ${tel.paDeg.toFixed(1)}°`;
-        ctx.font = "700 10.5px 'JetBrains Mono', monospace";
-        const tw = ctx.measureText(callout).width;
-        const bx0 = Math.min(Math.max(mx - tw * 0.5 - 6, 8), cw - tw - 16);
-        const by0 = Math.min(Math.max(my - 10, 48), ch - 48);
-        ctx.fillStyle = "rgba(15, 6, 28, 0.94)";
-        ctx.fillRect(bx0, by0, tw + 12, 18);
-        ctx.strokeStyle = "#f472b6";
-        ctx.lineWidth = 1.4;
-        ctx.strokeRect(bx0, by0, tw + 12, 18);
-        ctx.fillStyle = "#fce7f3";
-        ctx.fillText(callout, bx0 + 6, by0 + 13);
-      }
-    }
-    ctx.restore();
-  }
 
   // 7b. Posición predicha del objetivo en cada época (Gaia DR3 / literatura + movimiento propio)
   const track = (STATE.cube && STATE.cube.target && STATE.cube.target_track) || [];
@@ -3757,7 +3597,7 @@ function drawVectorOverlays(ctx, cw, ch, nx, ny, ep) {
   }
 
   // 8. Apertura Fotométrica Activa + Anillo de Fondo de Cielo (Retícula Corregida al Sub-Píxel)
-  if (document.getElementById("chkAperture").checked && STATE.aperturePx) {
+  if (true /* apertura siempre visible */ && STATE.aperturePx) {
     const { cx: ax, cy: ay } = gridToCanvas(STATE.aperturePx.x, STATE.aperturePx.y);
     const apRadiusCanvas = 2.5 * ((scaleX + scaleY) / 2);
     const annRadiusCanvas = 6.5 * ((scaleX + scaleY) / 2);
@@ -3873,6 +3713,11 @@ function handleCanvasHover(ev) {
       const dStr = nearObj.dist_pc ? ` · d=<strong>${formatCosmicDistance(nearObj.dist_pc, nearObj.dist_ly)}</strong>` : "";
       nearAstroStr = ` · 🔭 <strong>${nearObj.name}</strong> (${spT}${dStr})`;
     }
+    const newKey = nearObj ? `${nearObj.px},${nearObj.py}` : null;
+    if (newKey !== STATE.hoverSourceKey) {
+      STATE.hoverSourceKey = newKey;
+      renderCanvasFrame();
+    }
   }
   const covStr = ep.cov && ep.cov[idx] < 128 ? (STATE.lang === "en" ? " · ⬚ no L2b data" : " · ⬚ sin datos L2b") : "";
 
@@ -3977,15 +3822,6 @@ async function handleCanvasClick(ev) {
   const obj = resolvePointToAstroObject(gx, gy);
 
   // Si la herramienta de Medición de Distancia Cósmica 3D (A <-> B) está activa, asignar Punto A o Punto B
-  if (STATE.distanceRulerActive) {
-    if (!STATE.rulerPointA || (STATE.rulerPointA && STATE.rulerPointB)) {
-      STATE.rulerPointA = obj;
-      STATE.rulerPointB = null;
-    } else {
-      STATE.rulerPointB = obj;
-    }
-    renderDistanceRulerHud();
-  }
 
   await selectPixelAperture(obj.px, obj.py, obj.name || `Px (${gx}, ${gy})`);
 }
@@ -4045,15 +3881,6 @@ function renderRecognizedObjectsBar() {
     const noDist = STATE.lang === "en" ? "No reliable distance (no parallax with π/σ ≥ 5)" : "Sin distancia fiable (no hay paralaje con π/σ ≥ 5)";
     btn.title = `${o.name} | ${spType || ""} | ${o.dist_pc ? (dm || "") : noDist}${o.match_sep_arcsec !== null && o.match_sep_arcsec !== undefined ? ` | Δ=${o.match_sep_arcsec}″` : ""}`;
     btn.addEventListener("click", () => {
-      if (STATE.distanceRulerActive) {
-        if (!STATE.rulerPointA || (STATE.rulerPointA && STATE.rulerPointB)) {
-          STATE.rulerPointA = o;
-          STATE.rulerPointB = null;
-        } else {
-          STATE.rulerPointB = o;
-        }
-        renderDistanceRulerHud();
-      }
       selectPixelAperture(o.px, o.py, o.name);
       renderRecognizedObjectsBar();
     });
@@ -4061,79 +3888,6 @@ function renderRecognizedObjectsBar() {
   });
 }
 
-function renderDistanceRulerHud() {
-  const hud = document.getElementById("distanceRulerHud");
-  const body = document.getElementById("distanceRulerBody");
-  if (!hud || !body) return;
-  if (!STATE.distanceRulerActive || STATE.mode === "allsky") {
-    hud.hidden = true;
-    return;
-  }
-  hud.hidden = false;
-  const en = STATE.lang === "en";
-  const ptA = STATE.rulerPointA;
-  const ptB = STATE.rulerPointB;
-  const distLine = (p) =>
-    p && p.dist_pc
-      ? `${formatCosmicDistance(p.dist_pc, p.dist_ly)}`
-      : en
-      ? "no measured distance"
-      : "sin distancia medida";
-  const methodLine = (p) => (p && p.dist_pc ? (en ? p.dist_method_en : p.dist_method_es) || "" : en ? "No reliable parallax (π/σ ≥ 5) for this source" : "Esta fuente no tiene paralaje fiable (π/σ ≥ 5)");
-  if (!ptA) {
-    body.innerHTML = `<div class="ruler-hint">${
-      en
-        ? "Click two sources (A and B). The angular separation and position angle are always exact; the 3D distance is only computed when both have a measured distance (Gaia parallax or literature)."
-        : "Haz clic en dos fuentes (A y B). La separación angular y el ángulo de posición son siempre exactos; la distancia 3D solo se calcula si ambas tienen distancia medida (paralaje Gaia o literatura)."
-    }</div>`;
-    return;
-  }
-  if (!ptB) {
-    body.innerHTML = `
-      <div class="ruler-grid">
-        <div class="ruler-metric-box">
-          <div class="ruler-metric-lbl">A · ${ptA.name}</div>
-          <div class="ruler-metric-val">${distLine(ptA)}</div>
-          <div class="ruler-metric-sub">${methodLine(ptA)}</div>
-        </div>
-        <div class="ruler-metric-box">
-          <div class="ruler-metric-lbl">${en ? "Select source B" : "Selecciona la fuente B"}</div>
-          <div class="ruler-metric-val" style="color:#f472b6">${en ? "Click a 2nd source..." : "Haz clic en una 2.ª fuente..."}</div>
-          <div class="ruler-metric-sub">RA ${ptA.ra.toFixed(5)}°, Dec ${ptA.dec.toFixed(5)}°</div>
-        </div>
-      </div>`;
-    return;
-  }
-  const tel = computePairTelemetry3D(ptA, ptB);
-  const d3 =
-    tel.dist3dPc !== null
-      ? `<div class="ruler-metric-val" style="color:#f472b6">D_3D = ${tel.dist3dPc.toFixed(3)} pc (${tel.dist3dLy.toFixed(2)} ly)</div>
-         <div class="ruler-metric-sub">√(d_A² + d_B² − 2·d_A·d_B·cos θ)</div>`
-      : `<div class="ruler-metric-val" style="color:#94a3b8">${en ? "Not computable" : "No calculable"}</div>
-         <div class="ruler-metric-sub">${en ? "Requires measured distances for both sources." : "Requiere distancias medidas para ambas fuentes."}</div>`;
-  body.innerHTML = `
-    <div class="ruler-grid">
-      <div class="ruler-metric-box">
-        <div class="ruler-metric-lbl">A · ${ptA.name}</div>
-        <div class="ruler-metric-val">${distLine(ptA)}</div>
-        <div class="ruler-metric-sub">${methodLine(ptA)}</div>
-      </div>
-      <div class="ruler-metric-box">
-        <div class="ruler-metric-lbl">B · ${ptB.name}</div>
-        <div class="ruler-metric-val">${distLine(ptB)}</div>
-        <div class="ruler-metric-sub">${methodLine(ptB)}</div>
-      </div>
-      <div class="ruler-metric-box">
-        <div class="ruler-metric-lbl">${en ? "Angular separation · PA" : "Separación angular · PA"}</div>
-        <div class="ruler-metric-val">θ = ${tel.thetaArcsec.toFixed(1)}″ (${tel.thetaArcmin.toFixed(2)}′)</div>
-        <div class="ruler-metric-sub">PA ${tel.paDeg.toFixed(1)}°${tel.projAu !== null ? ` · r⊥ ≈ ${Math.round(tel.projAu).toLocaleString()} AU` : ""}</div>
-      </div>
-      <div class="ruler-metric-box">
-        <div class="ruler-metric-lbl">${en ? "3D distance A ↔ B" : "Distancia 3D A ↔ B"}</div>
-        ${d3}
-      </div>
-    </div>`;
-}
 
 async function selectPixelAperture(gx, gy, labelText) {
   STATE.aperturePx = { x: gx, y: gy, label: labelText };
@@ -4169,7 +3923,6 @@ async function selectPixelAperture(gx, gy, labelText) {
       STATE.pointLightCurve = null;
     }
     renderSpectrumChart();
-    renderLightCurveChart();
   } catch (err) {
     console.warn("No se pudo extraer espectro puntual:", err);
   }
@@ -4251,6 +4004,9 @@ function askGeminiAboutAnomaly(cand) {
 }
 
 function renderArtifactShieldAndMath() {
+  // Reporte MPC: solo visible con un candidato de movimiento confirmado sin contrapartida estelar
+  const mpcBtn = document.getElementById("btnExportMpc");
+  if (mpcBtn) mpcBtn.hidden = !(STATE.cube && (STATE.cube.mpc_report || []).length);
   const shieldGrid = document.getElementById("artifactShieldGrid");
   const eqGrid = document.getElementById("mathEquationsGrid");
   if (!STATE.cube) return;
@@ -4413,7 +4169,6 @@ function renderCandidatesBar() {
     renderCandidatesBar();
     renderCanvasFrame();
     renderSpectrumChart();
-    renderLightCurveChart();
   });
   bar.appendChild(centerBtn);
   for (const c of STATE.cube.candidates || []) {
@@ -4447,7 +4202,6 @@ function renderEpochTimeline() {
       STATE.currentEpochIdx = idx;
       syncActiveEpochPill();
       renderCanvasFrame();
-      renderLightCurveChart();
     });
     container.appendChild(pill);
   });
@@ -4466,7 +4220,6 @@ function stepEpoch(delta) {
   STATE.currentEpochIdx = (STATE.currentEpochIdx + delta + n) % n;
   syncActiveEpochPill();
   renderCanvasFrame();
-  renderLightCurveChart();
 }
 
 function togglePlayPause() {
@@ -4743,126 +4496,6 @@ function renderSpectrumChart() {
   }
 }
 
-function renderLightCurveChart() {
-  const canvas = document.getElementById("lightcurveCanvas");
-  if (!canvas || !STATE.cube) return;
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width;
-  const H = canvas.height;
-  const en = STATE.lang === "en";
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#060911";
-  ctx.fillRect(0, 0, W, H);
-  const lc = STATE.pointLightCurve || STATE.cube.light_curve || { series: [] };
-  const series = (lc.series || []).filter((s) => s.points && s.points.length);
-  const multi = series.filter((s) => s.points.length >= 2);
-  if (!series.length) {
-    ctx.fillStyle = "#8492a6";
-    ctx.font = "12px 'Inter', sans-serif";
-    ctx.fillText(
-      STATE.cube.data_mode === "dr1_static"
-        ? en
-          ? "Static DR1 co-add: no light curve."
-          : "Co-adición DR1 estática: no hay curva de luz."
-        : en
-        ? "No reliable (unsaturated, S/N ≥ 3) measurements."
-        : "Sin mediciones fiables (no saturadas, S/N ≥ 3).",
-      18,
-      H / 2
-    );
-    return;
-  }
-  const padL = 46, padR = 12, padT = 16, padB = 28;
-  const pw = W - padL - padR;
-  const ph = H - padT - padB;
-  const allPts = series.flatMap((s) => {
-    const med = s.points.map((p) => p.flux_ujy).sort((a, b) => a - b)[Math.floor(s.points.length / 2)] || 1;
-    return s.points.map((p) => ({ ...p, rel: p.flux_ujy / med, relErr: p.err_ujy / Math.abs(med), lam: s.wavelength_um, ch: s.ch, n: s.points.length }));
-  });
-  const mjds = allPts.map((p) => p.mjd);
-  const t0 = Math.min(...mjds);
-  const t1 = Math.max(...mjds);
-  const span = Math.max(t1 - t0, 1.0);
-  const rels = allPts.filter((p) => p.n >= 2).flatMap((p) => [p.rel - p.relErr, p.rel + p.relErr]);
-  const yLo = Math.min(0.8, ...(rels.length ? rels : [0.9]));
-  const yHi = Math.max(1.2, ...(rels.length ? rels : [1.1]));
-  const xPx = (m) => padL + ((m - t0) / span) * pw;
-  const yPx = (v) => padT + ph - ((v - yLo) / (yHi - yLo)) * ph;
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.14)";
-  for (let i = 0; i <= 3; i++) {
-    const y = padT + (ph * i) / 3;
-    ctx.beginPath();
-    ctx.moveTo(padL, y);
-    ctx.lineTo(W - padR, y);
-    ctx.stroke();
-    ctx.fillStyle = "#8492a6";
-    ctx.font = "9.5px 'JetBrains Mono', monospace";
-    ctx.fillText((yHi - ((yHi - yLo) * i) / 3).toFixed(2), 6, y + 3);
-  }
-  const lamColor = (lam) => {
-    const t = Math.max(0, Math.min(1, (lam - 0.75) / 4.25));
-    return `hsl(${Math.round(260 - 260 * t)}, 85%, 62%)`;
-  };
-  for (const s of multi) {
-    const med = s.points.map((p) => p.flux_ujy).sort((a, b) => a - b)[Math.floor(s.points.length / 2)] || 1;
-    ctx.strokeStyle = lamColor(s.wavelength_um);
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    s.points.forEach((p, i) => {
-      const x = xPx(p.mjd);
-      const y = yPx(p.flux_ujy / med);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  }
-  for (const p of allPts) {
-    const x = xPx(p.mjd);
-    const y = yPx(Math.max(yLo, Math.min(yHi, p.rel)));
-    ctx.fillStyle = lamColor(p.lam);
-    ctx.globalAlpha = p.n >= 2 ? 1.0 : 0.35;
-    if (p.n >= 2) {
-      ctx.strokeStyle = ctx.fillStyle;
-      ctx.beginPath();
-      ctx.moveTo(x, yPx(Math.min(yHi, p.rel + p.relErr)));
-      ctx.lineTo(x, yPx(Math.max(yLo, p.rel - p.relErr)));
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    ctx.arc(x, y, 3.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1.0;
-  }
-  const ep = STATE.decodedEpochs[STATE.currentEpochIdx];
-  if (ep && Number.isFinite(ep.mjd) && ep.mjd >= t0 - 1 && ep.mjd <= t1 + 1) {
-    ctx.strokeStyle = "rgba(0, 245, 212, 0.6)";
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(xPx(ep.mjd), padT);
-    ctx.lineTo(xPx(ep.mjd), padT + ph);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-  ctx.fillStyle = "#cbd5e1";
-  ctx.font = "9.5px 'JetBrains Mono', monospace";
-  ctx.fillText(`MJD ${t0.toFixed(1)}`, padL, H - 12);
-  ctx.fillText(`${t1.toFixed(1)}`, W - padR - 40, H - 12);
-  ctx.font = "9px 'Inter', sans-serif";
-  ctx.fillStyle = "#94a3b8";
-  const sc = lc.strongest_change;
-  const summary = multi.length
-    ? sc
-      ? en
-        ? `F/median per channel · max change ${sc.max_change_sigma}σ at ${sc.wavelength_um} µm`
-        : `F/mediana por canal · cambio máx. ${sc.max_change_sigma}σ en ${sc.wavelength_um} µm`
-      : en
-      ? "F/median per channel"
-      : "F/mediana por canal"
-    : en
-    ? "Each channel measured once: variability not assessable (faint points)."
-    : "Cada canal medido una sola vez: variabilidad no evaluable (puntos tenues).";
-  ctx.fillText(summary, padL, H - 1);
-}
 
 // ============================================================================
 // 15. ASTRO-AI COPILOT (DIAGNÓSTICO AUTOMÁTICO Y PUENTE MULTIMODAL GEMINI)

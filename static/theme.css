@@ -1,0 +1,1000 @@
+/* ==========================================================================
+   SPHEREx SkyChrono · TEMA visual oficial · Stars Finders (Delegación Zuliana)
+   --------------------------------------------------------------------------
+   Se carga DESPUÉS de styles.css y solo sobrescribe estilos.
+   No cambia IDs, clases usadas por JS ni estructura: toda la funcionalidad
+   sigue en app.js exactamente igual.
+      ========================================================================== */
+
+:root {
+  /* Superficies: azul noche con profundidad, en vez de negro plano */
+  --bg-canvas: #050812;
+  --bg-panel: rgba(14, 20, 34, 0.78);
+  --bg-card: rgba(22, 30, 48, 0.72);
+  --bg-elevated: rgba(32, 42, 64, 0.9);
+  --bg-input: rgba(6, 10, 20, 0.72);
+
+  --border-hairline: rgba(148, 170, 210, 0.11);
+  --border-strong: rgba(148, 170, 210, 0.22);
+  --border-active: #38bdf8;
+
+  --text-main: #eef3fb;
+  --text-secondary: #b9c4d6;
+  --text-muted: #7d8ba3;
+
+  /* Acentos con un propósito cada uno */
+  --accent-primary: #38bdf8;      /* acción principal / selección */
+  --accent-hover: #0ea5e9;
+  --accent-cyan: #22d3ee;
+  --accent-emerald: #34d399;      /* estado OK / detectores ON */
+  --accent-amber: #fbbf24;        /* advertencia / ocupado */
+  --accent-rose: #fb7185;
+  --accent-purple: #a78bfa;       /* inteligencia artificial */
+
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 7px;
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px -24px rgba(0, 0, 0, 0.9);
+  --ring: 0 0 0 3px rgba(56, 189, 248, 0.28);
+
+  --topbar-h: 68px;
+}
+
+/* --------------------------------------------------------------------------
+   0. BASE
+   -------------------------------------------------------------------------- */
+body {
+  font-size: 13px;
+  line-height: 1.5;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(56, 189, 248, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(167, 139, 250, 0.06), transparent 60%),
+    var(--bg-canvas);
+  background-attachment: fixed;
+}
+.bg-nebula {
+  background:
+    radial-gradient(circle at 18% 22%, rgba(56, 189, 248, 0.05), transparent 40%),
+    radial-gradient(circle at 82% 78%, rgba(167, 139, 250, 0.045), transparent 42%);
+}
+
+/* Foco visible para teclado (accesibilidad) sin afectar al ratón */
+:where(button, a, input, select, textarea, summary, label.band-card):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 170, 210, 0.18);
+  border-radius: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   1. CABECERA: más aire, jerarquía clara, acciones agrupadas
+   -------------------------------------------------------------------------- */
+.topbar {
+  min-height: var(--topbar-h);
+  padding: 10px 22px;
+  background: rgba(6, 10, 20, 0.82);
+  border-bottom: 1px solid var(--border-hairline);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+.logo-orb {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: radial-gradient(circle at 35% 30%, rgba(56, 189, 248, 0.45), rgba(14, 20, 34, 0.9) 70%);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  box-shadow: 0 0 22px -6px rgba(56, 189, 248, 0.6);
+}
+.brand-row h1 {
+  font-size: 18px;
+  letter-spacing: -0.4px;
+}
+.accent-gradient {
+  background: linear-gradient(90deg, #7dd3fc, #a78bfa);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+.mission-badge,
+.badge-subtle {
+  font-size: 9.5px;
+  letter-spacing: 0.6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.mission-badge {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+}
+.subtitle {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* Las 7 acciones viven en una "cápsula" común: se leen como un solo grupo */
+.topbar-actions {
+  gap: 4px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-hairline);
+  border-radius: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.topbar-actions .btn {
+  height: 32px;
+  border-radius: 9px;
+}
+.topbar-actions .btn-ghost,
+.topbar-actions .btn-docs {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.topbar-actions .btn-ghost:hover,
+.topbar-actions .btn-docs:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+}
+.topbar-actions .btn-lang {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-hairline);
+  color: var(--text-main);
+  min-width: 58px;
+}
+
+/* --------------------------------------------------------------------------
+   2. BOTONES: un único sistema (primario, acento, fantasma, chip)
+   -------------------------------------------------------------------------- */
+.btn {
+  height: 34px;
+  padding: 0 13px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
+.btn-xs {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+.btn-full {
+  height: 40px;
+  margin-top: 12px;
+  font-size: 13px;
+  border-radius: var(--radius-md);
+}
+.btn-primary {
+  background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+  color: #04131f;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 6px 18px -8px rgba(56, 189, 248, 0.8);
+}
+.btn-primary:hover {
+  background: linear-gradient(180deg, #7dd3fc, #38bdf8);
+}
+.btn-accent {
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  border-color: rgba(125, 211, 252, 0.3);
+  color: #fff;
+}
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--border-hairline);
+}
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.btn-docs {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.28);
+  color: #6ee7b7;
+}
+
+/* --------------------------------------------------------------------------
+   3. BARRA DE OBJETIVOS: tarjetas en carrusel horizontal
+   -------------------------------------------------------------------------- */
+.presets-bar {
+  margin: 14px 22px 0;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(14px);
+}
+.presets-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.8px;
+}
+.btn-add-preset,
+.btn-manage-presets {
+  border-radius: 8px;
+  height: 28px;
+}
+.presets-list {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding: 2px 2px 6px;
+}
+.preset-card {
+  flex: 0 0 200px;
+  height: 62px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  scroll-snap-align: start;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+}
+.preset-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px -14px rgba(56, 189, 248, 0.6);
+}
+.preset-card.active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(167, 139, 250, 0.12));
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25), 0 10px 24px -14px rgba(56, 189, 248, 0.8);
+}
+.preset-name {
+  font-size: 12.5px;
+}
+.preset-badge {
+  border-radius: 999px;
+}
+.preset-floating-tooltip {
+  border-radius: 12px;
+  background: rgba(10, 15, 27, 0.96);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.95);
+}
+
+/* --------------------------------------------------------------------------
+   4. DISTRIBUCIÓN: el visor es el protagonista y los paneles se desplazan solos
+   -------------------------------------------------------------------------- */
+.workspace-grid {
+  grid-template-columns: 300px minmax(0, 1fr) 372px;
+  gap: 16px;
+  padding: 14px 22px 28px;
+}
+@media (max-width: 1560px) {
+  .workspace-grid {
+    grid-template-columns: 282px minmax(0, 1fr) 340px;
+    gap: 14px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .presets-bar {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+}
+@media (max-width: 1360px) {
+  .workspace-grid {
+    grid-template-columns: 264px minmax(0, 1fr) 316px;
+    gap: 12px;
+  }
+}
+@media (min-width: 1181px) {
+  /* Paneles laterales fijos a la vista con desplazamiento interno:
+     el visor nunca se pierde al ajustar controles */
+  .panel-left,
+  .panel-right {
+    position: sticky;
+    top: calc(var(--topbar-h) + 10px);
+    max-height: calc(100vh - var(--topbar-h) - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+@media (max-width: 1180px) {
+  .workspace-grid {
+    grid-template-columns: 290px minmax(0, 1fr);
+  }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(14px);
+}
+.panel-section {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+.section-header {
+  height: 26px;
+  margin-bottom: 12px;
+}
+.section-step {
+  width: 26px;
+  height: 22px;
+  border-radius: 7px;
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.22);
+}
+.section-header h2,
+.section-header-compact h2 {
+  font-size: 12.5px;
+  letter-spacing: 0.7px;
+}
+.section-hint,
+.chart-sub {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.field-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+  margin-bottom: 5px;
+}
+
+/* --------------------------------------------------------------------------
+   5. CAMPOS, SELECTORES, INTERRUPTORES Y DESLIZADORES
+   -------------------------------------------------------------------------- */
+.text-input,
+.select-input {
+  height: 36px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  padding: 0 11px;
+  background: var(--bg-input);
+  border-color: var(--border-strong);
+}
+.select-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #7d8ba3 50%),
+    linear-gradient(135deg, #7d8ba3 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.select-input option {
+  background: #0e1422;
+  color: var(--text-main);
+}
+.select-sm {
+  height: 28px;
+  font-size: 11.5px;
+}
+.text-input:focus,
+.select-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: var(--ring);
+}
+.control-grid-2 {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.coord-readout {
+  border-radius: 10px;
+  padding: 8px 10px;
+  border-color: var(--border-hairline);
+  background: rgba(56, 189, 248, 0.04);
+}
+
+/* Interruptores tipo "switch" en lugar de checkbox cuadrado */
+.toggle-list {
+  gap: 2px;
+}
+.toggle-row {
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  gap: 10px;
+  transition: background 0.15s ease;
+}
+.toggle-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.toggle-row input[type="checkbox"],
+.toggle-inline-xs input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: rgba(148, 170, 210, 0.22);
+  border: 1px solid rgba(148, 170, 210, 0.18);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.toggle-row input[type="checkbox"]::after,
+.toggle-inline-xs input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: transform 0.18s ease;
+}
+.toggle-row input[type="checkbox"]:checked,
+.toggle-inline-xs input[type="checkbox"]:checked {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+.toggle-row input[type="checkbox"]:checked::after,
+.toggle-inline-xs input[type="checkbox"]:checked::after {
+  transform: translateX(13px);
+  background: #fff;
+}
+
+.range-slider,
+#rangeSplit {
+  accent-color: var(--accent-primary);
+  height: 18px;
+}
+
+/* --------------------------------------------------------------------------
+   6. BANDAS D1–D6: tarjetas con el color del detector como protagonista
+   -------------------------------------------------------------------------- */
+.band-quick-bar {
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.chip-btn {
+  border-radius: 999px;
+  height: 28px;
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--border-hairline);
+}
+.chip-btn:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: var(--text-main);
+}
+/* Una banda por fila: rango, contador y moléculas se leen sin cortes */
+.bands-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.band-head {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.band-range {
+  font-size: 11px;
+  flex: 1;
+}
+.band-mol {
+  font-size: 10.5px;
+  padding-left: 1px;
+}
+.band-card {
+  --band-color: #38bdf8;
+  position: relative;
+  padding: 9px 10px 9px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border-color: var(--border-hairline);
+  overflow: hidden;
+}
+.band-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--band-color);
+  opacity: 0.35;
+  transition: opacity 0.15s ease, width 0.15s ease;
+}
+.band-card[data-band="D1"] { --band-color: #818cf8; }
+.band-card[data-band="D2"] { --band-color: #60a5fa; }
+.band-card[data-band="D3"] { --band-color: #22d3ee; }
+.band-card[data-band="D4"] { --band-color: #34d399; }
+.band-card[data-band="D5"] { --band-color: #fbbf24; }
+.band-card[data-band="D6"] { --band-color: #fb7185; }
+.band-card.active {
+  background: color-mix(in srgb, var(--band-color) 12%, transparent);
+  border-color: color-mix(in srgb, var(--band-color) 65%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--band-color) 25%, transparent);
+}
+.band-card.active::before {
+  opacity: 1;
+  width: 4px;
+}
+.band-tag {
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.band-tag.d1 { background: #6366f1; }
+.band-tag.d2 { background: #3b82f6; }
+.band-tag.d3 { background: #0891b2; }
+.band-tag.d4 { background: #059669; }
+.band-tag.d5 { background: #d97706; }
+.band-tag.d6 { background: #e11d48; }
+.band-count {
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.flags-inspector {
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.flag-chip {
+  border-radius: 999px;
+}
+
+/* --------------------------------------------------------------------------
+   7. VISOR CENTRAL
+   -------------------------------------------------------------------------- */
+.panel-center {
+  padding: 14px;
+}
+/* Fila 1: modos a todo lo ancho · Fila 2: herramientas + estado */
+.viewer-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+}
+.viewer-toolbar .mode-tabs {
+  display: flex;
+  width: 100%;
+}
+.viewer-toolbar .mode-tab {
+  flex: 1 0 auto;
+  justify-content: center;
+}
+/* Modos en una sola fila tipo "control segmentado" (se desplaza si no cabe) */
+.mode-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 4px;
+  gap: 2px;
+  border-radius: 12px;
+  background: rgba(4, 7, 15, 0.7);
+  scrollbar-width: none;
+}
+.mode-tabs::-webkit-scrollbar {
+  display: none;
+}
+.mode-tab {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.mode-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.mode-tab.active {
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.28), rgba(56, 189, 248, 0.16));
+  color: #e0f2fe;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.55), 0 6px 16px -10px rgba(56, 189, 248, 0.9);
+}
+
+/* Herramientas: misma altura y forma; el color indica la familia */
+.viewer-right-controls {
+  gap: 6px;
+}
+.btn-ai-detector,
+.btn-star-recognizer,
+.btn-distance-ruler,
+.btn-ai-gemini-scan,
+.viewer-status {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+.btn-ai-detector,
+.btn-star-recognizer,
+.btn-distance-ruler {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+}
+.btn-ai-detector.active,
+.btn-star-recognizer.active {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.45);
+  color: #6ee7b7;
+  box-shadow: none;
+}
+.btn-distance-ruler.active {
+  background: rgba(244, 114, 182, 0.12);
+  border-color: rgba(244, 114, 182, 0.5);
+  color: #f9a8d4;
+  box-shadow: none;
+}
+.btn-ai-gemini-scan {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.22), rgba(56, 189, 248, 0.16));
+  border-color: rgba(167, 139, 250, 0.45);
+  color: #ede9fe;
+}
+.btn-ai-gemini-scan:hover {
+  background: linear-gradient(135deg, #8b5cf6, #0ea5e9);
+}
+.viewer-status {
+  background: rgba(4, 7, 15, 0.7);
+  border-color: var(--border-hairline);
+  margin-left: auto;
+}
+.status-dot {
+  box-shadow: 0 0 8px currentColor;
+  color: var(--accent-emerald);
+}
+.status-dot.busy {
+  color: var(--accent-amber);
+}
+
+/* Lienzo CUADRADO: el original estiraba la imagen 760×760 a 100% × 556 px
+   y deformaba el cielo. Aquí se mantiene la proporción 1:1 y se ajusta
+   a la altura de la pantalla. */
+.canvas-stage {
+  height: auto;
+  aspect-ratio: 1 / 1;
+  width: min(100%, calc(100vh - 210px));
+  min-width: 360px;
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: 12px;
+  border-color: rgba(148, 170, 210, 0.18);
+  background: #02040a;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 30px 60px -30px rgba(0, 0, 0, 0.9);
+}
+
+.hud-chip {
+  border-radius: 8px;
+  background: rgba(5, 8, 18, 0.72);
+  border-color: rgba(148, 170, 210, 0.2);
+  backdrop-filter: blur(10px);
+}
+.ai-detector-hud,
+.distance-ruler-hud {
+  border-radius: 12px;
+  background: rgba(6, 10, 20, 0.82);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 16px 36px -18px rgba(0, 0, 0, 0.9);
+}
+.ai-detector-hud {
+  border-color: rgba(52, 211, 153, 0.32);
+  max-width: min(350px, calc(100% - 20px));
+}
+.ai-hud-item {
+  border-radius: 8px;
+  padding: 4px 6px 4px 8px;
+}
+.ai-hud-ask-btn {
+  border-radius: 999px;
+}
+.zoom-btn {
+  height: 30px;
+  min-width: 32px;
+  border-radius: 9px;
+  background: rgba(5, 8, 18, 0.78);
+  backdrop-filter: blur(10px);
+}
+.zoom-btn:hover {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #04131f;
+}
+.canvas-nav-hint {
+  border-radius: 8px;
+  background: rgba(5, 8, 18, 0.72);
+}
+.hud-bottom-bar {
+  height: 36px;
+  background: linear-gradient(180deg, rgba(4, 6, 14, 0.72), rgba(4, 6, 14, 0.95));
+  backdrop-filter: blur(8px);
+}
+.colorbar-gradient {
+  width: 96px;
+  height: 8px;
+  border-radius: 999px;
+}
+.loading-overlay {
+  background: rgba(3, 5, 12, 0.78);
+  backdrop-filter: blur(6px);
+}
+.spinner-ring {
+  border-top-color: var(--accent-primary) !important;
+}
+.split-slider-wrap {
+  border-radius: 10px;
+}
+
+/* Visor 360°: barra de controles más limpia */
+.allsky-hud-bar {
+  background: rgba(5, 8, 18, 0.8);
+  backdrop-filter: blur(12px);
+  border-radius: 0 0 12px 12px;
+}
+/* En el original estas filas se desplazaban en horizontal y escondían
+   controles (p. ej. "Extraer Cubo FITS DR1 Aquí"); aquí se reparten en líneas */
+.allsky-hud-left,
+.allsky-hud-right {
+  flex-wrap: wrap;
+  overflow: visible;
+  row-gap: 6px;
+}
+.allsky-badge {
+  border-radius: 999px;
+  flex-basis: 100%;
+  width: max-content;
+  max-width: 100%;
+  flex-grow: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.allsky-hud-left .select-sm {
+  max-width: 170px;
+  border-radius: 7px;
+}
+#btnAllskyExtract {
+  margin-left: auto;
+}
+
+/* Reproductor de épocas */
+.blink-player {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.btn-icon {
+  height: 32px;
+  width: 34px;
+  border-radius: 9px;
+}
+.btn-play {
+  height: 32px;
+  min-width: 100px;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+  border-color: transparent;
+  color: #04131f;
+  font-weight: 700;
+}
+.btn-play:hover {
+  background: linear-gradient(180deg, #7dd3fc, #38bdf8);
+  color: #04131f;
+}
+.epoch-pill {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+}
+.epoch-pill.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.7);
+  color: #e0f2fe;
+}
+
+.science-banner {
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(167, 139, 250, 0.06));
+  border-color: rgba(56, 189, 248, 0.2);
+}
+.math-shield-details,
+.exposure-log-details {
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.math-shield-details summary,
+.exposure-log-details summary {
+  padding: 11px 14px;
+  font-size: 12px;
+}
+.shield-card,
+.math-eq-card {
+  border-radius: 10px;
+}
+.doi-pill {
+  border-radius: 999px;
+}
+.exp-table th {
+  position: sticky;
+  top: 0;
+  background: #0e1422;
+}
+.exp-table tbody tr:hover td {
+  background: rgba(56, 189, 248, 0.05);
+}
+
+/* --------------------------------------------------------------------------
+   8. PANEL DERECHO: gráficas y copiloto
+   -------------------------------------------------------------------------- */
+.chart-box {
+  border-radius: 10px;
+  background: rgba(2, 4, 10, 0.6);
+  border-color: var(--border-hairline);
+}
+.spec-teff-badge,
+.aperture-badge,
+.ai-engine-tag,
+.mol-item,
+.mol-pill {
+  border-radius: 999px;
+}
+.cand-pill {
+  border-radius: 999px;
+  min-height: 26px;
+  padding: 3px 10px;
+}
+/* Astros reconocidos: una línea por píldora (texto largo se recorta con …, el tooltip lo muestra completo) */
+.recognized-objects-bar {
+  gap: 5px;
+  max-height: 96px;
+}
+.rec-obj-pill {
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 10px;
+  text-align: left;
+}
+.cand-pill.active,
+.rec-obj-pill.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #e0f2fe;
+}
+
+/* AstroAI: identidad violeta coherente con los botones de IA */
+.ai-section .section-header-compact h2 {
+  background: linear-gradient(90deg, #ddd6fe, #7dd3fc);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.ai-pulse {
+  background: var(--accent-purple) !important;
+  box-shadow: 0 0 10px var(--accent-purple) !important;
+}
+.ai-auto-card {
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.08), rgba(167, 139, 250, 0.02));
+  border-color: rgba(167, 139, 250, 0.22);
+}
+.ai-tip-box {
+  border-radius: 9px;
+}
+.prompt-chip {
+  border-radius: 999px;
+  height: auto;
+  min-height: 30px;
+  padding: 5px 12px;
+  background: rgba(167, 139, 250, 0.08);
+  border-color: rgba(167, 139, 250, 0.28);
+}
+.prompt-chip:hover {
+  background: rgba(167, 139, 250, 0.18);
+  border-color: rgba(167, 139, 250, 0.55);
+  color: #fff;
+}
+.ai-chat-log {
+  border-radius: 12px;
+  background: rgba(2, 4, 10, 0.5);
+}
+.ai-msg {
+  border-radius: 12px;
+}
+.ai-chat-form .text-input {
+  border-radius: 999px;
+  padding: 0 16px;
+}
+.ai-chat-form .btn {
+  border-radius: 999px;
+}
+.ai-key-details summary {
+  border-radius: 9px;
+}
+
+/* --------------------------------------------------------------------------
+   9. MODALES
+   -------------------------------------------------------------------------- */
+.docs-modal-backdrop {
+  background: rgba(2, 4, 10, 0.72);
+  backdrop-filter: blur(10px) saturate(120%);
+}
+.docs-modal {
+  background: linear-gradient(180deg, rgba(18, 25, 42, 0.98), rgba(10, 15, 27, 0.98));
+  border-color: rgba(148, 170, 210, 0.2);
+  border-radius: 18px;
+  box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.95), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+.docs-modal-header {
+  padding: 16px 20px;
+}
+.doc-tab {
+  border-radius: 999px;
+}
+.manage-preset-item,
+.res-card {
+  border-radius: 12px;
+}
+.manage-preset-item:hover,
+.res-card:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+.mpc-ruler,
+.mpc-textarea {
+  font-family: var(--font-mono) !important;
+}
+
+
+/* --------------------------------------------------------------------------
+   10. IDENTIDAD: logos del equipo Stars Finders y de la NASA en la cabecera
+   -------------------------------------------------------------------------- */
+.team-logo {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  box-shadow: 0 0 22px -6px rgba(251, 191, 36, 0.55);
+}
+.agency-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b3d91;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 6px 16px -8px rgba(0, 0, 0, 0.9);
+}
+.agency-logo img {
+  width: 128%;
+  height: 128%;
+  object-fit: cover;
+}
+.topbar-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-hairline);
+}
+.topbar-identity small {
+  font: 600 9.5px/1.25 var(--font-mono);
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  max-width: 110px;
+}
+.accent-gold { color: #fbbf24; }
+@media (max-width: 1240px) {
+  .topbar-identity small { display: none; }
+}

@@ -54,6 +54,14 @@ El universo no tiene un "arriba" absoluto. El visor ofrece tres planos estándar
 
 ## Capítulo 2 · Manual de Usuario
 
+### 2.0 Interfaz (v5 · rediseño Stars Finders)
+- **Cabecera:** logo del equipo **Stars Finders (Delegación Zuliana)** a la izquierda y logo de la **NASA** (NASA Space Apps Challenge 2026) a la derecha; las acciones se agrupan en una sola cápsula.
+- **Visor protagonista:** el lienzo es siempre cuadrado (1:1), sin deformar el cielo, y se ajusta a la altura de la pantalla. Los paneles laterales quedan fijos y se desplazan por dentro.
+- **Simplificación:** se retiraron el botón «Consultar al copiloto» de la barra del visor (las preguntas rápidas lo cubren), el selector «Lanzamiento IRSA» (siempre DR1 + QR3, priorizando DR1), la regla A↔B, la curva de luz y las capas AllWISE/apertura. Quedan las capas **Candidatos, Fuentes Gaia, Máscara FLAGS y Grilla WCS**.
+- **Etiquetas:** las fuentes del campo se muestran como anillos; su nombre, tipo y distancia aparecen solo al pasar el ratón (el objetivo de referencia conserva su etiqueta).
+- **Reporte MPC:** el botón solo aparece si hay un candidato con movimiento confirmado y sin contrapartida estelar. Las fórmulas se muestran dentro de «Calidad de datos» con su valor medido.
+- **Navegación:** al arrastrar o hacer zoom se piden 3 exposiciones por época para que el campo vecino llegue antes; el selector (5–20) sigue mandando en las cargas manuales.
+
 ### 2.1 Cabecera y objetivos de referencia
 - **🏛️ Recursos NASA / IRSA:** enlaces oficiales del reto (IRSA, notebooks de tutoriales, herramientas oficiales de IRSA como el Data Explorer y MOST, WiseView, Gaia DR3 en MAST, recursos de la Agencia Espacial Canadiense) y enlaces en vivo a la coordenada actual.
 - **📐 Reporte MPC:** borrador en el formato oficial de dos líneas para satélites (código de SPHEREx **288**). Solo se genera para candidatos con movimiento confirmado y sin contrapartida estelar; en otro caso la ventana explica por qué está vacío.
