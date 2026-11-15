@@ -61,6 +61,7 @@ The universe has no absolute "up". The viewer offers three standard planes: **Ga
 - **Labels:** field sources are drawn as rings; their name, type and distance appear only on hover (the reference target keeps its label).
 - **MPC report:** the button only appears when a candidate has confirmed motion and no stellar counterpart. Formulas are shown inside "Data quality" with their measured value.
 - **Navigation:** dragging or zooming requests 3 exposures per epoch so the neighbouring field arrives sooner; the selector (5–20) still applies to manual loads.
+- **No-wait navigation:** when a drag ends, the centre snaps to a half-field grid and, after every load, the app prefetches the 4 neighbouring grid fields in the background (cancelled if the user loads another field). Measured on WISE 0855: the neighbouring field appears in ~0.9 s with its 3 epochs.
 
 ### 2.1 Header and reference targets
 - **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, official IRSA tools such as the Data Explorer and MOST, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.

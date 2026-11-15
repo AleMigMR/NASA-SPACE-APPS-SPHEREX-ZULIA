@@ -61,6 +61,7 @@ El universo no tiene un "arriba" absoluto. El visor ofrece tres planos estándar
 - **Etiquetas:** las fuentes del campo se muestran como anillos; su nombre, tipo y distancia aparecen solo al pasar el ratón (el objetivo de referencia conserva su etiqueta).
 - **Reporte MPC:** el botón solo aparece si hay un candidato con movimiento confirmado y sin contrapartida estelar. Las fórmulas se muestran dentro de «Calidad de datos» con su valor medido.
 - **Navegación:** al arrastrar o hacer zoom se piden 3 exposiciones por época para que el campo vecino llegue antes; el selector (5–20) sigue mandando en las cargas manuales.
+- **Navegación sin esperas:** al soltar un arrastre, el centro se alinea a una rejilla de medio campo y, tras cada carga, la app precarga en segundo plano los 4 campos vecinos de esa rejilla (se cancela si el usuario carga otro campo). Medido en WISE 0855: el campo vecino aparece en ~0.9 s con sus 3 épocas.
 
 ### 2.1 Cabecera y objetivos de referencia
 - **🏛️ Recursos NASA / IRSA:** enlaces oficiales del reto (IRSA, notebooks de tutoriales, herramientas oficiales de IRSA como el Data Explorer y MOST, WiseView, Gaia DR3 en MAST, recursos de la Agencia Espacial Canadiense) y enlaces en vivo a la coordenada actual.

@@ -2078,7 +2078,8 @@ function bindEvents() {
       if (panDist > 18) {
         const c = document.getElementById("skyCanvas");
         const { gx, gy } = canvasToGrid(c.width * 0.5, c.height * 0.5);
-        const { ra, dec } = pixelToWorld(gx, gy);
+        // Centro alineado a una rejilla de medio campo: coincide con los vecinos precargados (caché instantánea)
+        const { ra, dec } = snapToFieldGrid(pixelToWorld(gx, gy));
         if (STATE.panFetchInProgress) {
           // Arrastre durante una carga: se guarda el último destino y se carga al terminar (no se pierde)
           STATE.pendingPan = { ra, dec };
@@ -2415,6 +2416,60 @@ function runPendingPan() {
   loadSkyPatch({ silent: true });
 }
 
+// ============================================================================
+// NAVEGACIÓN RÁPIDA: rejilla de campos + precarga en segundo plano de los 4 vecinos
+// ============================================================================
+function fieldGridStep() {
+  return Math.max(0.02, STATE.fov * 0.5);
+}
+
+function snapToFieldGrid({ ra, dec }) {
+  const step = fieldGridStep();
+  const decS = Math.max(-89.9, Math.min(89.9, Math.round(dec / step) * step));
+  const raStep = step / Math.max(Math.cos((decS * Math.PI) / 180), 0.05);
+  const raS = (((Math.round(ra / raStep) * raStep) % 360) + 360) % 360;
+  return { ra: raS, dec: decS };
+}
+
+function neighborCubeParams(ra, dec) {
+  const params = new URLSearchParams({
+    ra: ra.toFixed(6),
+    dec: dec.toFixed(6),
+    fov: STATE.fov.toFixed(3),
+    bands: STATE.bands.join(","),
+    max_per_epoch: String(Math.min(3, STATE.maxPerEpoch)),
+    gap_days: String(STATE.gapDays),
+    release: STATE.release,
+  });
+  appendAstrometryParams(params);
+  return params;
+}
+
+async function prefetchNeighborFields() {
+  if (STATE.mode === "allsky") return;
+  const stamp = STATE.cubeStamp;
+  const step = fieldGridStep();
+  const c = snapToFieldGrid({ ra: STATE.ra, dec: STATE.dec });
+  const cosd = Math.max(Math.cos((c.dec * Math.PI) / 180), 0.05);
+  const targets = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) =>
+    snapToFieldGrid({ ra: c.ra + (dx * step) / cosd, dec: c.dec + dy * step })
+  );
+  STATE.prefetchedFields = STATE.prefetchedFields || new Set();
+  for (const t of targets) {
+    // Se cancela si el usuario cargó otro campo o hay una carga en curso (no compite con ella)
+    if (stamp !== STATE.cubeStamp || STATE.panFetchInProgress) return;
+    const params = neighborCubeParams(t.ra, t.dec);
+    const key = params.toString();
+    if (STATE.prefetchedFields.has(key)) continue;
+    STATE.prefetchedFields.add(key);
+    try {
+      await fetch(`/api/cube?${key}`);
+    } catch (e) {
+      STATE.prefetchedFields.delete(key);
+    }
+  }
+}
+
 async function loadSkyPatch(opts = {}) {
   const silent = Boolean(opts && opts.silent);
   if (STATE.irsaRetryTimer) {
@@ -2473,6 +2528,8 @@ async function loadSkyPatch(opts = {}) {
     STATE.viewPanY = 0.0;
     decodeEpochArrays(cube);
     invalidateFrameCache();
+    // Tras pintar el campo (y liberar panFetchInProgress) se precargan los vecinos en segundo plano
+    setTimeout(prefetchNeighborFields, 1200);
 
     // Actualizar contadores de exposiciones por banda D1-D6
     if (cube.band_summary) {
