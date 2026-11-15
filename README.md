@@ -33,8 +33,8 @@
 | **Objetivo con movimiento propio** | ✚ posición predicha del objetivo en cada exposición | `SkyCoord.apply_space_motion` con astrometría Gaia DR3 o de la literatura |
 | **Fotometría** | Flujo en µJy con error 1σ, S/N, magnitud AB o límite superior a 3σ | ePSF oficial, mínimos cuadrados con pesos 1/VARIANCE, *deblending* con Gaia, 3 % sistemático, máscara oficial |
 | **Estrellas saturadas** | Posición medida aunque el flujo no sea medible | Centroide de los píxeles `OVERFLOW` del núcleo |
-| **Movimiento medido** | Desplazamiento del objetivo entre la primera y la última visita, frente al predicho | Media por visita con error estándar |
-| **Candidatos** | Dipolos y residuos de la imagen de diferencia, cada uno verificado | Umbral 5σ con σ_MAD y verificación ePSF: movimiento ≥ 3σ y ≥ 0.3 px; variabilidad ≥ 5σ en el mismo canal |
+| **Movimiento medido** | Desplazamiento del objetivo entre la primera y la última visita, frente al predicho, con su diferencia en σ | Ajuste lineal ponderado a las medias de cada visita (error estándar más 0.7″ de sistemático para núcleos saturados) |
+| **Candidatos** | Dipolos y residuos de la imagen de diferencia, cada uno verificado | Umbral 5σ con σ_MAD y verificación ePSF: movimiento ≥ 3σ y ≥ 0.3 px; variabilidad ≥ 5σ en el mismo canal en ≥ 2 pares independientes. No cuentan las mediciones saturadas, las del borde del detector ni las que quedan fuera del rango del filtro |
 | **Curva de luz** | Flujo / mediana por canal (misma λ) | χ²ν frente a flujo constante y mayor cambio en σ |
 | **Espectro DR1** | 102 canales en la posición del objetivo, con avisos de saturación y de fuentes vecinas | Fotometría de apertura en el cubo All-Sky DR1 (teselas HEALPix de orden 5) |
 | **Profundidad de bandas** | τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm, con su error e interpretación (gas o hielo) | Continuo de ley de potencias y piso sistemático de 0.04 |
@@ -59,7 +59,7 @@
 | Teff por ley de Wien e "índice de hielos biogénicos" | Una enana marrón no es un cuerpo negro y sus bandas son de gas, no de hielo | Profundidad aparente con error y significancia, más una interpretación gas/hielo según el tipo de objeto |
 | "% de confianza IA" y escudos "CLEAN" fijos | No se calculaban con los datos | Panel de calidad con conteos reales de bits y de saturación |
 | "Fotometría Tractor exacta" con una gaussiana 15×15 | No era Tractor ni usaba la PSF real | ePSF oficial con ajuste forzado (método del pipeline, Suplemento sec. 3.3) |
-| Candidatos de la diferencia presentados como detecciones | Falsos positivos por la fase subpíxel y por la λ distinta de cada exposición | Verificación ePSF obligatoria: confirmado, no confirmado o no verificable |
+| Candidatos de la diferencia presentados como detecciones | Falsos positivos por la fase subpíxel, la λ distinta de cada exposición, el borde del filtro y el *blooming* de estrellas saturadas | Verificación ePSF obligatoria: confirmado, no confirmado (o artefacto de estrella saturada) o no verificable |
 | Elias 16 y 3I/ATLAS mal ubicados; "candidato a Planeta X" | Coordenadas erróneas o inventadas | Coordenadas de SIMBAD y JPL Horizons; el candidato ficticio se eliminó |
 | Imagen estirada por CSS | Deformaba ángulos y distancias | Píxeles cuadrados y Aitoff con proporción 2:1 |
 
@@ -71,11 +71,11 @@ Al elegir un objetivo, la app centra el campo en su posición de **2026.0** y pr
 
 | Objetivo | Astrometría (fuente) | Qué mide SPHEREx (datos reales) |
 | :--- | :--- | :--- |
-| **WISE 0855−0714** (enana Y, 2.28 pc) | Kirkpatrick et al. 2021: μ = (−8123.7, +673.2) mas/año, ϖ = 439.0 mas | Las coordenadas del enunciado (`08h55m10.831s −7d14m42.53s`) son de la época AllWISE (2010.6); en 2026 el objeto está a **~2.1′** de ellas. Es débil (≈0.5 mJy a 4.6 µm). En 2025–2026 pasa a 8″ de la estrella Gaia DR3 5756956644387831296 (G = 16.3), que domina la apertura DR1 por debajo de 3.5 µm; a 4.6 µm el DR1 da 0.58 ± 0.32 mJy (sin detección significativa). |
-| **Barnard's Star** (M4V, 1.83 pc) | Gaia DR3: μ = (−801.6, +10362.4) mas/año | **Saturada** en 28 de 28 exposiciones L2b y en 99 de 100 canales DR1: el flujo no es medible. La posición sí: el centroide del núcleo saturado cae a 1.2″ (0.19 px) de la posición predicha, y SPHEREx **mide un desplazamiento de 6.42 ± 0.33″ (AP 349°)** entre 2025-08-25 y 2026-03-30, frente a 6.19″ (AP 356°) predichos por Gaia DR3. |
-| **Epsilon Indi Ba/Bb** (T1 + T6, 3.64 pc) | Gaia DR3: μ = (+3982.0, −2466.8) mas/año | Sin saturación. SED de enana T en DR1: 31 mJy (1.25 µm), 36 mJy (1.66 µm), 25 mJy (2.19 µm), 8 mJy (3.29 µm), 63 mJy (4.0 µm) y 18 mJy (4.6 µm). **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** y τ(H₂O 3.0 µm) = 0.52 ± 0.05: absorción de gas en la atmósfera. |
-| **RW Aurigae A** (T Tauri, 156 pc) | Gaia DR3 (2016.0) | **Saturada** en 48 canales DR1. |
-| **R Draconis** (Mira, P ≈ 245.6 d, ~800 pc) | Gaia DR3 (2016.0) | **Saturada** en los 100 canales DR1. |
+| **WISE 0855−0714** (enana Y, 2.28 pc) | Kirkpatrick et al. 2021: μ = (−8123.7, +673.2) mas/año, ϖ = 439.0 mas | Las coordenadas del enunciado (`08h55m10.831s −7d14m42.53s`) son de la época AllWISE (2010.6); en 2026 el objeto está a **~2.1′** de ellas. En 19 exposiciones L2b de 4.4–5.0 µm (3 visitas) se detecta en 9 (S/N ≈ 4; la mejor, 1.0 ± 0.2 mJy a 4.74 µm) a una mediana de 1.1″ de la posición predicha. Pasa a 8″ de la estrella Gaia DR3 5756956644387831296 (G = 16.3), que la ePSF separa en L2b pero que domina la apertura DR1 por debajo de 3.5 µm. |
+| **Barnard's Star** (M4V, 1.83 pc) | Gaia DR3: μ = (−801.6, +10362.4) mas/año | **Saturada** en 28 de 28 exposiciones L2b y en 99 de 100 canales DR1: el flujo no es medible. La posición sí: el centroide del núcleo saturado cae a 1.2″ (0.19 px) de la posición predicha, y SPHEREx **mide un desplazamiento de 6.59 ± 1.00″ (AP 355°)** entre 2025-08-25 y 2026-03-30, frente a 6.19″ (AP 356°) predichos por Gaia DR3 (diferencia 0.4σ). |
+| **Epsilon Indi Ba/Bb** (T1 + T6, 3.64 pc) | Gaia DR3: μ = (+3982.0, −2466.8) mas/año | Detectada en 32 de 32 exposiciones L2b (S/N ≈ 32) a una mediana de 0.0″ de la posición predicha. SPHEREx **mide 6.88 ± 0.25″ (AP 122°)** en 519 días frente a 6.65″ (AP 122°) predichos (1.0σ), y la imagen de diferencia la marca como *movimiento confirmado*. SED de enana T en DR1: 31 mJy (1.25 µm), 36 (1.66), 25 (2.19), 8 (3.29), 63 (4.0) y 18 mJy (4.6 µm); **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** y τ(H₂O 3.0 µm) = 0.52 ± 0.05: absorción de gas. |
+| **RW Aurigae A** (T Tauri, 156 pc) | Gaia DR3 (2016.0) | **Saturada** en 24 de 24 exposiciones L2b y en 48 canales DR1. Movimiento medido 0.56 ± 1.23″ en un año (compatible con cero, como se espera). Un falso "movimiento" de 9.5″ sobre su *blooming* queda marcado como artefacto de estrella saturada. |
+| **R Draconis** (Mira, P ≈ 245.6 d, ~800 pc) | Gaia DR3 (2016.0) | **Saturada** en 64 de 64 exposiciones L2b (8 visitas, cerca del polo eclíptico norte) y en los 100 canales DR1. Movimiento medido 1.82 ± 0.83″ en 503 días (2.2σ, no significativo). Sus artefactos de *blooming* se marcan como tales. |
 
 Para repetir esta validación (necesita acceso a IRSA):
 

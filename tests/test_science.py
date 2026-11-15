@@ -154,6 +154,54 @@ def test_forced_photometry_reports_upper_limit_for_blank_sky():
     assert p["quality"] == "non_detection"
 
 
+def test_band_depth_flags_band_above_continuum():
+    """Una banda por encima del continuo (τ < 0 a ≥3σ) no se interpreta como absorción."""
+    tbl = [{"wavelength_um": float(w)} for w in se.SPHEREX_DR1_WAVELENGTHS_UM]
+    pts = []
+    for p in tbl:
+        lam = p["wavelength_um"]
+        f = 1e4 * lam ** -2 * (1.3 if 4.64 <= lam <= 4.70 else 1.0)
+        pts.append({"wavelength_um": lam, "flux_ujy": f, "err_ujy": 0.01 * f, "snr": 100.0, "quality": "good"})
+    co = [b for b in se.compute_band_depths(pts) if b["id"] == "CO_4.67"][0]
+    assert co["tau"] is not None and co["tau"] < 0
+    assert co["above_continuum"] and not co["significant"]
+
+
+def test_saturated_core_centroid():
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = [269.45, 4.75]
+    w.wcs.crpix = [20.0, 20.0]
+    w.wcs.cdelt = [-6.15 / 3600.0, 6.15 / 3600.0]
+    ys, xs = np.mgrid[13:26, 14:27]
+    flg = np.zeros(xs.shape, dtype=np.int64)
+    flg[(np.abs(xs - 21) <= 1) & (np.abs(ys - 19) <= 1)] = 1 << 1  # OVERFLOW centrado en (21, 19)
+    out = {}
+    se._saturated_core_astrometry(out, flg, xs, ys, 20.3, 19.2, w)
+    assert out["astrometry_method"] == "saturated_core" and out["n_saturated_px"] == 9
+    assert abs(out["offset_arcsec"] - np.hypot(0.7, 0.2) * 6.15) < 0.02
+    ra, dec = [float(v) for v in w.pixel_to_world_values(21, 19)]
+    assert abs(out["ra_meas"] - ra) < 1e-5 and abs(out["dec_meas"] - dec) < 1e-5
+
+
+def test_measured_motion_recovers_catalogue_motion():
+    """Posiciones simuladas de Barnard en dos visitas (ruido 0.5″) → desplazamiento medido ≈ predicho."""
+    astrom = se._TARGETS_BY_ID["Barnard"]["astrometry"]
+    rng = np.random.default_rng(7)
+    phot = []
+    for mjd0 in (60905.0, 61115.0):
+        for k in range(8):
+            mjd = mjd0 + 1.5 * k
+            ra, dec = se.propagate_astrometry(astrom, mjd)
+            ra += rng.normal(0, 0.5) / 3600.0 / np.cos(np.deg2rad(dec))
+            dec += rng.normal(0, 0.5) / 3600.0
+            phot.append({"mjd": mjd, "ra_meas": ra, "dec_meas": dec, "astrometry_method": "saturated_core"})
+    m = se._measured_target_motion(phot, astrom)
+    assert m is not None and m["n_first"] == 8 and m["n_last"] == 8
+    assert abs(m["arcsec"] - m["predicted_arcsec"]) < 3 * m["err_arcsec"] + 0.05
+    assert abs(m["pa_deg"] - m["predicted_pa_deg"]) < 10
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

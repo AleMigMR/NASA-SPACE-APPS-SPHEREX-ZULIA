@@ -490,6 +490,13 @@ CUSTOM_TARGETS_FILE = os.path.join(CACHE_DIR, "custom_targets.json")
 _CUBE_RESP_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
+_PROTECTED_TARGET_KEYS = (
+    "astrometry", "ra", "dec", "pm_ra", "pm_dec", "ra_j2000", "dec_j2000", "ra_prompt", "dec_prompt", "display_epoch",
+    "parallax_mas", "distance_pc", "distance_ref", "sptype", "sptype_ref", "teff_k_lit", "teff_ref", "object_kind",
+    "saturates", "prompt_epoch_note", "prompt_epoch_note_en", "is_allsky", "category",
+)
+
+
 def get_all_targets() -> List[Dict[str, Any]]:
     """Objetivos oficiales (aplicando ediciones o bajas) más los personalizados."""
     custom: List[Dict[str, Any]] = []
@@ -507,8 +514,9 @@ def get_all_targets() -> List[Dict[str, Any]]:
         if override and override.get("_deleted"):
             continue
         if override:
-            # La astrometría oficial nunca se sobrescribe desde la UI
-            protected = {k: t[k] for k in ("astrometry", "ra", "dec", "pm_ra", "pm_dec", "ra_j2000", "dec_j2000") if k in t}
+            # La astrometría y los datos físicos oficiales nunca se sobrescriben desde la UI (ni con ediciones
+            # guardadas por versiones anteriores de la app): solo nombre, textos, bandas y campo de visión.
+            protected = {k: t[k] for k in _PROTECTED_TARGET_KEYS if k in t}
             merged.append({**t, **override, **protected, "custom": False})
         else:
             merged.append(dict(t))
@@ -1139,6 +1147,27 @@ def cut_wavelength_at(cut: Dict[str, Any], ra: float, dec: float) -> Tuple[float
     return lam, bw, x, y
 
 
+DET_NPIX = 2040          # tamaño de la matriz activa de cada detector H2RG en las imágenes L2b
+LVF_EDGE_MARGIN_PX = 32  # margen del borde del detector donde la respuesta del LVF y la calibración no son fiables
+
+
+def lvf_edge_reason(cut: Dict[str, Any], x: float, y: float, lam: float) -> Optional[str]:
+    """
+    'edge' si la fuente cae a < LVF_EDGE_MARGIN_PX del borde del detector; 'lambda' si su λ está fuera del rango
+    nominal del detector (extremos del filtro LVF, p. ej. 5.006 µm en D6). En esos casos el flujo no se usa
+    para afirmar variabilidad (validado: una medición en D6 a 5.006 µm daba ×4.8 el flujo real de una estrella).
+    """
+    x_det = x + float(cut["meta"].get("x0_det", 0))
+    y_det = y + float(cut["meta"].get("y0_det", 0))
+    m = LVF_EDGE_MARGIN_PX
+    if x_det < m or y_det < m or x_det > DET_NPIX - 1 - m or y_det > DET_NPIX - 1 - m:
+        return "edge"
+    info = DETECTOR_INFO.get(str(cut["row"].get("band", "")))
+    if info and np.isfinite(lam) and not (info["lmin"] <= lam <= info["lmax"]):
+        return "lambda"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Fotometría forzada con la ePSF oficial (Suplemento v2.1 sec. 3.3 y 4.2.3)
 # ---------------------------------------------------------------------------
@@ -1338,10 +1367,15 @@ def forced_photometry_cut(cut: Dict[str, Any], ra: float, dec: float, fit_positi
             out["astrometry_method"] = "epsf"
         except Exception:
             pass
+    edge = lvf_edge_reason(cut, x, y, lam)
+    out["lvf_edge"] = edge
     if saturated:
         out["quality"] = "saturated"
     elif snr < 3.0:
         out["quality"] = "non_detection"
+    elif edge:
+        # Borde del detector o λ fuera del rango nominal: flujo poco fiable (se muestra, pero no cuenta para variabilidad)
+        out["quality"] = "warning"
     elif (np.isfinite(fit_quality) and fit_quality > 3.0 * max(1.0, abs(snr) / 30.0)) or out["flags"]:
         # Para fuentes muy brillantes el residuo está dominado por el error sistemático de la PSF (~3 %)
         out["quality"] = "warning"
@@ -1399,10 +1433,11 @@ def fit_source_position(cut: Dict[str, Any], ra_guess: float, dec_guess: float, 
     snr = f_ujy / err if err > 0 else 0.0
     rr, dd = [float(v) for v in w.pixel_to_world_values(xb, yb)]
     lam, bw, _, _ = cut_wavelength_at(cut, rr, dd)
-    sat_bits = int(np.bitwise_or.reduce(st_flg[np.hypot(xs - xb, ys - yb) <= 1.5].ravel())) & SATURATION_MASK
+    sat_bits = int(np.bitwise_or.reduce(st_flg[np.hypot(xs - xb, ys - yb) <= 2.5].ravel())) & SATURATION_MASK
     return {"ra": rr, "dec": dd, "flux_ujy": f_ujy, "err_ujy": err, "snr": snr, "wavelength_um": lam,
             "pos_err_arcsec": float(max(fwhm_px * PIX_SCALE_NATIVE / (2.35 * max(snr, 1.0)), 0.05 * PIX_SCALE_NATIVE)),
-            "saturated": bool(sat_bits), "mjd": float(cut["meta"].get("mjd_avg") or cut["row"]["t_min"])}
+            "saturated": bool(sat_bits), "mjd": float(cut["meta"].get("mjd_avg") or cut["row"]["t_min"]),
+            "lvf_edge": lvf_edge_reason(cut, xb, yb, lam), "obs_id": cut["row"].get("obs_id")}
 
 
 # ---------------------------------------------------------------------------
@@ -2677,7 +2712,7 @@ def build_sky_cube_and_spectrum(
             astrom, tgt_obj, target_id, user_astrometry = None, None, None, None
     astrom_key = json.dumps(astrom, sort_keys=True) if astrom else ""
     cube_hash = hashlib.md5(
-        f"cube_v5_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}_{target_id}_{astrom_key}".encode()
+        f"cube_v6_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}_{target_id}_{astrom_key}".encode()
     ).hexdigest()[:16]
     cube_cache_path = os.path.join(CACHE_DIR, "cubes", f"cube_{cube_hash}.json")
     if not force_reproject:
@@ -2853,7 +2888,7 @@ def build_sky_cube_and_spectrum(
                         "psf_fwhm_arcsec": g["phot"].get("psf_fwhm_arcsec"), "zodi": round(g["zodi"], 4),
                         "bad_pct": round(g["bad_frac"], 2), "source": g["cut"]["source"],
                         "flux_ujy": g["phot"].get("flux_ujy"), "err_ujy": g["phot"].get("err_ujy"), "snr": g["phot"].get("snr"),
-                        "quality": g["phot"].get("quality"),
+                        "quality": g["phot"].get("quality"), "lvf_edge": g["phot"].get("lvf_edge"),
                     }
                     for g in grp
                 ],
@@ -3015,53 +3050,99 @@ def build_sky_cube_and_spectrum(
     return result_payload
 
 
+SATCORE_SYS_ARCSEC = 0.7  # sistemático por eje y por visita del centroide del núcleo saturado (dispersión entre 8 visitas de R Dra)
+
+
 def _measured_target_motion(photometry: List[Dict[str, Any]], astrom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Desplazamiento MEDIDO del objetivo entre la primera y la última visita (separadas > 30 d) con posiciones
-    medidas (ePSF o núcleo saturado), comparado con el predicho por la astrometría de catálogo entre las
-    mismas fechas medias. Error = error estándar de la media de cada visita (dispersión entre exposiciones).
+    Desplazamiento MEDIDO del objetivo entre la primera y la última visita (grupos separados > 30 d) a partir de las
+    posiciones medidas (ePSF o núcleo saturado), comparado con el predicho por la astrometría de catálogo entre las
+    mismas fechas. Error de cada visita = error estándar de sus exposiciones y, para el núcleo saturado, un sistemático
+    de SATCORE_SYS_ARCSEC por eje (la forma de la mancha saturada cambia con la orientación de la nave). Con ≥3 visitas
+    se ajusta un movimiento lineal ponderado a todas ellas; con 2, se restan sus medias.
     """
     pts = sorted([p for p in photometry if p.get("ra_meas") is not None and p.get("mjd")], key=lambda p: p["mjd"])
     if len(pts) < 4:
         return None
-    groups: List[List[Dict[str, Any]]] = [[pts[0]]]
+    visits: List[List[Dict[str, Any]]] = [[pts[0]]]
     for p in pts[1:]:
-        if p["mjd"] - groups[-1][-1]["mjd"] > 30.0:
-            groups.append([p])
+        if p["mjd"] - visits[-1][-1]["mjd"] > 30.0:
+            visits.append([p])
         else:
-            groups[-1].append(p)
-    g0, g1 = groups[0], groups[-1]
-    if len(groups) < 2 or len(g0) < 2 or len(g1) < 2:
+            visits[-1].append(p)
+    ra_ref, dec_ref = pts[0]["ra_meas"], pts[0]["dec_meas"]
+    cosd = float(np.cos(np.deg2rad(dec_ref)))
+
+    def _off(p: Dict[str, Any]) -> Tuple[float, float]:
+        return (((p["ra_meas"] - ra_ref + 180.0) % 360.0 - 180.0) * cosd * 3600.0, (p["dec_meas"] - dec_ref) * 3600.0)
+
+    # Dispersión por exposición combinada (para visitas con una sola exposición)
+    res_x: List[float] = []
+    res_y: List[float] = []
+    for v in visits:
+        if len(v) >= 2:
+            o = np.array([_off(p) for p in v])
+            res_x += list(o[:, 0] - o[:, 0].mean())
+            res_y += list(o[:, 1] - o[:, 1].mean())
+    n_multi = sum(1 for v in visits if len(v) >= 2)
+    dof = len(res_x) - n_multi
+    pooled = (float(np.sqrt(np.sum(np.square(res_x)) / dof)), float(np.sqrt(np.sum(np.square(res_y)) / dof))) if dof > 0 else None
+
+    vstats = []
+    for v in visits:
+        o = np.array([_off(p) for p in v])
+        n = len(v)
+        if n >= 2:
+            ex, ey = float(np.std(o[:, 0], ddof=1) / np.sqrt(n)), float(np.std(o[:, 1], ddof=1) / np.sqrt(n))
+        elif pooled:
+            ex, ey = pooled
+        else:
+            continue
+        sysf = SATCORE_SYS_ARCSEC if any(p.get("astrometry_method") == "saturated_core" for p in v) else 0.0
+        vstats.append({"t": float(np.mean([p["mjd"] for p in v])), "x": float(o[:, 0].mean()), "y": float(o[:, 1].mean()),
+                       "ex": float(np.hypot(ex, sysf)), "ey": float(np.hypot(ey, sysf)), "n": n})
+    if len(vstats) < 2 or vstats[-1]["t"] - vstats[0]["t"] < 30.0:
         return None
-
-    def _mean_pos(g: List[Dict[str, Any]]) -> Tuple[float, float, float, float, float]:
-        ra_ref, dec_ref = g[0]["ra_meas"], g[0]["dec_meas"]
-        dx = np.array([((p["ra_meas"] - ra_ref + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(dec_ref)) * 3600.0 for p in g])
-        dy = np.array([(p["dec_meas"] - dec_ref) * 3600.0 for p in g])
-        n = len(g)
-        ex = float(np.std(dx, ddof=1) / np.sqrt(n))
-        ey = float(np.std(dy, ddof=1) / np.sqrt(n))
-        ra_m = ra_ref + float(np.mean(dx)) / 3600.0 / np.cos(np.deg2rad(dec_ref))
-        return ra_m, dec_ref + float(np.mean(dy)) / 3600.0, ex, ey, float(np.mean([p["mjd"] for p in g]))
-
-    ra0, de0, ex0, ey0, t0 = _mean_pos(g0)
-    ra1, de1, ex1, ey1, t1 = _mean_pos(g1)
-    dra = ((ra1 - ra0 + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(0.5 * (de0 + de1))) * 3600.0
-    dde = (de1 - de0) * 3600.0
+    t0, t1 = vstats[0]["t"], vstats[-1]["t"]
+    chi2_red = None
+    if len(vstats) == 2:
+        a, b = vstats
+        dra, dde = b["x"] - a["x"], b["y"] - a["y"]
+        era, ede = float(np.hypot(a["ex"], b["ex"])), float(np.hypot(a["ey"], b["ey"]))
+    else:
+        tt = np.array([v["t"] for v in vstats]) - t0
+        span = t1 - t0
+        fits = []
+        chi = 0.0
+        for key, ekey in (("x", "ex"), ("y", "ey")):
+            yv = np.array([v[key] for v in vstats])
+            wv = 1.0 / np.array([v[ekey] for v in vstats]) ** 2
+            A = np.stack([np.ones_like(tt), tt], axis=1)
+            cov = np.linalg.inv(A.T @ (A * wv[:, None]))
+            coef = cov @ (A.T @ (yv * wv))
+            chi += float(np.sum((yv - A @ coef) ** 2 * wv))
+            fits.append((coef[1] * span, float(np.sqrt(cov[1, 1])) * span))
+        (dra, era), (dde, ede) = fits
+        chi2_red = round(chi / max(2 * (len(vstats) - 2), 1), 2)
     sep = float(np.hypot(dra, dde))
-    err = float(np.sqrt(((dra / sep) ** 2 * (ex0 ** 2 + ex1 ** 2) + (dde / sep) ** 2 * (ey0 ** 2 + ey1 ** 2)))) if sep > 0 else float(np.hypot(np.hypot(ex0, ex1), np.hypot(ey0, ey1)))
+    err = float(np.sqrt((dra / sep) ** 2 * era ** 2 + (dde / sep) ** 2 * ede ** 2)) if sep > 0 else float(np.hypot(era, ede))
     pr0, pd0 = propagate_astrometry(astrom, t0)
     pr1, pd1 = propagate_astrometry(astrom, t1)
     p_dra = ((pr1 - pr0 + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(0.5 * (pd0 + pd1))) * 3600.0
     p_dde = (pd1 - pd0) * 3600.0
-    methods = sorted({p.get("astrometry_method", "epsf") for p in g0 + g1})
+    # Acuerdo con la predicción: diferencia vectorial en unidades de σ
+    diff_sigma = float(np.hypot((dra - p_dra) / max(era, 1e-3), (dde - p_dde) / max(ede, 1e-3)))
+    methods = sorted({p.get("astrometry_method", "epsf") for p in pts})
     return {
         "arcsec": round(sep, 2), "err_arcsec": round(err, 2),
         "pa_deg": round(float(np.degrees(np.arctan2(dra, dde)) % 360.0), 1),
         "dra_arcsec": round(float(dra), 2), "ddec_arcsec": round(float(dde), 2),
+        "err_dra_arcsec": round(float(era), 2), "err_ddec_arcsec": round(float(ede), 2),
         "predicted_arcsec": round(float(np.hypot(p_dra, p_dde)), 2),
         "predicted_pa_deg": round(float(np.degrees(np.arctan2(p_dra, p_dde)) % 360.0), 1),
-        "days": round(t1 - t0, 1), "n_first": len(g0), "n_last": len(g1), "methods": methods,
+        "diff_sigma": round(diff_sigma, 1), "chi2_red": chi2_red,
+        "days": round(t1 - t0, 1), "n_visits": len(vstats), "n_first": vstats[0]["n"], "n_last": vstats[-1]["n"], "methods": methods,
+        "sys_floor_arcsec": SATCORE_SYS_ARCSEC if "saturated_core" in methods else 0.0,
         "date_first": Time(t0, format="mjd").isot[:10], "date_last": Time(t1, format="mjd").isot[:10],
     }
 
@@ -3071,7 +3152,7 @@ def build_light_curve(photometry: List[Dict[str, Any]]) -> Dict[str, Any]:
     Curva de luz honesta: SPHEREx mide cada exposición a una λ distinta (filtro LVF), así que los puntos
     se agrupan por canal DR1 (misma λ). La variabilidad solo se evalúa dentro de un mismo canal.
     """
-    usable = [p for p in photometry if p.get("wavelength_um") and p.get("flux_ujy") is not None and p["quality"] in ("good", "warning")]
+    usable = [p for p in photometry if p.get("wavelength_um") and p.get("flux_ujy") is not None and p["quality"] in ("good", "warning") and not p.get("lvf_edge")]
     by_ch: Dict[int, List[Dict[str, Any]]] = {}
     for p in usable:
         ch = dr1_channel_for_wavelength(p["wavelength_um"])
@@ -3166,7 +3247,8 @@ def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[st
     cambia mucho con la fase subpíxel y con la λ. Cada candidato se verifica midiendo, exposición por exposición,
     centroide y flujo con la ePSF oficial:
       - movimiento: desplazamiento de centroides entre la primera y la última época ≥ 3σ y ≥ 0.3 píxeles nativos;
-      - variabilidad: cambio de flujo ≥ 5σ entre mediciones a la MISMA λ (mismo canal DR1) en épocas distintas.
+      - variabilidad: cambio de flujo ≥ 5σ entre mediciones a la MISMA λ (mismo canal DR1) en épocas distintas, en
+        al menos 2 pares independientes con el mismo signo, sin mediciones saturadas ni en el borde del detector/LVF.
     """
     if not cands or len(epochs) < 2:
         for c in cands:
@@ -3189,6 +3271,27 @@ def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[st
                 m = fit_source_position(it["cut"], c["ra"], c["dec"])
                 if m and m["snr"] >= 5:
                     meas_last.append(m)
+        # Las mediciones con OVERFLOW/NONLINEAR/BLOOM no sirven para verificar: alrededor de una estrella saturada el
+        # ajuste cae en el núcleo o en el blooming, cuya forma cambia con la orientación de la nave entre visitas y
+        # produce "movimientos" de varios segundos de arco que no son reales (validado con RW Aur y R Dra).
+        n_sat = sum(1 for m in meas_first + meas_last if m["saturated"])
+        meas_first = [m for m in meas_first if not m["saturated"]]
+        meas_last = [m for m in meas_last if not m["saturated"]]
+        c["n_psf_saturated"] = n_sat
+        if n_sat and (not meas_first or not meas_last):
+            is_ref = (c.get("catalog_match") or {}).get("kind") == "reference_target"
+            if is_ref:
+                c["verification"] = "unverified"
+                c["label_es"] = "Estrella saturada: su movimiento se mide con el núcleo saturado"
+                c["label_en"] = "Saturated star: its motion is measured from the saturated core"
+            else:
+                c["verification"] = "not_confirmed"
+                c["likely_artifact"] = True
+                c["label_es"] = "Artefacto de estrella saturada (OVERFLOW/BLOOM)"
+                c["label_en"] = "Saturated-star artifact (OVERFLOW/BLOOM)"
+            c["notes_es"] = c.get("notes_es", []) + [f"{n_sat} mediciones caen en píxeles saturados o con blooming: no se usan para verificar movimiento ni variabilidad."]
+            c["notes_en"] = c.get("notes_en", []) + [f"{n_sat} measurements fall on saturated or bloomed pixels: they are not used to verify motion or variability."]
+            continue
         c["n_psf_first"], c["n_psf_last"] = len(meas_first), len(meas_last)
         if not meas_first or not meas_last:
             c["verification"] = "unverified"
@@ -3210,13 +3313,33 @@ def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[st
         c["psf_shift_err_arcsec"] = round(s_err, 2)
         moving = shift >= max(3.0 * s_err, 0.3 * PIX_SCALE_NATIVE)
         flux_change = None
+        pairs = []
         for a in meas_first:
             ca = dr1_channel_for_wavelength(a["wavelength_um"])
+            if a.get("lvf_edge") or a["saturated"]:
+                continue
             for b in meas_last:
-                if ca is not None and ca == dr1_channel_for_wavelength(b["wavelength_um"]) and not (a["saturated"] or b["saturated"]):
+                if b.get("lvf_edge") or b["saturated"]:
+                    continue
+                if ca is not None and ca == dr1_channel_for_wavelength(b["wavelength_um"]):
                     sig = abs(b["flux_ujy"] - a["flux_ujy"]) / float(np.hypot(a["err_ujy"], b["err_ujy"]))
+                    pairs.append((sig, a, b))
                     if flux_change is None or sig > flux_change["sigma"]:
                         flux_change = {"sigma": round(sig, 1), "ratio": round(b["flux_ujy"] / a["flux_ujy"], 3) if a["flux_ujy"] > 0 else None, "wavelength_um": round(a["wavelength_um"], 3)}
+        # Pares independientes (sin repetir exposición) con cambio ≥ 5σ y el mismo signo: una sola medición anómala
+        # (rayo cósmico, borde del filtro) no basta para afirmar variabilidad.
+        used_a, used_b, n_up, n_down = set(), set(), 0, 0
+        for sig, a, b in sorted(pairs, key=lambda q: -q[0]):
+            if sig < 5 or id(a) in used_a or id(b) in used_b:
+                continue
+            used_a.add(id(a)); used_b.add(id(b))
+            if b["flux_ujy"] > a["flux_ujy"]:
+                n_up += 1
+            else:
+                n_down += 1
+        if flux_change is not None:
+            flux_change["n_pairs_5sigma"] = max(n_up, n_down)
+            flux_change["consistent"] = (n_up == 0 or n_down == 0)
         c["psf_flux_change"] = flux_change
         if moving:
             c["verification"] = "confirmed_motion"
@@ -3225,11 +3348,17 @@ def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[st
             c["pm_arcsec_yr"] = round(shift / dt_yr, 2)
             c["label_es"] = f"Movimiento confirmado ({shift:.1f}″ ± {s_err:.1f}″)"
             c["label_en"] = f"Confirmed motion ({shift:.1f}″ ± {s_err:.1f}″)"
-        elif flux_change and flux_change["sigma"] >= 5:
+        elif flux_change and flux_change["sigma"] >= 5 and flux_change.get("n_pairs_5sigma", 0) >= 2 and flux_change.get("consistent"):
             c["verification"] = "confirmed_variability"
             c["type"] = "variable"
-            c["label_es"] = f"Variabilidad confirmada a {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ)"
-            c["label_en"] = f"Confirmed variability at {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ)"
+            c["label_es"] = f"Variabilidad confirmada a {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ, {flux_change['n_pairs_5sigma']} pares)"
+            c["label_en"] = f"Confirmed variability at {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ, {flux_change['n_pairs_5sigma']} pairs)"
+        elif flux_change and flux_change["sigma"] >= 5:
+            c["verification"] = "unverified"
+            c["label_es"] = f"Posible variabilidad a {flux_change['wavelength_um']} µm ({flux_change['sigma']}σ en un solo par)"
+            c["label_en"] = f"Possible variability at {flux_change['wavelength_um']} µm ({flux_change['sigma']}σ in a single pair)"
+            c["notes_es"] = c.get("notes_es", []) + ["Un solo par de mediciones a igual λ supera 5σ: hace falta otra medición independiente para confirmarlo."]
+            c["notes_en"] = c.get("notes_en", []) + ["Only one same-λ pair exceeds 5σ: another independent measurement is needed to confirm it."]
         else:
             c["verification"] = "not_confirmed"
             c["likely_artifact"] = True
@@ -3357,8 +3486,10 @@ def _build_equations(cube: Dict[str, Any]) -> Dict[str, Any]:
         pm_es = f"Predicho entre la 1.ª y la última época: {mot['arcsec']}″ = {mot['native_px']} px nativos"
         pm_en = f"Predicted between the first and last epoch: {mot['arcsec']}″ = {mot['native_px']} native px"
         if meas:
-            pm_es += f" · Medido por SPHEREx: {meas['arcsec']} ± {meas['err_arcsec']}″ (AP {meas['pa_deg']}°) frente a {meas['predicted_arcsec']}″ (AP {meas['predicted_pa_deg']}°) en {meas['days']} d"
-            pm_en += f" · Measured by SPHEREx: {meas['arcsec']} ± {meas['err_arcsec']}″ (PA {meas['pa_deg']}°) vs {meas['predicted_arcsec']}″ (PA {meas['predicted_pa_deg']}°) in {meas['days']} d"
+            pm_es += (f" · Medido por SPHEREx ({meas['n_visits']} visitas): {meas['arcsec']} ± {meas['err_arcsec']}″ (AP {meas['pa_deg']}°) frente a "
+                      f"{meas['predicted_arcsec']}″ (AP {meas['predicted_pa_deg']}°) en {meas['days']} d; diferencia {meas['diff_sigma']}σ")
+            pm_en += (f" · Measured by SPHEREx ({meas['n_visits']} visits): {meas['arcsec']} ± {meas['err_arcsec']}″ (PA {meas['pa_deg']}°) vs "
+                      f"{meas['predicted_arcsec']}″ (PA {meas['predicted_pa_deg']}°) in {meas['days']} d; difference {meas['diff_sigma']}σ")
     else:
         pm_es, pm_en = "Sin movimiento propio asociado", "No associated proper motion"
     if cands:
@@ -3524,8 +3655,10 @@ def generate_ai_preliminary_analysis(cube: Dict[str, Any], lang: str = "es") -> 
     if meas:
         how_en = "saturated-core centroids" if meas.get("methods") == ["saturated_core"] else "ePSF positions"
         how_es = "centroides del núcleo saturado" if meas.get("methods") == ["saturated_core"] else "posiciones ePSF"
-        bullets.append((f"📏 **Motion measured by SPHEREx ({how_en}):** {meas['arcsec']} ± {meas['err_arcsec']}″ at PA {meas['pa_deg']}° between {meas['date_first']} and {meas['date_last']} ({meas['n_first']} and {meas['n_last']} exposures); the catalogue predicts {meas['predicted_arcsec']}″ at PA {meas['predicted_pa_deg']}°."
-                        if en else f"📏 **Movimiento medido por SPHEREx ({how_es}):** {meas['arcsec']} ± {meas['err_arcsec']}″ con AP {meas['pa_deg']}° entre {meas['date_first']} y {meas['date_last']} ({meas['n_first']} y {meas['n_last']} exposiciones); el catálogo predice {meas['predicted_arcsec']}″ con AP {meas['predicted_pa_deg']}°."))
+        agree_en = "consistent with the catalogue" if meas["diff_sigma"] < 3 else "NOT consistent with the catalogue"
+        agree_es = "consistente con el catálogo" if meas["diff_sigma"] < 3 else "NO consistente con el catálogo"
+        bullets.append((f"📏 **Motion measured by SPHEREx ({how_en}, {meas['n_visits']} visits):** {meas['arcsec']} ± {meas['err_arcsec']}″ at PA {meas['pa_deg']}° between {meas['date_first']} and {meas['date_last']}; the catalogue predicts {meas['predicted_arcsec']}″ at PA {meas['predicted_pa_deg']}° ({agree_en}, {meas['diff_sigma']}σ)."
+                        if en else f"📏 **Movimiento medido por SPHEREx ({how_es}, {meas['n_visits']} visitas):** {meas['arcsec']} ± {meas['err_arcsec']}″ con AP {meas['pa_deg']}° entre {meas['date_first']} y {meas['date_last']}; el catálogo predice {meas['predicted_arcsec']}″ con AP {meas['predicted_pa_deg']}° ({agree_es}, {meas['diff_sigma']}σ)."))
     if ps.get("n"):
         bullets.append((f"🎯 **Target photometry:** {ps['n_detected']} of {ps['n']} exposures with S/N ≥ 3" + (f" (median S/N {ps['median_snr']})" if ps.get("median_snr") else "") + (f"; {ps['n_saturated']} saturated." if ps.get("n_saturated") else ".")
                         if en else f"🎯 **Fotometría del objetivo:** {ps['n_detected']} de {ps['n']} exposiciones con S/N ≥ 3" + (f" (S/N mediana {ps['median_snr']})" if ps.get("median_snr") else "") + (f"; {ps['n_saturated']} saturadas." if ps.get("n_saturated") else ".")))

@@ -4441,7 +4441,7 @@ function renderExposureTable() {
         <td>${String(ex.date_iso).replace("T", " ").slice(0, 19)}</td>
         <td>${lam}</td>
         <td>${flux}</td>
-        <td>${qLbl[ex.quality] || ex.quality || "—"}</td>
+        <td title="${ex.lvf_edge ? (STATE.lang === "en" ? "Detector edge or λ outside the nominal filter range: flux not used for variability" : "Borde del detector o λ fuera del rango nominal del filtro: el flujo no se usa para variabilidad") : ""}">${qLbl[ex.quality] || ex.quality || "—"}${ex.lvf_edge ? (STATE.lang === "en" ? " · edge" : " · borde") : ""}</td>
         <td>${Number(ex.zodi).toFixed(3)}</td>
         <td>${ex.bad_pct}%</td>
         <td>${ex.release || ""} · ${ex.source}</td>
@@ -5245,8 +5245,8 @@ function renderMarkdownDocument(md, docLang = STATE.docLang) {
       closeList();
       const rawH = trimmed.slice(2);
       html += `<h1 id="${_slugifyHeading(rawH)}">${formatMarkdownInline(rawH)}</h1>`;
-    } else if (/^[-*+]\s+/.test(trimmed) && listType === "ol" && /^\s{2,}/.test(rawLine) && html.endsWith("</li>")) {
-      // Sub-lista con sangría dentro del último elemento numerado (sin reiniciar la numeración)
+    } else if (/^[-*+]\s+/.test(trimmed) && (listType === "ol" || listType === "ul") && /^\s{2,}/.test(rawLine) && html.endsWith("</li>")) {
+      // Sub-lista con sangría dentro del último elemento de la lista (sin reiniciar la numeración)
       const item = `<li>${formatMarkdownInline(trimmed.replace(/^[-*+]\s+/, ""))}</li>`;
       if (html.endsWith("</ul></li>")) html = html.slice(0, -"</ul></li>".length) + item + "</ul></li>";
       else html = html.slice(0, -"</li>".length) + `<ul>${item}</ul></li>`;
