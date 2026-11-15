@@ -1,60 +1,118 @@
 # SPHEREx SkyChrono
 
-**Explorador Científico de Cielo Completo 360°, Blinking Multi-Época, Espectroscopía LVF (0.75–5.0 µm), Fotometría Forzada Tractor y Copiloto IA Astrofísico para NASA Space Apps Challenge 2026**
+**Explorador de cielo completo y de series temporales para SPHEREx: blinking multi-época de imágenes L2b reales, fotometría con la ePSF oficial, espectros de 0.75–5.0 µm y verificación de candidatos en movimiento o variables.**
 
-> **Reto Oficial:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
+> **Reto oficial:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
 > **Equipo:** Delegación Zuliana de Astronomía
-> **Fuentes Oficiales:** NASA / IPAC IRSA SPHEREx Archive (`DR1`, `QR1`, `QR2`) · AWS Open Data (`s3://nasa-irsa-spherex/`) · CDS SIMBAD / VizieR (Gaia DR3 & AllWISE) · IAU Minor Planet Center (`C59`)
+> **Datos:** NASA/IPAC IRSA (SPHEREx DR1 y QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = código **288**)
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![aiohttp](https://img.shields.io/badge/Backend-aiohttp%20Async-2C5BB4)](https://docs.aiohttp.org/)
-[![Astropy](https://img.shields.io/badge/Astrophysics-Astropy%206%20%2B%20Reproject-FF6F00)](https://www.astropy.org/)
-[![IRSA DR1](https://img.shields.io/badge/Data-NASA%2FIPAC%20IRSA%20DR1%20Cube-0B3D91)](https://irsa.ipac.caltech.edu/Missions/spherex.html)
-[![DOI](https://img.shields.io/badge/DOI-10.26131%2FIRSA679-38BDF8)](https://doi.org/10.26131/IRSA679)
-[![License](https://img.shields.io/badge/UI-ES%20%7C%20EN%20Bilingual-10B981)](#-documentación-y-manuales-oficiales)
+[![aiohttp](https://img.shields.io/badge/Backend-aiohttp-2C5BB4)](https://docs.aiohttp.org/)
+[![Astropy](https://img.shields.io/badge/Astrophysics-Astropy%20%2B%20Reproject-FF6F00)](https://www.astropy.org/)
+[![IRSA DR1](https://img.shields.io/badge/Data-NASA%2FIPAC%20IRSA%20SPHEREx-0B3D91)](https://irsa.ipac.caltech.edu/Missions/spherex.html)
+[![DOI](https://img.shields.io/badge/DOI-10.26131%2FIRSA678-38BDF8)](https://doi.org/10.26131/IRSA678)
+[![UI](https://img.shields.io/badge/UI-ES%20%7C%20EN-10B981)](#-documentación)
 
 ---
 
-## 🌌 Resumen Ejecutivo
+## 🌌 Resumen
 
-**SPHEREx SkyChrono** es una plataforma web astrofísica de código abierto diseñada para superar en velocidad exploratoria, análisis espectro-temporal y ergonomía científica a los visores tradicionales de archivos espaciales. Mientras que los portales convencionales exigen consultas manuales, descargas FITS completas de cientos de megabytes y tuberías externas en Python para alinear detectores, **SkyChrono** unifica en tiempo real:
+**SPHEREx SkyChrono** es una aplicación web de código abierto para explorar el cielo de SPHEREx en el tiempo y en longitud de onda. Busca las exposiciones de nivel 2 (L2b) que cubren cualquier punto del cielo y descarga solo los recortes necesarios desde AWS. Después alterna las visitas (*blink*) para ver qué se mueve o cambia de brillo, y mide cada fuente con el mismo método del pipeline oficial: fotometría PSF forzada con la ePSF oficial.
 
-1. **Visor Oficial 360° × 180° del Universo Observable (SPHEREx DR1 All-Sky Cube)**: Construido directamente a partir del cubo HiPS oficial de NASA/IPAC IRSA ([`ivo://IPAC/P/SPHEREx/DR1/cube`](https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube), DOI [`10.26131/IRSA679`](https://doi.org/10.26131/IRSA679)) y tiles `Norder5` `Npix{ipix}_cube.fits`, con **3 motores sincronizados** (Proyección Hammer-Aitoff 360°, Esfera Celeste 3D con rotación isotrópica libre y HiPS progresivo Aladin Lite v3) y **3 planos de referencia** (Galáctico, Eclíptico e ICRS Ecuatorial).
-2. **Navegación Continua Multi-Época con Streaming FITS Parcial (`HTTP Range`)**: Arrastra cualquier región del cielo, haz zoom continuo en 7 niveles (`FOV 0.06° → 1.60°`) anclado al cursor o haz doble clic para consultar exposiciones reales Nivel 2b vía **IRSA TAP ADQL** y descargar únicamente los recortes WCS necesarios desde **AWS S3 Open Data** usando `astropy.io.fits` + `fsspec`.
-3. **Blinking Multi-Época, Sustracción Diferencial ($\sigma_{\text{MAD}}$) y Detector IA de Dipolos**: Detecta automáticamente candidatos en movimiento (Planeta X / KBOs, cometa interestelar **3I/ATLAS**, enanas marrones ultrafrías Y/T como **WISE 0855−0714**, estrellas de alto movimiento propio como **Barnard's Star**) y variables infrarrojas (**RW Aurigae**, **R Draconis**).
-4. **Reconocedor Automático de Astros (`🔭 Astros: ON/OFF`) y Regla Cósmica 3D (`📏 A ↔ B`)**: Clasifica automáticamente estrellas, enanas marrones y galaxias del campo estimando magnitud aparente $m_{\text{AB}}$, flujo en $\mu\text{Jy}$, distancia heliocéntrica (`pc`, `ly`, `AU`), paralaje y distancia euclidiana 3D real entre dos cuerpos ($D_{3\text{D}}$).
-5. **Espectroscopía LVF Exacta (`0.753 – 4.988 µm`) e Índice de Hielos Biogénicos $\tau(\lambda)$**: Interpolación bilineal 2D sobre las extensiones `WCS-WAVE` de los 6 detectores **H2RG** (`D1–D6`), ajustando un modelo continuo de cuerpo negro de Planck más profundidades ópticas de absorción para **H₂O (3.05 µm)**, **CH₄ (3.32 µm)**, **CO₂ (4.27 µm)** y **CO (4.67 µm)** del catálogo **SPLICES**.
-6. **Escudo Anti-Artefactos L2b de 6 Módulos + Reporte Astrométrico IAU MPC de 80 Columnas**: Protección física exposición por exposición frente a *Charge Blooming*, impactos SAA, persistencia H2RG, emisión zodiacal (`ZODI`), trazas de satélites LEO y borde dicroico a `2.42 µm`, con exportación inmediata al formato estricto de 80 columnas del Minor Planet Center (código de observatorio espacial `C59`).
-7. **Copiloto AstroAI Multimodal (Gemini Vision Bridge)**: Analiza simultáneamente la telemetría numérica del cubo, las ecuaciones en vivo, el espectro LVF y una captura JPEG en tiempo real del lienzo `#skyCanvas`, con respaldo determinista local ante ausencia de API Key o límites de cuota.
+**Principio de rigor:** todo número que muestra la app sale de un producto oficial (SPHEREx en IRSA/AWS, Gaia DR3, AllWISE, SIMBAD) o de un cálculo documentado. Cuando un dato no existe o no es fiable (saturación, baja S/N, sin paralaje), la app lo dice en lugar de inventarlo.
 
 ---
 
-## 🏗️ Arquitectura del Sistema
+## ✨ Qué hace y con qué datos
+
+| Módulo | Qué muestra | Método y fuente |
+| :--- | :--- | :--- |
+| **Visor 360°** | Mapa del cielo completo en planos galáctico, eclíptico e ICRS (Hammer-Aitoff 2:1, globo 3D, Aladin Lite) | PNG HiPS oficiales del cubo All-Sky DR1 (solo para visualizar) |
+| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita: Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP, con respaldo SIA; recortes por HTTP Range desde AWS S3 (respaldo IBE) |
+| **Pantalla completa** | Visor de imágenes a pantalla completa: botón **⛶**, tecla **F**, **Esc** para salir | Fullscreen API; la imagen se dibuja siempre con píxeles cuadrados |
+| **Objetivo con movimiento propio** | ✚ posición predicha del objetivo en cada exposición | `SkyCoord.apply_space_motion` con astrometría Gaia DR3 o de la literatura |
+| **Fotometría** | Flujo en µJy con error 1σ, S/N, magnitud AB o límite superior a 3σ | ePSF oficial, mínimos cuadrados con pesos 1/VARIANCE, *deblending* con Gaia, 3 % sistemático, máscara oficial |
+| **Estrellas saturadas** | Posición medida aunque el flujo no sea medible | Centroide de los píxeles `OVERFLOW` del núcleo |
+| **Movimiento medido** | Desplazamiento del objetivo entre la primera y la última visita, frente al predicho, con su diferencia en σ | Ajuste lineal ponderado a las medias de cada visita (error estándar más 0.7″ de sistemático para núcleos saturados) |
+| **Candidatos** | Dipolos y residuos de la imagen de diferencia, cada uno verificado | Umbral 5σ con σ_MAD y verificación ePSF: movimiento ≥ 3σ y ≥ 0.3 px; variabilidad ≥ 5σ en el mismo canal en ≥ 2 pares independientes. No cuentan las mediciones saturadas, las del borde del detector ni las que quedan fuera del rango del filtro |
+| **Curva de luz** | Flujo / mediana por canal (misma λ) | χ²ν frente a flujo constante y mayor cambio en σ |
+| **Espectro DR1** | 102 canales en la posición del objetivo, con avisos de saturación y de fuentes vecinas | Fotometría de apertura en el cubo All-Sky DR1 (teselas HEALPix de orden 5) |
+| **Profundidad de bandas** | τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm, con su error e interpretación (gas o hielo) | Continuo de ley de potencias y piso sistemático de 0.04 |
+| **Fuentes del campo** | Gaia DR3 y AllWISE; distancia solo si π/σ ≥ 5 o hay una distancia publicada | MAST con respaldo VizieR; VizieR con respaldo IRSA Gator |
+| **Calidad de datos** | Origen, luz zodiacal restada, píxeles rechazados, PSF usada, saturación y artefactos | Bits `FLAGS` oficiales (Tabla 16 del Suplemento Explicativo) |
+| **Reporte MPC** | Borrador en formato de satélite (dos líneas, código 288), solo para movimiento confirmado sin contrapartida estelar | Vector geocéntrico de la nave `X/Y/Z_SC` interpolado a mitad de exposición |
+| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini opcional (clave en la cabecera `x-goog-api-key`) o motor local determinista |
+
+---
+
+## 🔬 Auditoría científica (v4.0): qué se corrigió o eliminó
+
+| Antes | Problema | Ahora |
+| :--- | :--- | :--- |
+| Coordenadas fijas de WISE 0855, Barnard y Eps Indi B | En 2026 estaban a 125″, 103″ y 59″ de los objetos reales | Astrometría Gaia DR3 o de la literatura, propagada a la fecha de cada exposición |
+| Guarda de *blooming* fija en (1648, 1752) de la banda 1 | Los datos reales no muestran un defecto fijo en esa posición; el *blooming* depende de cada estrella | Bit oficial `BLOOM` (26), píxel a píxel |
+| Bits `FLAGS` que no existen en DR1 (p. ej. `PHANTOM`) | No están en la Tabla 16 oficial | Tabla 16 oficial; `SOURCE` (bit 21) nunca se enmascara |
+| Código MPC `C59` y formato óptico terrestre | `C59` es el telescopio Yangwang-1, no SPHEREx | Código **288** y formato de satélite de dos líneas con el vector de la nave |
+| Índice HEALPix NESTED con recorte | ~12 % del cielo apuntaba a la tesela equivocada | Algoritmo de referencia: 0 discrepancias frente a `astropy-healpix` en 200 000 posiciones |
+| "Épocas" del cubo DR1 con fechas | El cubo DR1 es una co-adición de un año, sin información temporal | Una sola imagen estática, rotulada como tal, sin blink |
+| Tipos espectrales y distancias generados por *hash*; distancias fotométricas | Datos inventados | Gaia DR3 y AllWISE; distancia solo con paralaje significativa |
+| Teff por ley de Wien e "índice de hielos biogénicos" | Una enana marrón no es un cuerpo negro y sus bandas son de gas, no de hielo | Profundidad aparente con error y significancia, más una interpretación gas/hielo según el tipo de objeto |
+| "% de confianza IA" y escudos "CLEAN" fijos | No se calculaban con los datos | Panel de calidad con conteos reales de bits y de saturación |
+| "Fotometría Tractor exacta" con una gaussiana 15×15 | No era Tractor ni usaba la PSF real | ePSF oficial con ajuste forzado (método del pipeline, Suplemento sec. 3.3) |
+| Candidatos de la diferencia presentados como detecciones | Falsos positivos por la fase subpíxel, la λ distinta de cada exposición, el borde del filtro y el *blooming* de estrellas saturadas | Verificación ePSF obligatoria: confirmado, no confirmado (o artefacto de estrella saturada) o no verificable |
+| Elias 16 y 3I/ATLAS mal ubicados; "candidato a Planeta X" | Coordenadas erróneas o inventadas | Coordenadas de SIMBAD y JPL Horizons; el candidato ficticio se eliminó |
+| Imagen estirada por CSS | Deformaba ángulos y distancias | Píxeles cuadrados y Aitoff con proporción 2:1 |
+
+---
+
+## 🎯 Objetivos de referencia del reto
+
+Al elegir un objetivo, la app centra el campo en su posición de **2026.0** y predice su posición en la fecha de **cada** exposición.
+
+| Objetivo | Astrometría (fuente) | Qué mide SPHEREx (datos reales) |
+| :--- | :--- | :--- |
+| **WISE 0855−0714** (enana Y, 2.28 pc) | Kirkpatrick et al. 2021: μ = (−8123.7, +673.2) mas/año, ϖ = 439.0 mas | Las coordenadas del enunciado (`08h55m10.831s −7d14m42.53s`) son de la época AllWISE (2010.6); en 2026 el objeto está a **~2.1′** de ellas. En 19 exposiciones L2b de 4.4–5.0 µm (3 visitas) se detecta en 9 (S/N ≈ 4; la mejor, 1.0 ± 0.2 mJy a 4.74 µm) a una mediana de 1.1″ de la posición predicha. Pasa a 8″ de la estrella Gaia DR3 5756956644387831296 (G = 16.3), que la ePSF separa en L2b pero que domina la apertura DR1 por debajo de 3.5 µm. |
+| **Barnard's Star** (M4V, 1.83 pc) | Gaia DR3: μ = (−801.6, +10362.4) mas/año | **Saturada** en 28 de 28 exposiciones L2b y en 99 de 100 canales DR1: el flujo no es medible. La posición sí: el centroide del núcleo saturado cae a 1.2″ (0.19 px) de la posición predicha, y SPHEREx **mide un desplazamiento de 6.59 ± 1.00″ (AP 355°)** entre 2025-08-25 y 2026-03-30, frente a 6.19″ (AP 356°) predichos por Gaia DR3 (diferencia 0.4σ). |
+| **Epsilon Indi Ba/Bb** (T1 + T6, 3.64 pc) | Gaia DR3: μ = (+3982.0, −2466.8) mas/año | Detectada en 32 de 32 exposiciones L2b (S/N ≈ 32) a una mediana de 0.0″ de la posición predicha. SPHEREx **mide 6.88 ± 0.25″ (AP 122°)** en 519 días frente a 6.65″ (AP 122°) predichos (1.0σ), y la imagen de diferencia la marca como *movimiento confirmado*. SED de enana T en DR1: 31 mJy (1.25 µm), 36 (1.66), 25 (2.19), 8 (3.29), 63 (4.0) y 18 mJy (4.6 µm); **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** y τ(H₂O 3.0 µm) = 0.52 ± 0.05: absorción de gas. |
+| **RW Aurigae A** (T Tauri, 156 pc) | Gaia DR3 (2016.0) | **Saturada** en 24 de 24 exposiciones L2b y en 48 canales DR1. Movimiento medido 0.56 ± 1.23″ en un año (compatible con cero, como se espera). Un falso "movimiento" de 9.5″ sobre su *blooming* queda marcado como artefacto de estrella saturada. |
+| **R Draconis** (Mira, P ≈ 245.6 d, ~800 pc) | Gaia DR3 (2016.0) | **Saturada** en 64 de 64 exposiciones L2b (8 visitas, cerca del polo eclíptico norte) y en los 100 canales DR1. Movimiento medido 1.82 ± 0.83″ en 503 días (2.2σ, no significativo). Sus artefactos de *blooming* se marcan como tales. |
+
+Para repetir esta validación (necesita acceso a IRSA):
+
+```bash
+python tools/validate_targets.py
+```
+```bash
+python tools/validate_targets.py WISE0855 Barnard --json informe.json
+```
+
+---
+
+## 🏗️ Arquitectura
 
 ```mermaid
 flowchart LR
-    subgraph Client["Frontend Web Científico (HTML5 / Canvas 2D / Aladin Lite v3)"]
-        UI["Paneles Bilíngües ES/EN<br/>Targets Bar + Controls + Modals"]
-        Canvas["#skyCanvas (60 FPS LUT Engine)<br/>Blink | Diff | RGB | Sum | Split"]
-        Universe["Visor 360° Universo Observable<br/>Aitoff DR1 | Globo 3D | Aladin HiPS"]
-        Spec["#spectrumCanvas &amp; #lightcurveCanvas<br/>Planck + Hielos τ(λ) + Curva de Luz"]
+    subgraph Client["Frontend (HTML5 · Canvas 2D · Aladin Lite v3)"]
+        UI["Interfaz bilingüe ES/EN<br/>objetivos, controles y modales"]
+        Canvas["#skyCanvas<br/>Blink · Diferencia · RGB · Co-adición · Cortina<br/>pantalla completa ⛶"]
+        Universe["Visor 360°<br/>Aitoff · Globo 3D · HiPS"]
+        Spec["Espectro ePSF + DR1<br/>curva de luz por canal"]
     end
 
-    subgraph Server["Backend Asíncrono (app.py · aiohttp)"]
-        API["14 Rutas REST &amp; Proxy HiPS CORS<br/>/api/cube, /api/spherex-allsky-map,<br/>/api/hips/spherex/*, /api/ai/chat"]
-        Cache["Caché Multinivel + Prewarm<br/>RAM (&lt;1 ms) · Disk .npz/.json (&lt;20 ms)"]
+    subgraph Server["Backend asíncrono (app.py · aiohttp)"]
+        API["API REST + proxy HiPS"]
+        Cache["Caché en memoria y en disco<br/>(cache/, ignorada por Git)"]
     end
 
-    subgraph Engine["Motor Astrofísico (spherex_engine.py)"]
-        TAP["IRSA TAP ADQL<br/>spherex.artifact ⋈ spherex.plane"]
-        S3["AWS S3 Open Data / IBE<br/>HTTP Range FITS + Norder5 Npix_cube.fits"]
-        WCS["Reproyección WCS Paralela (reproject_interp)<br/>+ Interpolación Bilineal WCS-WAVE"]
-        Phot["Fotometría Forzada Tractor 15×15<br/>+ Escudo L2b + Reconocedor 3D + MPC 80-Col"]
+    subgraph Engine["Motor científico (spherex_engine.py)"]
+        Disc["Descubrimiento<br/>IRSA TAP → SIA"]
+        S3["AWS S3 (HTTP Range) → IRSA IBE<br/>L2b + cubo All-Sky DR1"]
+        Phot["ePSF forzada · astrometría · verificación<br/>espectro DR1 · bandas · MPC 288"]
     end
 
-    subgraph External["Servicios &amp; IA"]
-        CDS["CDS SIMBAD TAP &amp; VizieR<br/>(Gaia DR3 + AllWISE)"]
-        Gemini["Google Gemini 3 Flash Vision<br/>(+ Fallback Local Experto)"]
+    subgraph External["Catálogos e IA"]
+        Cat["Gaia DR3 (MAST/VizieR) · AllWISE<br/>SIMBAD / Sesame"]
+        AI["Gemini (opcional)<br/>o motor local"]
     end
 
     UI <--> API
@@ -63,160 +121,146 @@ flowchart LR
     Spec <--> API
     API <--> Cache
     Cache <--> Engine
-    Engine <--> TAP
+    Engine <--> Disc
     Engine <--> S3
-    Engine --> WCS --> Phot
-    Engine <--> CDS
-    API <--> Gemini
+    Engine --> Phot
+    Engine <--> Cat
+    API <--> AI
 ```
 
 ---
 
-## ✨ Capacidades Científicas y Visuales
-
-| Módulo | Capacidad Implementada | Detalle Técnico Verificado |
-| :--- | :--- | :--- |
-| **Universo Observable 360° (DR1)** | 3 motores + 3 planos de referencia | Aitoff DR1 oficial, Esfera 3D libre e HiPS Aladin Lite v3 sobre [`spherex_allsky_cube`](https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube) (102 canales `0.753–4.988 µm`), planos **Galáctico**, **Eclíptico** e **ICRS**, y 18 hitos cósmicos (`NEP/SEP Deep`, `Sgr A*`, `3I/ATLAS`, `Elias 16`, `Zona Planeta X`). |
-| **Navegación Continua Estilo IRSA** | Zoom de 7 pasos + Pan por streaming | Escalera `FOV = [0.06°, 0.10°, 0.12°, 0.18°, 0.35°, 0.80°, 1.60°]` con sobremuestreo 2× (`~3.075"/px` frente a `6.15"/px` nativos), arrastre libre con recarga de exposiciones vecinas y caché TAP espacial dentro de `0.14°`. |
-| **Detección Cinemática y Variabilidad** | Escáner $\Delta I$ + Score IA | Detección estadística robusta mediante $\sigma_{\text{MAD}} = 1.4826\cdot\text{med}|\Delta I - \text{med}(\Delta I)|$, clasificando candidatos en `MOVING_DIPOLE` (`PA`, `″/yr`) e `IR_VARIABLE` con verificación de flags hardware. |
-| **Reconocedor de Astros y Regla 3D** | Clasificación + Telemetría $A \leftrightarrow B$ | Calcula paralaje cinemática/fotométrica, `dist_pc`, `dist_ly`, `dist_au`, vector `(x,y,z)` en pársecs y distancia euclidiana real $D_{3\text{D}} = \sqrt{d_A^2 + d_B^2 - 2 d_A d_B \cos\theta}$ entre dos cuerpos seleccionados. |
-| **Fotometría Forzada Tractor (15×15)** | Mínimos cuadrados ponderados en el plano | $\theta = (A^T W A)^{-1} A^T W I$, FWHM gaussiano exacto, flujo puntual en $\mu\text{Jy}$ y magnitud AB ($m_{\text{AB}} = 23.9001 - 2.5\log_{10}(F_{\mu\text{Jy}})$). |
-| **Espectroscopía LVF y Hielos** | 6 detectores (`D1–D6`) + Planck + $\tau(\lambda)$ | Curva espectral de brillo superficial (`MJy/sr`), ajuste térmico de Wien ($T_{\text{eff}}$), modelo de cuerpo negro con absorción de **H₂O**, **CH₄**, **CO₂** y **CO**, y exportación directa `.CSV`. |
-| **Escudo Anti-Artefactos L2b** | 6 guardas físicas por exposición | Protección contra *Blooming* Band 1 `(1648, 1752)`, SAA/rayos cósmicos (`Bit 0`), persistencia/crosstalk (`Bits 17/20`), sustracción `ZODI` + airglow He I, trazas LEO (`Bits 25/28`) y borde dicroico `2.42 µm` preservando `Bit 21 (SOURCE)`. |
-| **Superposiciones WCS & Catálogos** | Gaia DR3, AllWISE, SIMBAD, Apertura | Proyección sub-píxel de catálogos externos en vivo, elipses de error astrométrico, vectores de movimiento propio propagados a época `2025.5` y radio de apertura fotométrica ajustable. |
-| **Exportación y Reproducibilidad** | MPC 80-Col, GIF Blink, URL & CRUD | Reporte IAU MPC (`C59`), descarga de animación `.GIF` multi-época, enlaces compartibles (`?ra=...&dec=...&fov=...&bands=...&mode=...&lang=...`) y Administrador CRUD completo de Objetivos de Referencia. |
-
----
-
-## 🎯 Objetivos Oficiales de Referencia Precargados
-
-| Objetivo | Coordenadas ICRS (Época 2025.5) | Mov. Propio ($\mu$) | Bandas Recomendadas | Fenómeno Científico Clave |
-| :--- | :--- | :--- | :--- | :--- |
-| **🌌 Universo Observable 360°** | Cielo Completo (`360° × 180°`) | N/A (Mapa All-Sky) | `DR1 RGB` / `102 Canales` | Vista isótropa oficial SPHEREx DR1 (Galáctica, Eclíptica e ICRS) + extracción `Npix_cube.fits`. |
-| **WISE 0855−0714** | `RA 133.79513°`, `Dec -7.24515°` | `~8.1″/año` (`-8118, +680 mas/yr`) | `D6` (`FOV 0.10°`) | Enana marrón clase Y más fría (~`250 K`) a `2.28 pc`; invisible en óptico/SWIR por absorción de CH₄/H₂O, brillante en `4.5–5.0 µm`. |
-| **Barnard's Star** | `RA 269.4485°`, `Dec +4.7394°` | `10.36″/año` (`-801.55, +10362.39 mas/yr`) | `D1, D2, D3` (`FOV 0.12°`) | Estrella con el mayor movimiento propio del cielo a `1.83 pc`; desplazamiento de `~4.4'` respecto a J2000. |
-| **Epsilon Indi Ba/Bb** | `RA 331.0689°`, `Dec -56.7938°` | `4.70″/año` (`+3966.7, -2536.2 mas/yr`) | `D2, D3, D5, D6` (`FOV 0.12°`) | Par binario de enanas marrones T1 + T6 a `3.63 pc` con profundas bandas moleculares de H₂O y CH₄. |
-| **RW Aurigae** | `RA 76.9565°`, `Dec +30.4014°` | `~0.025″/año` (Estacionaria) | `D2, D3, D4, D5` (`FOV 0.12°`) | Binaria joven T Tauri con disco circunestelar perturbado, eclipses por polvo y alta variabilidad infrarroja. |
-| **R Draconis** | `RA 248.1669°`, `Dec +66.7549°` | `~0.037″/año` (Estacionaria) | `D1, D2, D3, D4` (`FOV 0.12°`) | Gigante roja variable tipo Mira cerca del NEP (`P ≈ 245.6 días`, `>2,400` exposiciones) con pulsación de H₂O/CO. |
-
----
-
-## 📁 Estructura del Proyecto
+## 📁 Estructura del proyecto
 
 ```text
-NASA - copia/
-├── app.py                        # Servidor web aiohttp (14 rutas REST, proxy HiPS CORS y pre-warm asíncrono)
-├── spherex_engine.py             # Motor astrofísico IRSA TAP, AWS S3 Range, DR1 HiPS5 Cube, WCS-WAVE, Tractor y Gemini
-├── requirements.txt              # Dependencias exactas (aiohttp, astropy, reproject, numpy, scipy, s3fs, fsspec, pillow)
-├── Dockerfile                    # Imagen Docker lista para producción (Python 3.11-slim, puerto 8050)
-├── render.yaml                   # Manifiesto Blueprint para despliegue público 1-clic en Render
-├── .env.example                  # Plantilla segura de variables de entorno (copiar a .env)
-├── .gitignore                    # Excluye .env, .venv/, cache/, __pycache__/ y *.fits
-├── README.md                     # Este documento técnico principal
+NASA-SPACE-APPS-SPHEREX-ZULIA/
+├── app.py                 # Servidor aiohttp: API REST, proxy HiPS y precarga opcional
+├── spherex_engine.py      # Motor científico: IRSA/S3, ePSF, astrometría, DR1, bandas, MPC y copiloto
+├── requirements.txt       # Dependencias de Python
+├── Dockerfile             # Imagen Docker (Python 3.11, puerto 8050)
+├── render.yaml            # Despliegue en Render
+├── .env.example           # Plantilla de variables de entorno (copiar a .env)
+├── .gitignore             # Excluye .env, cache/, *.fits, entornos virtuales
 ├── static/
-│   ├── index.html                # Interfaz científica bilingüe (cabecera, 3 paneles, HUD 360° y 5 modales integrados)
-│   ├── app.js                    # Renderizado 60 FPS, LUTs 1024 pasos, rotación 3D esférica, overlay WCS y AstroAI
-│   └── styles.css                # Sistema visual simétrico ES/EN, tema espacial y estilos de tablas/callout en docs
+│   ├── index.html         # Interfaz bilingüe
+│   ├── app.js             # Visores, gráficos, pantalla completa y lógica de la UI
+│   └── styles.css         # Estilos
 ├── docs/
-│   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documento Maestro Único (Conceptos, Manual, Jueces NASA y Pitch · ES)
-│   └── SPHEREx_SkyChrono_Documentation_EN.md   # Single Master Documentation (Basics, User, NASA Judges & Pitch · EN)
-├── poc/                          # Scripts fundacionales de prueba de concepto (validación WISE 0855 en S3/TAP)
-│   ├── spherex_poc.py
-│   └── spherex_blink.py
-└── cache/                        # Caché local autogenerado (tap/, cutouts/, cubes/, hips/, custom_targets.json)
+│   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documentación completa (5 capítulos, ES)
+│   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
+├── tests/
+│   └── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ y fotometría
+├── tools/
+│   └── validate_targets.py  # Validación de los objetivos del reto con datos reales de SPHEREx
+└── poc/                   # Pruebas de concepto iniciales
 ```
 
 ---
 
-## 🔌 API REST del Servidor (`app.py`)
+## 🔌 API REST (`app.py`)
 
 | Método | Ruta | Descripción |
 | :--- | :--- | :--- |
-| `GET` | `/` | Sirve la aplicación principal (`static/index.html`). |
-| `GET` | `/api/targets` | Lista objetivos de referencia oficiales y personalizados persistidos en `cache/custom_targets.json`. |
-| `POST` | `/api/targets` | Crea o edita un objetivo de referencia resolviendo coordenadas decimales, sexagesimales o nombre SIMBAD. |
-| `DELETE` | `/api/targets?id=...` | Elimina un objetivo (o restaura predeterminados con `id=__RESTORE_DEFAULTS__`). |
-| `GET` | `/api/resolve?q=...` | Resuelve nombre astronómico (SIMBAD TAP / Sesame) o coordenadas ICRS propagando movimiento propio a época `2025.5`. |
-| `GET` | `/api/cube` | Devuelve el cubo multi-época reproyectado, imágenes Base64 `float32`, flags L2b, candidatos IA, espectro LVF, métricas Tractor y objetos 3D reconocidos. |
-| `GET` | `/api/point_spectrum` | Extrae el espectro LVF completo (`0.75–5.0 µm`) y curva de luz para cualquier píxel o fuente seleccionada del campo. |
-| `GET` | `/api/catalogs` | Consulta en tiempo real fuentes **Gaia DR3** y **AllWISE** en VizieR proyectadas sobre el campo actual. |
-| `GET` | `/api/gif` | Renderiza y descarga una animación `.GIF` del blinking multi-época sobre el campo activo. |
-| `POST` | `/api/ai/chat` | Copiloto AstroAI multimodal (recibe consulta, telemetría del cubo, captura `#skyCanvas` JPEG e historial). |
-| `GET` | `/api/docs?lang=es\|en` | Sirve la documentación maestra unificada en español (`es`) o inglés (`en`) para el Centro de Documentación integrado. |
-| `GET` | `/api/spherex-allsky-map?channel=...` | Genera el panorama equirectangular `360° × 180°` (`1440×720` PNG) a partir del cubo All-Sky oficial SPHEREx DR1. |
-| `GET` | `/api/hips/spherex/{channel}/{tail}` | Proxy IVOA HiPS oficial con CORS para navegar cualquiera de los 102 canales DR1 en **Aladin Lite v3**. |
-| `GET` | `/static/*`, `/docs/*` | Archivos estáticos y descarga directa de documentación en Markdown puro. |
+| `GET` | `/` | Interfaz web |
+| `GET · POST · DELETE` | `/api/targets` | Objetivos de referencia y personalizados (la astrometría oficial no es editable) |
+| `GET` | `/api/resolve?q=` | Coordenadas o nombre (Sesame/SIMBAD) propagados a 2026.0; reconoce las coordenadas antiguas de los objetivos |
+| `GET` | `/api/cube` | Cubo multi-época: imágenes, fotometría, trayectoria del objetivo, movimiento medido, candidatos y calidad |
+| `GET` | `/api/point_spectrum` | Fotometría ePSF por exposición en el píxel elegido |
+| `GET` | `/api/dr1_spectrum` | Espectro de 102 canales del cubo DR1, profundidades de banda y avisos |
+| `GET` | `/api/catalogs` | Gaia DR3 y AllWISE proyectados en el campo |
+| `GET` | `/api/gif` | Animación GIF de las épocas |
+| `POST` | `/api/ai/chat` | Copiloto |
+| `GET` | `/api/docs?lang=es\|en` | Documentación integrada |
+| `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
+| `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
+| `GET` | `/static/*`, `/docs/*` | Archivos estáticos |
 
 ---
 
-## 🚀 Inicio Rápido (Instalación Local)
+## 🚀 Inicio rápido
 
-### 1. Clonar e instalar dependencias
+### 1. Instalar dependencias
 ```bash
 python -m venv .venv
-
-# Windows (PowerShell):
-.\.venv\Scripts\Activate.ps1
-
-# Linux / macOS:
+```
+```bash
 source .venv/bin/activate
-
+```
+En Windows (PowerShell): `.\.venv\Scripts\Activate.ps1`
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configuración opcional de IA (`.env`)
-La plataforma funciona al 100% sin claves externas gracias al motor científico local determinista (`_expert_astrophysics_response`). Para habilitar visión multimodal con **Google Gemini**, copia la plantilla [`.env.example`](.env.example) a `.env`:
-
+### 2. Configuración opcional (`.env`)
+La app funciona al 100 % sin claves: el copiloto usa entonces su motor local. Para usar Gemini, copia la plantilla y escribe tu clave en `.env`, que nunca se sube a Git:
 ```bash
 cp .env.example .env
 ```
+Variables disponibles: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos). También puedes dar una clave temporal desde la interfaz: solo vive en la sesión del navegador.
 
-Y completa tu clave en `.env`:
-
-```env
-GEMINI_API_KEY=tu_clave_gemini_aqui
-GEMINI_MODEL=gemini-3-flash-preview
-PORT=8050
-```
-> **Seguridad:** `.env` está excluido en `.gitignore`. También puedes ingresar tu clave temporalmente en la UI (solo reside en memoria del navegador por sesión).
-
-### 3. Ejecutar el servidor
+### 3. Ejecutar
 ```bash
 python app.py
 ```
-Al iniciar, el servidor precalienta en segundo plano (`prewarm_reference_targets_async`) los objetivos de referencia oficiales para ofrecer respuestas inmediatas. Abre tu navegador en:
-**`http://localhost:8050`**
+Abre `http://localhost:8050`.
 
-### 4. Despliegue con Docker o Render
-- **Docker:**
-  ```bash
-  docker build -t spherex-skychrono .
-  docker run -p 8050:8050 -e GEMINI_API_KEY="tu_clave" spherex-skychrono
-  ```
-- **Render:** Incluye [`render.yaml`](render.yaml) preconfigurado (`pip install -r requirements.txt` → `python app.py`). Solo añade `GEMINI_API_KEY` como variable secreta en el panel de Render.
+### 4. Verificar
+```bash
+python -m py_compile app.py spherex_engine.py
+```
+```bash
+node --check static/app.js
+```
+```bash
+python tests/test_science.py
+```
 
----
-
-## 📚 Documentación Integral (Documento Único ES / EN)
-
-Toda la documentación se consolidó en **un solo documento maestro sin redundancias** (con índice por capítulos de Principiante → Usuario → Arquitectura Jueces NASA → Despliegue y Pitch). Puedes leerlo tanto aquí como **directamente dentro de la aplicación web** haciendo clic en **`📚 Manuales y Docs`** y alternando idiomas con el botón **`🌐 Ver en English / View in Español`**:
-
-| Edición | Contenido Incluido | Enlace |
-| :--- | :--- | :--- |
-| **🇪🇸 Documentación Integral (Español)** | Conceptos Básicos · Manual de Usuario 360° · Arquitectura y Matemática L2b · Seguridad y Pitch | [docs/SPHEREx_SkyChrono_Documentation_ES.md](docs/SPHEREx_SkyChrono_Documentation_ES.md) |
-| **🇺🇸 Complete Documentation (English)** | Basics & Mission · 360° User Manual · Technical & Math Architecture · Deploy & Submission | [docs/SPHEREx_SkyChrono_Documentation_EN.md](docs/SPHEREx_SkyChrono_Documentation_EN.md) |
-
----
-
-## 🔗 Recursos y Atribuciones Oficiales (NASA / IPAC / CDS)
-
-- **Archivo Oficial de la Misión SPHEREx en IRSA:** https://irsa.ipac.caltech.edu/Missions/spherex.html
-- **Página Oficial del Reto NASA Space Apps 2026:** https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
-- **DOIs de Datos Utilizados:** [`10.26131/IRSA678`](https://doi.org/10.26131/IRSA678) · [`10.26131/IRSA679`](https://doi.org/10.26131/IRSA679) · [`10.26131/IRSA662`](https://doi.org/10.26131/IRSA662)
-- **Catálogo SPLICES y Cometa 3I/ATLAS en IRSA:** https://irsa.ipac.caltech.edu/data/SPHEREx/
-- **Tutoriales Oficiales Caltech-IPAC:** https://github.com/Caltech-IPAC/spherex-archive-tutorials
-- **Formato Oficial 80 Columnas IAU MPC:** https://www.minorplanetcenter.net/iau/info/OpticalObs.html
+### 5. Docker o Render
+```bash
+docker build -t spherex-skychrono .
+```
+```bash
+docker run -p 8050:8050 spherex-skychrono
+```
+Para Render, [`render.yaml`](render.yaml) ya está configurado; añade `GEMINI_API_KEY` como variable secreta en el panel si quieres usar Gemini.
 
 ---
 
-*Desarrollado con rigor científico por la **Delegación Zuliana de Astronomía** para el **NASA Space Apps Challenge 2026**.*
+## ⚠️ Limitaciones conocidas
+
+- **Saturación:** Barnard, RW Aur y R Dra saturan SPHEREx. Su posición se mide, pero su flujo no es fiable.
+- **WISE 0855** es débil para SPHEREx y está mezclado con una estrella G = 16.3 a 8″: espera S/N bajo por exposición.
+- **IRSA:** si TAP y SIA no responden, la app muestra una sola imagen estática del cubo DR1, claramente señalada, y nunca simula épocas.
+- **Planeta X / Nueve** es hipotético y no se ha detectado. A ~500 UA se movería ~7″ por día: hay que buscarlo dentro de una misma visita (días), no entre visitas separadas seis meses.
+- **Cubo DR1:** píxeles de 12.9″, sin información temporal. Sus PNG HiPS sirven solo para visualizar.
+
+---
+
+## 📚 Documentación
+
+La documentación completa (conceptos, manual de usuario, métodos y fórmulas, validación y referencias) está en un solo documento por idioma. También se lee dentro de la app con **📚 Manuales y Docs**.
+
+| Edición | Enlace |
+| :--- | :--- |
+| 🇪🇸 Español | [docs/SPHEREx_SkyChrono_Documentation_ES.md](docs/SPHEREx_SkyChrono_Documentation_ES.md) |
+| 🇺🇸 English | [docs/SPHEREx_SkyChrono_Documentation_EN.md](docs/SPHEREx_SkyChrono_Documentation_EN.md) |
+
+---
+
+## 🔗 Recursos oficiales y créditos
+
+- Archivo SPHEREx en IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
+- Tutoriales oficiales de SPHEREx: https://caltech-ipac.github.io/irsa-tutorials/spherex/
+- Recursos del reto: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
+- Gaia DR3 en MAST: https://archive.stsci.edu/missions-and-data/gaia
+- WiseView: http://byw.tools/wiseview
+- Formato MPC para observaciones desde satélites: https://www.minorplanetcenter.net/iau/info/SatelliteObs.html
+- DOIs: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678) (DR1 Spectral Images) · [10.26131/IRSA679](https://doi.org/10.26131/IRSA679) (DR1 All-Sky Cube) · [10.26131/IRSA662](https://doi.org/10.26131/IRSA662) (QR3) · [10.26131/IRSA554](https://doi.org/10.26131/IRSA554) (SPLICES)
+
+> This publication makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration.
+
+NASA no respalda a entidades que no sean del Gobierno de EE. UU.; los datos de sitios externos se usan según sus propias condiciones.
+
+---
+
+*Desarrollado por la **Delegación Zuliana de Astronomía** para el **NASA Space Apps Challenge 2026**.*

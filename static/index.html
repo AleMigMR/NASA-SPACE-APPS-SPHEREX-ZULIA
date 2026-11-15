@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=22" />
+  <link rel="stylesheet" href="/static/styles.css?v=26" />
   <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
 </head>
@@ -26,10 +26,10 @@
         <div class="brand-row">
           <h1>SPHEREx <span class="accent-gradient">SkyChrono</span></h1>
           <span class="mission-badge" id="i18nBadgeMission">NASA SPACE APPS · PLANET X &amp; SPHEREx</span>
-          <span class="irsa- badge-subtle" id="i18nBadgeIrsa">IRSA TAP + AWS S3 + WCS-WAVE</span>
+          <span class="irsa- badge-subtle" id="i18nBadgeIrsa">IRSA TAP/SIA + AWS S3 + ePSF</span>
         </div>
         <p class="subtitle" id="i18nSubtitle">
-          Explorador Interactivo de Cielo Completo, Blinking Multi-Época, Espectroscopía LVF (0.75–5.0 µm) y Detector IA de Anomalías · Delegación Zuliana de Astronomía
+          Explorador de cielo completo, blinking multi-época, espectroscopía LVF (0.75–5.0 µm) y verificación de candidatos con la ePSF oficial · Delegación Zuliana de Astronomía
         </p>
       </div>
     </div>
@@ -44,7 +44,7 @@
       <button id="btnOpenDocs" class="btn btn-docs" type="button" title="Abrir Centro de Documentación (Manual de Usuario, Guía para Principiantes y Manual Técnico para Jueces NASA)">
         📚 <span id="i18nBtnDocs">Manuales y Docs</span>
       </button>
-      <button id="btnExportMpc" class="btn btn-ghost" type="button" title="Generar reporte astrométrico oficial de 80 columnas para el Minor Planet Center (IAU MPC)">
+      <button id="btnExportMpc" class="btn btn-ghost" type="button" title="Borrador astrométrico MPC en formato satélite (código 288), solo para candidatos con movimiento confirmado">
         📐 <span id="i18nBtnMpc">Reporte MPC 80-Col</span>
       </button>
       <button id="btnShareUrl" class="btn btn-ghost" type="button" title="Copiar enlace directo a este objetivo, época y configuración">
@@ -98,7 +98,7 @@
             type="text"
             class="text-input"
             placeholder="Ej: 08h55m10.83s -07d14m42.5s o Barnard's Star"
-            value="133.79513, -7.24515"
+            value="WISE 0855-0714"
           />
           <button id="btnResolve" class="btn btn-accent" type="button" title="Resolver y cargar cubo SPHEREx">
             🔍 <span id="i18nBtnGo">Explorar</span>
@@ -106,9 +106,9 @@
         </div>
 
         <div class="coord-readout" id="coordReadout">
-          <div><span class="k" id="i18nLblRa">RA (ICRS):</span> <strong id="valRa">133.79513°</strong></div>
-          <div><span class="k" id="i18nLblDec">Dec (ICRS):</span> <strong id="valDec">-7.24515°</strong></div>
-          <div><span class="k" id="i18nLblPm">Mov. Propio:</span> <strong id="valPm">-8118, +680 mas/yr</strong></div>
+          <div><span class="k" id="i18nLblRa">RA (ICRS):</span> <strong id="valRa">—</strong></div>
+          <div><span class="k" id="i18nLblDec">Dec (ICRS):</span> <strong id="valDec">—</strong></div>
+          <div><span class="k" id="i18nLblPm">Mov. Propio:</span> <strong id="valPm">—</strong></div>
         </div>
 
         <div class="control-grid-2">
@@ -148,9 +148,9 @@
           <div>
             <label class="field-label" for="selectRelease" id="i18nLabelRelease">Lanzamiento IRSA</label>
             <select id="selectRelease" class="select-input">
-              <option value="all" selected id="optRelAll">QR1 + QR2 / DR1 (Todo)</option>
-              <option value="qr2" id="optRelQr2">Solo QR2 / DR1</option>
-              <option value="qr1" id="optRelQr1">Solo QR1</option>
+              <option value="all" selected id="optRelAll">DR1 + QR3 (recomendado)</option>
+              <option value="dr1" id="optRelQr2">Solo DR1 (año 1)</option>
+              <option value="qr3" id="optRelQr1">Solo QR3 (año 2)</option>
             </select>
           </div>
         </div>
@@ -177,7 +177,7 @@
             <input type="checkbox" value="D1" />
             <div class="band-head">
               <span class="band-tag d1">D1</span>
-              <span class="band-range">0.75–1.11 µm</span>
+              <span class="band-range">0.74–1.12 µm</span>
               <span class="band-count" id="cnt-D1">—</span>
             </div>
             <span class="band-mol" id="mol-D1">Continuo óptico / Hα / Metales</span>
@@ -197,7 +197,7 @@
             <input type="checkbox" value="D3" />
             <div class="band-head">
               <span class="band-tag d3">D3</span>
-              <span class="band-range">1.63–2.43 µm</span>
+              <span class="band-range">1.64–2.42 µm</span>
               <span class="band-count" id="cnt-D3">—</span>
             </div>
             <span class="band-mol" id="mol-D3">H₂O (1.9 µm) · CO (2.3 µm)</span>
@@ -207,7 +207,7 @@
             <input type="checkbox" value="D4" />
             <div class="band-head">
               <span class="band-tag d4">D4</span>
-              <span class="band-range">2.40–3.85 µm</span>
+              <span class="band-range">2.42–3.82 µm</span>
               <span class="band-count" id="cnt-D4">—</span>
             </div>
             <span class="band-mol" id="mol-D4">Hielo H₂O (3.0 µm) · CH₄ · PAH</span>
@@ -217,7 +217,7 @@
             <input type="checkbox" value="D5" />
             <div class="band-head">
               <span class="band-tag d5">D5</span>
-              <span class="band-range">3.81–4.43 µm</span>
+              <span class="band-range">3.81–4.42 µm</span>
               <span class="band-count" id="cnt-D5">—</span>
             </div>
             <span class="band-mol" id="mol-D5">Hielo CO₂ (4.27 µm) · Continuo IR</span>
@@ -227,7 +227,7 @@
             <input type="checkbox" value="D6" checked />
             <div class="band-head">
               <span class="band-tag d6">D6</span>
-              <span class="band-range">4.41–5.01 µm</span>
+              <span class="band-range">4.41–5.00 µm</span>
               <span class="band-count" id="cnt-D6">—</span>
             </div>
             <span class="band-mol" id="mol-D6">CO (4.67 µm) · Pico Enanas Y / Planeta X</span>
@@ -353,16 +353,16 @@
         </div>
 
         <div class="viewer-right-controls">
-          <button type="button" id="btnToggleAiDetector" class="btn-ai-detector active" title="Activar o desactivar el Detector Super-Inteligente de Anomalías y Dipolos sobre la imagen">
-            🧠 <span id="i18nBtnAiDetector">Detector IA: ON</span>
+          <button type="button" id="btnToggleAiDetector" class="btn-ai-detector active" title="Candidatos de la imagen de diferencia, verificados con fotometría ePSF por exposición">
+            🧠 <span id="i18nBtnAiDetector">Detector: ON</span>
           </button>
-          <button type="button" id="btnToggleStarRecognizer" class="btn-star-recognizer active" title="Reconocer automáticamente estrellas, enanas marrones, galaxias y su distancia en parsecs / años luz">
-            🔭 <span id="i18nBtnStarRecognizer">Astros: ON</span>
+          <button type="button" id="btnToggleStarRecognizer" class="btn-star-recognizer active" title="Fuentes del campo identificadas con Gaia DR3 / AllWISE (la distancia solo aparece si hay paralaje fiable)">
+            🔭 <span id="i18nBtnStarRecognizer">Fuentes: ON</span>
           </button>
-          <button type="button" id="btnToggleDistanceRuler" class="btn-distance-ruler" title="Medir distancia desde el telescopio SPHEREx (pc / años luz) y distancia espacial 3D entre dos cuerpos celestes (A ↔ B)">
-            📏 <span id="i18nBtnDistanceRuler">Medir Distancia A↔B</span>
+          <button type="button" id="btnToggleDistanceRuler" class="btn-distance-ruler" title="Separación angular y ángulo de posición entre dos fuentes; distancia 3D solo si ambas tienen paralaje medida">
+            📏 <span id="i18nBtnDistanceRuler">Medir A↔B</span>
           </button>
-          <button type="button" id="btnScanWithGemini" class="btn-ai-gemini-scan" title="Enviar telemetría de anomalías e imagen actual al Copiloto Gemini para diagnóstico profundo">
+          <button type="button" id="btnScanWithGemini" class="btn-ai-gemini-scan" title="Enviar la telemetría medida y la imagen actual al copiloto (Gemini, o motor local sin clave)">
             ✨ <span id="i18nBtnScanGemini">Consultar a Gemini</span>
           </button>
           <div class="viewer-status">
@@ -444,6 +444,7 @@
           <button type="button" id="btnZoomIn" class="zoom-btn" title="Acercar (Rueda del ratón arriba)">＋</button>
           <button type="button" id="btnZoomOut" class="zoom-btn" title="Alejar (Rueda del ratón abajo)">－</button>
           <button type="button" id="btnZoomReset" class="zoom-btn" title="Restablecer vista 1:1">1:1</button>
+          <button type="button" id="btnFullscreen" class="zoom-btn" title="Pantalla completa (F)" aria-label="Pantalla completa">⛶</button>
           <button type="button" id="btnRecenterHere" class="zoom-btn zoom-btn-wide" title="Cargar nuevo cubo SPHEREx centrado en el punto actual">
             🎯 <span id="i18nBtnRecenter">Re-centrar Aquí</span>
           </button>
@@ -457,6 +458,7 @@
         <div class="hud-top-left" id="hudTopLeft">
           <div class="hud-chip" id="hudEpochTitle">ÉPOCA 1 / —</div>
           <div class="hud-chip hud-chip-sub" id="hudDateMjd">MJD — · — exp</div>
+          <div class="hud-chip hud-chip-sub hud-track-legend" id="i18nTrackLegend">✚ Posición predicha por la astrometría de catálogo</div>
         </div>
 
         <div class="hud-top-right" id="hudTopRight">
@@ -468,7 +470,7 @@
         <div class="ai-detector-hud" id="aiDetectorHud">
           <div class="ai-hud-header">
             <span class="ai-hud-pulse"></span>
-            <strong id="i18nAiHudTitle">Detector IA de Anomalías</strong>
+            <strong id="i18nAiHudTitle">Detector de candidatos (verificación ePSF)</strong>
             <span class="ai-hud-badge" id="aiHudCountBadge">0 detectadas</span>
           </div>
           <div class="ai-hud-pills" id="aiDetectorHudPills">
@@ -485,14 +487,14 @@
         <!-- Overlay de carga -->
         <div class="loading-overlay" id="loadingOverlay" hidden>
           <div class="spinner-ring"></div>
-          <p class="loading-title" id="loadingTitle">Consultando IRSA TAP + AWS S3...</p>
-          <p class="loading-sub" id="loadingSub">Descargando recortes FITS L2b, restando luz zodiacal y reproyectando WCS</p>
+          <p class="loading-title" id="loadingTitle">Consultando IRSA (TAP/SIA) + AWS S3...</p>
+          <p class="loading-sub" id="loadingSub">Recortes L2b por HTTP Range, resta de ZODI, fotometría ePSF y reproyección WCS</p>
         </div>
 
         <!-- Barra de información de píxel bajo el cursor y barra de color -->
         <div class="hud-bottom-bar">
           <div class="cursor-readout" id="cursorReadout">
-            <span id="i18nCursorPrompt">Pasa el cursor sobre la imagen para medir coordenadas sexagesimales/decimales, flujo (MJy/sr, µJy) y magnitud AB</span>
+            <span id="i18nCursorPrompt">Pasa el cursor sobre la imagen para leer coordenadas y brillo superficial (MJy/sr)</span>
           </div>
           <div class="colorbar-box">
             <span id="cbarMin">0.0</span>
@@ -527,7 +529,7 @@
       <div class="science-banner" id="scienceBanner">
         <div class="science-icon">🔭</div>
         <div class="science-text">
-          <strong id="scienceTitle">WISE 0855−0714 (Enana marrón Y4)</strong>
+          <strong id="scienceTitle">WISE 0855−0714</strong>
           <p id="scienceDesc">
             Cargando datos reales de SPHEREx desde NASA/IPAC IRSA...
           </p>
@@ -536,14 +538,14 @@
 
       <!-- ESCUDO ANTI-ARTEFACTOS L2b, FOTOMETRÍA TRACTOR 15x15 Y MOTOR MATEMÁTICO EN VIVO -->
       <details class="math-shield-details" id="mathShieldDetails">
-        <summary id="i18nMathShieldSummary">🛡️ Escudo Anti-Artefactos L2b, Fotometría Forzada Tractor (15×15) y Ecuaciones en Vivo</summary>
+        <summary id="i18nMathShieldSummary">🛡️ Calidad de datos (FLAGS oficiales), fotometría ePSF y ecuaciones en vivo</summary>
         <div class="math-shield-body">
           <div class="shield-header-row">
-            <span class="shield-sub-title" id="i18nShieldSubTitle">Verificación de Integridad Instrumental H2RG (Teledyne 2048×2048) y Ambiente Espacial LEO</span>
+            <span class="shield-sub-title" id="i18nShieldSubTitle">Calculado con las banderas oficiales del pipeline SPHEREx (Suplemento Explicativo v2.1, Tabla 16)</span>
             <span class="doi-pills">
-              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx QR2 / DR1 Spectral Images DOI">DOI: 10.26131/IRSA678</a>
-              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx Shared Tools DOI">DOI: 10.26131/IRSA679</a>
-              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx Cutout Service DOI">DOI: 10.26131/IRSA662</a>
+              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx DR1 Spectral Images">DOI: 10.26131/IRSA678</a>
+              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx DR1 Spectral All-Sky Cube">DOI: 10.26131/IRSA679</a>
+              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill" title="SPHEREx Quick Release Spectral Images – QR3">DOI: 10.26131/IRSA662</a>
             </span>
           </div>
           <div class="artifact-shield-grid" id="artifactShieldGrid">
@@ -568,8 +570,10 @@
                 <th id="thBand">Banda</th>
                 <th id="thDate">Fecha UTC</th>
                 <th id="thWave">λ Central (µm)</th>
+                <th id="thFlux">Flujo (µJy)</th>
+                <th id="thQual">Calidad</th>
                 <th id="thZodi">Zodi (MJy/sr)</th>
-                <th id="thFlags">Flags Malos</th>
+                <th id="thFlags">Píx. rechazados</th>
                 <th id="thSource">Origen</th>
               </tr>
             </thead>
@@ -586,28 +590,28 @@
         <div class="section-header-compact">
           <div class="section-title-left">
             <span class="section-step">04</span>
-            <h2 id="i18nSec4">Espectro Infrarrojo LVF (WCS-WAVE)</h2>
+            <h2 id="i18nSec4">Espectro del objetivo (fotometría ePSF por exposición)</h2>
           </div>
           <button id="btnDownloadSpecCsv" class="btn btn-xs btn-ghost btn-csv-fixed" type="button" title="Descargar espectro en CSV">⬇ CSV</button>
         </div>
         <div class="spec-sub-toolbar">
-          <label class="toggle-inline-xs" title="Superponer curva teórica de Cuerpo Negro + bandas de absorción de hielos biogénicos (H2O, CH4, CO2, CO)">
+          <label class="toggle-inline-xs" title="Superponer el espectro de 102 canales del cubo oficial DR1 (co-adición de un año) en la posición del objetivo">
             <input type="checkbox" id="chkShowBlackbody" checked />
-            <span id="i18nChkBlackbody">Modelo Planck + Hielos τ(λ)</span>
+            <span id="i18nChkBlackbody">Superponer espectro DR1 (102 canales)</span>
           </label>
-          <span class="spec-teff-badge" id="specTeffBadge">T_eff ≈ — K</span>
+          <span class="spec-teff-badge" id="specTeffBadge">T_eff: —</span>
         </div>
         <p class="chart-sub" id="spectrumSubtitle">
-          Brillo superficial vs. longitud de onda (0.75–5.0 µm) · Haz clic en cualquier fuente del mapa para extraer su espectro
+          Flujo (µJy) vs. longitud de onda. Cada punto es una exposición L2b a su λ real; la línea es la co-adición DR1.
         </p>
         <div class="chart-box">
           <canvas id="spectrumCanvas" width="460" height="215"></canvas>
         </div>
         <div class="mol-legend" id="molLegendBar">
-          <span class="mol-pill" id="i18nMolBands">Bandas Moleculares y Profundidad Óptica τ(λ):</span>
-          <span class="mol-item" id="tauPillH2O">💧 H₂O (1.4, 1.9, 3.05 µm)</span>
-          <span class="mol-item" id="tauPillCH4">🔥 CH₄ (1.65, 3.32 µm)</span>
-          <span class="mol-item" id="tauPillCO2">❄️ CO₂ (4.27 µm) · CO (4.67 µm)</span>
+          <span class="mol-pill" id="i18nMolBands">Profundidad aparente de banda (espectro DR1):</span>
+          <span class="mol-item" id="tauPillH2O">H₂O 3.0 µm</span>
+          <span class="mol-item" id="tauPillCH4">CH₄ 3.3 µm</span>
+          <span class="mol-item" id="tauPillCO2">CO₂ 4.27 µm · CO 4.67 µm</span>
         </div>
       </div>
 
@@ -616,12 +620,12 @@
         <div class="section-header-compact">
           <div class="section-title-left">
             <span class="section-step">05</span>
-            <h2 id="i18nSec5">Curva de Luz y Fotometría Tractor</h2>
+            <h2 id="i18nSec5">Curva de luz por canal (misma λ)</h2>
           </div>
-          <span class="aperture-badge" id="apertureCoordBadge">Centro (r = 2.5 px)</span>
+          <span class="aperture-badge" id="apertureCoordBadge">—</span>
         </div>
         <p class="chart-sub" id="i18nLcSub">
-          Evolución temporal del brillo superficial (MJy/sr) y magnitud AB · Clic en un candidato o astro reconocido para medir distancia y espectro:
+          Flujo ePSF vs. fecha; cada color es un canal (λ fija). Clic en un candidato o fuente para medirla:
         </p>
         <div class="candidates-bar" id="candidatesBar">
           <!-- Píldoras de candidatos detectados automáticamente -->
@@ -656,11 +660,11 @@
           <button type="button" class="prompt-chip" data-q-es="¿Qué objeto se mueve o forma un dipolo en esta región?" data-q-en="Which object is moving or forming a dipole in this region?" id="qChip1">
             🚀 ¿Qué se mueve aquí?
           </button>
-          <button type="button" class="prompt-chip" data-q-es="Interpreta el espectro LVF, la temperatura efectiva y las bandas de H2O, CH4 y CO2." data-q-en="Interpret the LVF spectrum, effective temperature, and H2O, CH4, CO2 bands." id="qChip2">
-            🌈 Analizar espectro LVF
+          <button type="button" class="prompt-chip" data-q-es="Interpreta el espectro medido (L2b y DR1): ¿qué bandas moleculares se ven y son de gas o de hielo? Usa solo la telemetría." data-q-en="Interpret the measured spectrum (L2b and DR1): which molecular bands are seen, and are they gas or ice? Use only the telemetry." id="qChip2">
+            🌈 Interpretar el espectro
           </button>
-          <button type="button" class="prompt-chip" data-q-es="¿Existe variabilidad real en la curva de luz o algún artefacto en el Escudo L2b?" data-q-en="Is there real variability in the light curve or any artifact in the L2b Shield?" id="qChip3">
-            📈 Evaluar curva y Escudo L2b
+          <button type="button" class="prompt-chip" data-q-es="¿Hay variabilidad real a la misma longitud de onda o solo diferencias espectrales/saturación? Usa la curva de luz por canal y la calidad de datos." data-q-en="Is there real variability at the same wavelength, or only spectral differences/saturation? Use the per-channel light curve and the data quality." id="qChip3">
+            📈 ¿Hay variabilidad real?
           </button>
         </div>
 
@@ -778,14 +782,14 @@
     <div class="docs-modal preset-modal-box" role="dialog" aria-modal="true" aria-labelledby="mpcModalTitle">
       <div class="docs-modal-header">
         <div class="docs-modal-title-group">
-          <span class="mission-badge" id="i18nMpcModalBadge">IAU MINOR PLANET CENTER · 80 COLUMNAS</span>
-          <h2 id="mpcModalTitle">Reporte Astrométrico Oficial MPC (80 Columnas)</h2>
+          <span class="mission-badge" id="i18nMpcModalBadge">IAU MINOR PLANET CENTER · 80 COLUMNAS · CÓDIGO 288</span>
+          <h2 id="mpcModalTitle">Borrador astrométrico MPC (formato satélite de 2 líneas)</h2>
         </div>
         <button id="btnCloseMpcModal" class="btn btn-ghost" type="button">✕ <span id="i18nBtnCloseMpc">Cerrar</span></button>
       </div>
       <div class="preset-form">
         <p class="section-hint" id="i18nMpcDesc">
-          Formato estricto de 80 columnas de la Unión Astronómica Internacional (IAU MPC) generado a partir del centroide sub-píxel WCS, época MJD y fotometría forzada AB (Observatorio Espacial SPHEREx):
+          Formato de 80 columnas para observaciones desde satélite (línea «S» + línea «s» con el vector geocéntrico de SPHEREx). Código oficial de SPHEREx: 288. Solo para candidatos con movimiento confirmado y sin contrapartida estelar.
         </p>
         <div class="mpc-ruler">12345678901234567890123456789012345678901234567890123456789012345678901234567890</div>
         <textarea id="mpcReportText" rows="7" class="text-input mpc-textarea" readonly></textarea>
@@ -868,50 +872,68 @@
 
         <div class="res-cards-grid">
           <div class="res-card">
-            <span class="res-tag">NASA / IPAC IRSA · ARCHIVO PRINCIPAL</span>
-            <h3>SPHEREx Mission Archive at IRSA</h3>
-            <p>Portal oficial de NASA/IPAC con acceso a imágenes espectrales calibradas Nivel 2 (L2b), mapas de luz zodiacal (ZODI), máscaras de bits (FLAGS) y tablas LVF WCS-WAVE.</p>
+            <span class="res-tag">NASA DATA · NASA/IPAC IRSA</span>
+            <h3>SPHEREx Mission at IRSA</h3>
+            <p>Archivo oficial: imágenes espectrales L2b (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), cubo All-Sky DR1, Suplemento Explicativo y servicios TAP/SIA.</p>
             <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noopener">irsa.ipac.caltech.edu/Missions/spherex.html ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">RETO OFICIAL · NASA SPACE APPS 2026</span>
-            <h3>Planet X and SPHEREx — Challenge Resources</h3>
-            <p>Guía oficial de recursos del reto: búsqueda de objetos transneptunianos distantes (Planeta X / KBOs), enanas marrones cercanas (Y/T/L) y variables infrarrojas.</p>
-            <a href="https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources" target="_blank" rel="noopener">spaceappschallenge.org · Planet X &amp; SPHEREx ↗</a>
+            <span class="res-tag">NASA DATA · TUTORIALES OFICIALES</span>
+            <h3>SPHEREx Tutorial Notebooks</h3>
+            <p>Notebooks de IRSA en Python (acceso SIA/TAP, recortes, PSF, cubo HiPS, mosaicos). SkyChrono sigue los mismos métodos: SIA con colecciones DR1/QR3 y lectura en S3.</p>
+            <a href="https://caltech-ipac.github.io/irsa-tutorials/spherex/" target="_blank" rel="noopener">caltech-ipac.github.io/irsa-tutorials/spherex ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">DOI OFICIAL · DATOS QR1 / QR2 / DR1</span>
-            <h3>SPHEREx Spectral Images &amp; Cutout Service</h3>
-            <p>Acceso programático utilizado por SkyChrono mediante consultas ADQL en IRSA TAP (<code>spherex.artifact</code> + <code>spherex.plane</code>) y lecturas parciales HTTP Range en AWS S3 Open Data (<code>s3://nasa-irsa-spherex/</code>).</p>
+            <span class="res-tag">NASA DATA · MODELO DE HERRAMIENTA</span>
+            <h3>WiseView</h3>
+            <p>Visor de parpadeo (blink) de datos de WISE usado por el público para cientos de descubrimientos de movimiento propio. Inspiración del modo Blink de SkyChrono.</p>
+            <a href="http://byw.tools/wiseview" target="_blank" rel="noopener">byw.tools/wiseview ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">NASA DATA · GAIA DR3 EN MAST</span>
+            <h3>Gaia Mission Data (Data Release 3)</h3>
+            <p>SkyChrono consulta Gaia DR3 en MAST para identificar fuentes, propagar posiciones y dar distancias solo cuando la paralaje es fiable (π/σ ≥ 5).</p>
+            <a href="https://archive.stsci.edu/missions-and-data/gaia" target="_blank" rel="noopener">archive.stsci.edu/missions-and-data/gaia ↗</a>
+          </div>
+          <div class="res-card">
+            <span class="res-tag">DOIs · DATOS UTILIZADOS</span>
+            <h3>DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES</h3>
+            <p>Citas de los productos usados: imágenes DR1, cubo All-Sky DR1, imágenes QR3 y la lista de objetivos de hielos SPLICES.</p>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
-              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA678</a>
-              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA679</a>
-              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill">DOI: 10.26131/IRSA662</a>
+              <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA678</a>
+              <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA679</a>
+              <a href="https://doi.org/10.26131/IRSA662" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA662</a>
+              <a href="https://doi.org/10.26131/IRSA554" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA554</a>
             </div>
           </div>
           <div class="res-card">
-            <span class="res-tag">ESPECTROSCOPÍA LVF &amp; HIELOS BIOGÉNICOS (SPLICES)</span>
-            <h3>102 Bandas Espectrales (0.75–5.0 µm) &amp; Catálogo SPLICES</h3>
-            <p>Filtros Linealmente Variables (LVF D1–D6), divisor dicroico a 2.42 µm y catálogo <strong>SPLICES (SPHEREx Target List of Ice Sources)</strong> para medir profundidades ópticas τ(λ) de H₂O (3.05 µm), CH₄ (3.32 µm), CO₂ (4.27 µm) y CO (4.67 µm).</p>
-            <a href="https://irsa.ipac.caltech.edu/data/SPHEREx/" target="_blank" rel="noopener">irsa.ipac.caltech.edu/data/SPHEREx (SPLICES &amp; 3I/ATLAS) ↗</a>
+            <span class="res-tag">IAU MINOR PLANET CENTER</span>
+            <h3>Formato de observaciones desde satélite</h3>
+            <p>Código de observatorio de SPHEREx: <strong>288</strong>. Las observaciones espaciales requieren una segunda línea con el vector geocéntrico del satélite. El MPC solo acepta objetos del Sistema Solar.</p>
+            <a href="https://www.minorplanetcenter.net/iau/info/SatelliteObs.html" target="_blank" rel="noopener">minorplanetcenter.net · SatelliteObs ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">CÓDIGO OFICIAL · CALTECH-IPAC &amp; ASTROPY</span>
-            <h3>SPHEREx Archive Tutorials &amp; Explanatory Supplement</h3>
-            <p>Guías oficiales de Caltech/IPAC implementadas en nuestro motor: evaluación 2D <code>WCS-WAVE</code> (FITS Tabular Lookup), reproyección WCS tangencial (<code>reproject_interp</code>) y apilado libre de artefactos.</p>
-            <a href="https://github.com/Caltech-IPAC/spherex-archive-tutorials" target="_blank" rel="noopener">github.com/Caltech-IPAC/spherex-archive-tutorials ↗</a>
+            <span class="res-tag">SOCIO · AGENCIA ESPACIAL CANADIENSE (CSA)</span>
+            <h3>NEOSSat · CADC</h3>
+            <p>NEOSSat, primer telescopio espacial dedicado a asteroides, cometas y basura espacial, y el Canadian Astronomy Data Centre con su tutorial y conjunto de datos.</p>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+              <a href="https://www.asc-csa.gc.ca/eng/satellites/neossat/" target="_blank" rel="noopener" class="doi-pill">NEOSSat</a>
+              <a href="https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/en/" target="_blank" rel="noopener" class="doi-pill">CADC</a>
+              <a href="https://github.com/asc-csa/NEOSSAT_Tutorial" target="_blank" rel="noopener" class="doi-pill">Tutorial</a>
+              <a href="https://data.asc-csa.gc.ca/dataset/neossat" target="_blank" rel="noopener" class="doi-pill">Dataset</a>
+            </div>
           </div>
           <div class="res-card">
-            <span class="res-tag">CIENCIA CIUDADANA · MOVIMIENTO PROPIO &amp; PLANETA X</span>
-            <h3>Backyard Worlds: Planet 9 &amp; IAU Minor Planet Center</h3>
-            <p>Inspiración oficial del reto para detección de dipolos cinemáticos multi-época (Planeta X, KBOs, cometa interestelar 3I/ATLAS y enanas Y/T) con exportación astrométrica oficial de 80 columnas IAU MPC.</p>
-            <a href="https://www.minorplanetcenter.net/iau/info/OpticalObs.html" target="_blank" rel="noopener">IAU Minor Planet Center (Formato 80 Columnas) ↗</a>
+            <span class="res-tag">RETO OFICIAL · NASA SPACE APPS 2026</span>
+            <h3>Planet X and SPHEREx</h3>
+            <p>Página del reto con la lista oficial de recursos. NASA no respalda entidades ajenas al Gobierno de EE. UU.; respeta las condiciones de uso de cada sitio.</p>
+            <a href="https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources" target="_blank" rel="noopener">spaceappschallenge.org · Planet X &amp; SPHEREx ↗</a>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <script src="/static/app.js?v=22"></script>
+  <script src="/static/app.js?v=26"></script>
 </body>
 </html>

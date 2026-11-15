@@ -1,16 +1,22 @@
 """
-Motor astrofísico y de datos para SPHEREx SkyChrono (NASA Space Apps Challenge).
+Motor astrofísico y de datos de SPHEREx SkyChrono (NASA Space Apps Challenge 2026).
 
-Funcionalidades:
-- Resolución de coordenadas (decimal, sexagesimal, SIMBAD/Sesame) con propagación de movimiento propio.
-- Descubrimiento de exposiciones SPHEREx vía IRSA TAP (spherex.artifact + spherex.plane).
-- Descarga ultrarrápida de recortes (cutouts) por rangos de bytes (HTTP Range) desde AWS S3
-  (s3://nasa-irsa-spherex/), con fallback automático al servidor IBE de IRSA y caché en disco.
-- Limpieza de luz zodiacal (extensión ZODI) y decodificación de bits de contaminación (FLAGS).
-- Reproyección WCS (TAN-SIP -> TAN común Norte-arriba) y apilado (mediana/media) por época.
-- Extracción de espectros al vuelo (0.75 - 5.0 um) usando la tabla LVF WCS-WAVE de cada exposición.
-- Curvas de luz multi-época y fotometría de apertura.
-- Superposición de catálogos externos (Gaia DR3 y AllWISE vía VizieR) con vectores de movimiento propio.
+Principios de diseño (revisión de rigor científico, nov. 2026):
+- Todo dato científico mostrado proviene de productos oficiales de SPHEREx (IRSA / AWS S3) o de
+  catálogos oficiales (Gaia DR3, AllWISE, SIMBAD, JPL Horizons). Cuando un dato no existe o no es
+  fiable (saturación, baja S/N, sin paralaje), se devuelve `None` y se explica por qué: nunca se
+  rellena con valores inventados.
+- Las posiciones de los objetivos de alto movimiento propio se propagan a la fecha de CADA
+  exposición (astropy `apply_space_motion`) antes de medir su flujo.
+- La fotometría usa el método del pipeline oficial (Suplemento Explicativo SPHEREx v2.1, sec. 3.3):
+  ajuste forzado con la ePSF oficial de cada exposición, pesos 1/VARIANCE, máscara oficial de
+  píxeles, ángulo sólido del píxel derivado del WCS con distorsión SIP y +3 % de error sistemático.
+- La longitud de onda de cada medición sale de la tabla WCS-WAVE de la exposición en la posición
+  del detector donde cayó la fuente (verificado contra los archivos CWAVE oficiales: error ≤ 5 % del
+  ancho de banda).
+
+Referencia principal: SPHEREx Explanatory Supplement v2.1 (2026-11-10),
+https://irsa.ipac.caltech.edu/data/SPHEREx/docs/SPHEREx_Expsupp.pdf
 """
 from __future__ import annotations
 
@@ -21,15 +27,16 @@ import io
 import json
 import os
 import re
+import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import requests
 from astropy import units as u
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import Distance, SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import FITSFixedWarning, WCS
@@ -37,19 +44,37 @@ from PIL import Image
 from reproject import reproject_interp
 
 warnings.filterwarnings("ignore", category=FITSFixedWarning)
+warnings.filterwarnings("ignore", message=".*ERFA function.*")
 
+# ---------------------------------------------------------------------------
+# Servicios oficiales
+# ---------------------------------------------------------------------------
 TAP_URL = "https://irsa.ipac.caltech.edu/TAP/sync"
 S3_BASE = "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/"
 IBE_BASE = "https://irsa.ipac.caltech.edu/"
-VIZIER_TAP = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync"
+# VizieR (ASU-TSV) con espejo de respaldo en CfA/Harvard
+VIZIER_ASU_MIRRORS = [
+    "https://vizier.cds.unistra.fr/viz-bin/asu-tsv",
+    "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv",
+]
+# SIMBAD TAP con espejo de respaldo en CfA/Harvard
+SIMBAD_TAP_MIRRORS = [
+    "https://simbad.cds.unistra.fr/simbad/sim-tap/sync",
+    "https://simbad.harvard.edu/simbad/sim-tap/sync",
+]
+TAP_TIMEOUT_S = float(os.environ.get("SPHEREX_TAP_TIMEOUT", "30"))
+SIA_TIMEOUT_S = float(os.environ.get("SPHEREX_SIA_TIMEOUT", "60"))
 
-PIX_SCALE_NATIVE = 6.15  # arcsec / pixel nativo de SPHEREx
-SOLID_ANGLE_SR = (PIX_SCALE_NATIVE / 206264.806247) ** 2  # ~8.894e-10 sr por píxel nativo
+PIX_SCALE_NATIVE = 6.15  # arcsec / píxel nativo (Suplemento, Tabla 2)
+SOLID_ANGLE_SR = (PIX_SCALE_NATIVE / 206264.806247) ** 2  # ≈ 8.890e-10 sr (nominal; el real sale del WCS)
+EXPTIME_S = 113.58  # s (Suplemento, Tabla 2)
+SYSTEMATIC_FRAC = 0.03  # Suplemento sec. 3.3, Nota 1: 3 % sistemático en cuadratura
+AB_ZP_UJY = 23.9  # m_AB = 23.9 − 2.5 log10(F/µJy)   (3631 Jy ↔ m_AB = 0)
+MPC_OBS_CODE_SPHEREX = "288"  # Lista oficial de códigos de observatorio del MPC: "288 SPHEREx"
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
-os.makedirs(os.path.join(CACHE_DIR, "tap"), exist_ok=True)
-os.makedirs(os.path.join(CACHE_DIR, "cutouts"), exist_ok=True)
-os.makedirs(os.path.join(CACHE_DIR, "catalogs"), exist_ok=True)
+for _sub in ("tap", "cutouts", "catalogs", "cubes", "hips", "dr1spec"):
+    os.makedirs(os.path.join(CACHE_DIR, _sub), exist_ok=True)
 
 
 def _load_dotenv() -> None:
@@ -68,231 +93,412 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-# Definición oficial de bits de la extensión FLAGS de SPHEREx L2b / QR3 / DR1
+# ---------------------------------------------------------------------------
+# Bits oficiales de la extensión FLAGS (Suplemento v2.1, Tabla 16; coinciden con las claves
+# MSKNnnnn de las cabeceras de los archivos L2b DR1). Los bits 3, 5, 8, 13, 16 y 18 no se usan.
+# ---------------------------------------------------------------------------
 FLAG_DEFINITIONS = [
-    {"bit": 0, "name": "TRANSIENT", "label": "Rayo cósmico / transiente SUR (SAA)", "label_en": "Cosmic ray / SUR transient (SAA)", "bad": True, "color": "#ff4d6d"},
-    {"bit": 1, "name": "OVERFLOW", "label": "Saturación / desbordamiento ADC", "label_en": "ADC saturation / overflow", "bad": True, "color": "#ff758f"},
-    {"bit": 2, "name": "SUR_ERROR", "label": "Error de procesamiento a bordo (SUR)", "label_en": "Onboard SUR processing error", "bad": True, "color": "#ff8fa3"},
-    {"bit": 4, "name": "PHANTOM", "label": "Píxel fantasma de referencia", "label_en": "Reference phantom pixel", "bad": True, "color": "#c77dff"},
-    {"bit": 6, "name": "NONFUNC", "label": "Píxel muerto / no funcional", "label_en": "Non-functional / dead pixel", "bad": True, "color": "#7209b7"},
-    {"bit": 7, "name": "DICHROIC", "label": "Borde del divisor dicroico (2.42 µm)", "label_en": "Dichroic beam-splitter edge (2.42 µm)", "bad": True, "color": "#560bad"},
-    {"bit": 9, "name": "MISSING_DATA", "label": "Datos perdidos en telemetría", "label_en": "Missing telemetry data", "bad": True, "color": "#480ca8"},
-    {"bit": 10, "name": "HOT", "label": "Píxel caliente (corriente oscura alta)", "label_en": "Hot pixel (high dark current)", "bad": True, "color": "#f72585"},
-    {"bit": 11, "name": "COLD", "label": "Píxel frío / sensibilidad anómala", "label_en": "Anomalous cold pixel", "bad": True, "color": "#4cc9f0"},
-    {"bit": 12, "name": "FULLSAMPLE", "label": "Historial completo disponible", "label_en": "Full sample history available", "bad": False, "color": "#90e0ef"},
-    {"bit": 15, "name": "NONLINEAR", "label": "Corrección no-lineal incierta", "label_en": "Uncertain non-linearity correction", "bad": True, "color": "#f8961e"},
-    {"bit": 17, "name": "PERSIST", "label": "Persistencia latente H2RG", "label_en": "H2RG latent persistence", "bad": True, "color": "#f9c74f"},
-    {"bit": 19, "name": "OUTLIER", "label": "Outlier estadístico", "label_en": "Statistical outlier", "bad": True, "color": "#f9844a"},
-    {"bit": 20, "name": "CROSSTALK", "label": "Diafonía electrónica H2RG (32 canales)", "label_en": "H2RG 32-channel electronic crosstalk", "bad": True, "color": "#ff9e00"},
-    {"bit": 21, "name": "SOURCE", "label": "Fuente astronómica catalogada (MP_SOURCE)", "label_en": "Cataloged astronomical source (MP_SOURCE)", "bad": False, "color": "#00f5d4"},
-    {"bit": 22, "name": "GHOST", "label": "Fantasma óptico interno", "label_en": "Internal optical ghost", "bad": True, "color": "#b5179e"},
-    {"bit": 25, "name": "STREAK", "label": "Traza de satélite LEO / basura espacial", "label_en": "LEO satellite / orbital debris streak", "bad": True, "color": "#ff007f"},
-    {"bit": 26, "name": "BLOOM", "label": "Sangrado de carga (Charge Blooming B1)", "label_en": "Charge blooming (Band 1 defect)", "bad": True, "color": "#ff5400"},
-    {"bit": 27, "name": "SNOWBALL", "label": "Impacto radiativo extenso (Snowball)", "label_en": "Extended radiation snowball", "bad": True, "color": "#e0aaff"},
-    {"bit": 28, "name": "HALO", "label": "Halo de difracción de estrella brillante", "label_en": "Bright star diffraction halo", "bad": False, "color": "#48cae4"},
-    {"bit": 29, "name": "SATELLITE_HALO", "label": "Halo difuso de satélite LEO", "label_en": "Diffuse LEO satellite halo", "bad": True, "color": "#ff6b6b"},
+    {"bit": 0, "name": "TRANSIENT", "label": "Transitorio detectado en la rampa SUR (rayo cósmico, satélite o inicio de blooming)", "label_en": "Transient detected during SUR (cosmic ray, satellite or bloom onset)", "color": "#ff4d6d"},
+    {"bit": 1, "name": "OVERFLOW", "label": "Umbral de desbordamiento SUR (~mitad del pozo lleno): posible saturación", "label_en": "SUR overflow threshold (~half full well): possible saturation", "color": "#ff758f"},
+    {"bit": 2, "name": "SUR_ERROR", "label": "Error de procesamiento a bordo (o transitorio/desborde temprano)", "label_en": "Onboard processing error (or early transient/overflow)", "color": "#ff8fa3"},
+    {"bit": 6, "name": "NONFUNC", "label": "Píxel permanentemente inutilizable", "label_en": "Permanently unusable pixel", "color": "#7209b7"},
+    {"bit": 7, "name": "DICHROIC", "label": "Baja eficiencia por el divisor dicroico (bandas 3–4)", "label_en": "Low efficiency due to the dichroic (bands 3–4)", "color": "#560bad"},
+    {"bit": 9, "name": "MISSING_DATA", "label": "Datos perdidos a bordo / en la bajada", "label_en": "Onboard data lost", "color": "#480ca8"},
+    {"bit": 10, "name": "HOT", "label": "Píxel caliente en esta exposición", "label_en": "Hot pixel in this exposure", "color": "#f72585"},
+    {"bit": 11, "name": "COLD", "label": "Señal anómalamente baja en esta exposición", "label_en": "Anomalously low signal in this exposure", "color": "#4cc9f0"},
+    {"bit": 12, "name": "FULLSAMPLE", "label": "Historial completo de muestras disponible (informativo)", "label_en": "Full sample history available (informational)", "color": "#90e0ef"},
+    {"bit": 14, "name": "PHANMISS", "label": "Corrección de píxeles fantasma no aplicada", "label_en": "Phantom correction was not applied", "color": "#b8c0ff"},
+    {"bit": 15, "name": "NONLINEAR", "label": "Corrección de no linealidad no fiable", "label_en": "Nonlinearity correction not reliable", "color": "#f8961e"},
+    {"bit": 17, "name": "PERSIST", "label": "Carga persistente por encima del umbral", "label_en": "Persistent charge above threshold", "color": "#f9c74f"},
+    {"bit": 19, "name": "OUTLIER", "label": "Marcado por el módulo de detección de outliers", "label_en": "Flagged by Detect Outlier Pixels", "color": "#f9844a"},
+    {"bit": 20, "name": "CROSSTALK", "label": "Afectado por diafonía (crosstalk) eléctrica", "label_en": "Affected by electrical crosstalk", "color": "#ff9e00"},
+    {"bit": 21, "name": "SOURCE", "label": "Píxel asociado a una fuente catalogada (informativo, NO se enmascara)", "label_en": "Pixel mapped to a known source (informational, NOT masked)", "color": "#00f5d4"},
+    {"bit": 22, "name": "GHOST", "label": "Fantasma óptico de una fuente brillante en la exposición", "label_en": "Optical ghost from a bright source in the exposure", "color": "#b5179e"},
+    {"bit": 23, "name": "GHOST_FPA", "label": "Fantasma de una fuente en otro detector (sin uso en DR1)", "label_en": "Ghost from a source on another detector (unused in DR1)", "color": "#9d4edd"},
+    {"bit": 24, "name": "GHOST_EXT", "label": "Fantasma de una fuente fuera del campo", "label_en": "Ghost from a source outside the field of view", "color": "#c77dff"},
+    {"bit": 25, "name": "STREAK", "label": "Traza (satélite / objeto en órbita terrestre)", "label_en": "Streak (Earth-orbiting object)", "color": "#ff007f"},
+    {"bit": 26, "name": "BLOOM", "label": "Blooming: carga desbordada de una fuente brillante saturada", "label_en": "Blooming: charge spill from a bright saturated source", "color": "#ff5400"},
+    {"bit": 27, "name": "SNOWBALL", "label": "Evento 'snowball' (rayo cósmico muy energético)", "label_en": "Snowball event (very energetic cosmic ray)", "color": "#e0aaff"},
+    {"bit": 28, "name": "HALO", "label": "Halo de un transitorio cercano", "label_en": "Halo of a nearby transient", "color": "#48cae4"},
+    {"bit": 29, "name": "SATELLITE_HALO", "label": "Halo de una traza de satélite", "label_en": "Halo of a satellite streak", "color": "#ff6b6b"},
 ]
-# Máscara estricta de píxeles muertos/inválidos de hardware (no enmascara núcleos brillantes con OVERFLOW/NONLINEAR/OUTLIER ni Bit 21 SOURCE)
-BAD_MASK = sum(1 << b for b in (2, 4, 6, 7, 9, 10, 11, 25, 26, 27))
+_FLAG_BIT = {f["name"]: f["bit"] for f in FLAG_DEFINITIONS}
 
-# Coordenadas nativas del defecto conocido de Charge Blooming en Banda 1 (H2RG 2048x2048)
-BAND1_BLOOM_CENTER_X = 1648.0
-BAND1_BLOOM_CENTER_Y = 1752.0
-BAND1_BLOOM_RADIUS_PX = 85.0
 
-# DOIs oficiales de archivo IRSA/IPAC para atribución científica
+def _mask_of(names: Sequence[str]) -> int:
+    return int(sum(1 << _FLAG_BIT[n] for n in names))
+
+
+# Píxeles rechazados al construir imágenes (misma lista que usa el equipo SPHEREx para el cubo DR1,
+# Suplemento sec. 2.5). OVERFLOW, SOURCE y OUTLIER se conservan.
+DISPLAY_REJECT_NAMES = (
+    "TRANSIENT", "SUR_ERROR", "NONFUNC", "DICHROIC", "MISSING_DATA", "HOT", "COLD", "PHANMISS",
+    "NONLINEAR", "PERSIST", "CROSSTALK", "STREAK", "BLOOM", "SNOWBALL", "HALO", "SATELLITE_HALO",
+)
+DISPLAY_REJECT_MASK = _mask_of(DISPLAY_REJECT_NAMES)
+BAD_MASK = DISPLAY_REJECT_MASK  # alias histórico
+
+# Máscara oficial para el ajuste fotométrico (Suplemento sec. 3.3, "Flags for masking pixels for photometry")
+PHOT_MASK_NAMES = (
+    "SUR_ERROR", "NONFUNC", "MISSING_DATA", "HOT", "COLD", "NONLINEAR", "PERSIST",
+    "BLOOM", "SNOWBALL", "HALO", "SATELLITE_HALO",
+)
+PHOT_MASK = _mask_of(PHOT_MASK_NAMES)
+
+# Aviso CONTAINS_BAD_PIXEL del pipeline L3 (radio 2.5 píxeles nativos, Suplemento sec. 3.3)
+PHOT_WARN_NAMES = (
+    "TRANSIENT", "OVERFLOW", "SUR_ERROR", "NONFUNC", "DICHROIC", "MISSING_DATA", "HOT", "COLD",
+    "NONLINEAR", "CROSSTALK", "GHOST", "GHOST_FPA", "GHOST_EXT", "STREAK", "PERSIST", "BLOOM",
+    "SNOWBALL", "HALO", "SATELLITE_HALO",
+)
+PHOT_WARN_MASK = _mask_of(PHOT_WARN_NAMES)
+SATURATION_MASK = _mask_of(("OVERFLOW", "NONLINEAR", "BLOOM"))
+
+
+def flag_names(bits: int) -> List[str]:
+    return [f["name"] for f in FLAG_DEFINITIONS if (int(bits) >> f["bit"]) & 1]
+
+
+# DOIs oficiales (verificados en doi.org, nov. 2026)
 IRSA_DOIS = {
-    "QR2_DR1": "10.26131/IRSA678",
-    "SHARED_TOOLS": "10.26131/IRSA679",
-    "SPECTRAL_CUTOUT": "10.26131/IRSA662",
+    "DR1_SPECTRAL_IMAGES": "10.26131/IRSA678",
+    "DR1_ALLSKY_CUBE": "10.26131/IRSA679",
+    "QR3_SPECTRAL_IMAGES": "10.26131/IRSA662",
+    "SPLICES": "10.26131/IRSA554",
 }
 
-# Información de las 6 bandas de detectores LVF de SPHEREx
+# Bandas oficiales (Suplemento v2.1, Tabla 2): rango y resolución de diseño
 DETECTOR_INFO = {
-    "D1": {"name": "SPHEREx-D1", "lmin": 0.75, "lmax": 1.11, "channel": "SWIR", "molecules": "Hα / Continuum estelar"},
-    "D2": {"name": "SPHEREx-D2", "lmin": 1.10, "lmax": 1.65, "channel": "SWIR", "molecules": "H₂O (1.4 µm) / CH₄ (1.15, 1.6 µm)"},
-    "D3": {"name": "SPHEREx-D3", "lmin": 1.63, "lmax": 2.43, "channel": "SWIR", "molecules": "H₂O (1.9 µm) / CO (2.3 µm) / H₂"},
-    "D4": {"name": "SPHEREx-D4", "lmin": 2.40, "lmax": 3.85, "channel": "MWIR", "molecules": "Hielo H₂O (3.0 µm) / CH₄ (3.3 µm) / PAH"},
-    "D5": {"name": "SPHEREx-D5", "lmin": 3.81, "lmax": 4.43, "channel": "MWIR", "molecules": "Hielo CO₂ (4.27 µm) / Continuum"},
-    "D6": {"name": "SPHEREx-D6", "lmin": 4.41, "lmax": 5.01, "channel": "MWIR", "molecules": "CO (4.67 µm) / Pico térmico enanas Y/T"},
+    "D1": {"name": "SPHEREx-D1", "lmin": 0.744, "lmax": 1.116, "R": 39, "channel": "SWIR", "molecules": "Continuo estelar; He I 1.083 µm (luminiscencia atmosférica)"},
+    "D2": {"name": "SPHEREx-D2", "lmin": 1.099, "lmax": 1.651, "R": 41, "channel": "SWIR", "molecules": "H₂O 1.4 µm; CH₄ 1.6 µm (atmósferas frías)"},
+    "D3": {"name": "SPHEREx-D3", "lmin": 1.636, "lmax": 2.421, "R": 41, "channel": "SWIR", "molecules": "H₂O 1.9 µm; CH₄ 2.2 µm; CO 2.3 µm"},
+    "D4": {"name": "SPHEREx-D4", "lmin": 2.423, "lmax": 3.822, "R": 35, "channel": "MWIR", "molecules": "H₂O 2.7–3.1 µm (gas o hielo); CH₄ 3.3 µm; PAH 3.29 µm"},
+    "D5": {"name": "SPHEREx-D5", "lmin": 3.809, "lmax": 4.420, "R": 112, "channel": "MWIR", "molecules": "Ventana de 4 µm; CO₂ 4.27 µm (gas o hielo)"},
+    "D6": {"name": "SPHEREx-D6", "lmin": 4.412, "lmax": 5.002, "R": 128, "channel": "MWIR", "molecules": "CO 4.67 µm (gas o hielo); pico de enanas Y"},
 }
 
-# Los objetivos de referencia oficiales del reto NASA Space Apps (encabezados por el Plano Principal del Universo Observable)
-CHALLENGE_TARGETS = [
+# Época de visualización: posición a la que se centran los objetivos de alto movimiento propio.
+# DR1 cubre MJD 60789.75–61174.49 (2025-04-24 → 2026-05-14) y QR3 continúa desde 2026-05-16.
+DISPLAY_EPOCH_JYEAR = 2026.0
+DR1_MJD_RANGE = (60789.75076, 61174.49276)  # properties oficiales del cubo DR1 (t_min, t_max)
+
+
+# ---------------------------------------------------------------------------
+# Objetivos oficiales del reto (astrometría verificada en SIMBAD/Gaia, nov. 2026)
+# `astrometry` = posición a la época `epoch_jyear` + movimiento propio + paralaje (+ VR).
+# ---------------------------------------------------------------------------
+CHALLENGE_TARGETS: List[Dict[str, Any]] = [
     {
         "id": "ObservableUniverse",
         "name": "🌌 Universo Observable",
-        "subtitle": "Plano Principal sin zoom (Vista IRSA 360° + Campo Profundo)",
-        "subtitle_en": "Main Observable Universe Plane (Unzoomed 360° IRSA View + Deep Field)",
-        "category": "Panorama Global 360° (Sin Zoom)",
+        "subtitle": "Vista 360° del cubo oficial SPHEREx DR1",
+        "subtitle_en": "360° view of the official SPHEREx DR1 cube",
+        "category": "Panorama Global 360°",
         "is_allsky": True,
-        "ra": 133.79513,
-        "dec": -7.24515,
-        "ra_prompt": "08h55m10.831s",
-        "dec_prompt": "-07d14m42.53s",
-        "ra_j2000": 133.79513,
-        "dec_j2000": -7.24515,
-        "pm_ra": -8118.0,
-        "pm_dec": 680.0,
+        "ra": 133.75976,
+        "dec": -7.24219,
+        "pm_ra": 0.0,
+        "pm_dec": 0.0,
         "recommended_bands": ["D6"],
         "recommended_fov": 0.10,
         "science_note": (
-            "Vista panorámica sin zoom (360° × 180°) del Plano Principal del Universo Observable al estilo IRSA/IPAC. "
-            "Observa la Vía Láctea, el Plano Eclíptico y todos los objetivos SPHEREx. Haz clic sobre cualquier marcador "
-            "o haz doble clic en cualquier punto del mapa para abrir su cubo multi-época FITS de SPHEREx."
+            "Mosaico de cielo completo construido por el equipo SPHEREx con >1.2 millones de imágenes DR1 "
+            "(102 canales, 0.75–5.0 µm, píxeles de 12.9″). Es una co-adición estática: no contiene información "
+            "temporal. Haz doble clic en cualquier punto para abrir las exposiciones multi-época L2b de esa zona."
         ),
         "science_note_en": (
-            "Unzoomed panoramic view (360° × 180°) of the Main Observable Universe Plane, just like IRSA/IPAC. "
-            "Inspect the Milky Way plane, the Ecliptic, and all SPHEREx targets. Click any target marker "
-            "or double-click any coordinate on the map to open its multi-epoch SPHEREx FITS cube."
+            "All-sky mosaic built by the SPHEREx team from >1.2 million DR1 images (102 channels, 0.75–5.0 µm, "
+            "12.9″ pixels). It is a static co-add with no time information. Double-click anywhere to open the "
+            "multi-epoch L2b exposures of that area."
         ),
     },
     {
         "id": "WISE0855",
         "name": "WISE 0855−0714",
-        "subtitle": "Enana marrón clase Y más fría y veloz (~8.1″/año a 2.28 pc)",
-        "subtitle_en": "Coldest & fastest Y-type brown dwarf (~8.1″/yr at 2.28 pc)",
+        "subtitle": "Enana marrón Y más fría conocida (~250–285 K) a 2.28 pc, 8.15″/año",
+        "subtitle_en": "Coldest known Y brown dwarf (~250–285 K) at 2.28 pc, 8.15″/yr",
         "category": "Enana Marrón (Alto Mov. Propio)",
-        "ra": 133.79513,
-        "dec": -7.24515,
         "ra_prompt": "08h55m10.831s",
         "dec_prompt": "-07d14m42.53s",
-        "ra_j2000": 133.79513,
-        "dec_j2000": -7.24515,
-        "pm_ra": -8118.0,   # mas/yr
-        "pm_dec": 680.0,    # mas/yr
+        "prompt_epoch_note": "Coordenadas del enunciado NASA = posición AllWISE (época ≈ 2010.6). En 2026 el objeto está ~2.1′ al oeste.",
+        "prompt_epoch_note_en": "NASA prompt coordinates = AllWISE position (epoch ≈ 2010.6). By 2026 the object is ~2.1′ to the west.",
+        "astrometry": {
+            "ra_deg": 133.81890825, "dec_deg": -7.247048, "epoch_jyear": 2000.0,
+            "pmra_masyr": -8123.7, "pmdec_masyr": 673.2, "parallax_mas": 439.0, "parallax_err_mas": 2.4,
+            "rv_kms": None, "ref": "Kirkpatrick et al. 2021, ApJS 253, 7 (vía SIMBAD)",
+        },
+        "distance_pc": 2.278, "distance_ref": "π = 439.0 ± 2.4 mas (Kirkpatrick et al. 2021)",
+        "sptype": "Y (Y2–≥Y4)", "sptype_ref": "Leggett et al. 2015 (Y2, SIMBAD); Kirkpatrick et al. 2021 (≥Y4)",
+        "teff_k_lit": "≈250–285 K", "teff_ref": "Luhman 2014; Luhman et al. 2024 (JWST/NIRSpec)",
+        "object_kind": "brown_dwarf",
         "recommended_bands": ["D6"],
         "recommended_fov": 0.10,
         "science_note": (
-            "WISE J085510.83-071442.5 tiene T_eff ~ 250 K (¡tan fría como la Tierra!). "
-            "En óptico y SWIR (D1-D3) es prácticamente invisible por absorción de metano y agua, "
-            "pero brilla intensamente en la ventana de 4.5-5.0 µm (detectores D5 y D6). "
-            "Su enorme movimiento propio (~8.1″/año) y paralaje (~0.44″) la desplazan ~1.4 píxeles por año."
+            "Enana marrón de tipo Y, la más fría conocida. Prácticamente invisible por debajo de ~3.5 µm por la "
+            "absorción de CH₄ y H₂O gaseosos de su atmósfera; emite casi toda su energía en la ventana de 4–5 µm "
+            "(detectores D5–D6, W2 = 13.7 mag → ~0.55 mJy). Es débil para SPHEREx: espera S/N bajo por exposición. "
+            "Se mueve 8.15″/año (1.3 píxeles nativos por año). Su posición se propaga a la fecha de cada exposición."
         ),
         "science_note_en": (
-            "WISE J085510.83-071442.5 has T_eff ~ 250 K (as cold as Earth!). "
-            "Nearly invisible at optical and SWIR wavelengths (D1–D3) due to strong methane and water absorption, "
-            "it shines brightly in the 4.5–5.0 µm thermal window (arrays D5 and D6). "
-            "Its huge proper motion (~8.1″/yr) shifts its position by ~1.4 native pixels per year."
+            "Y-type brown dwarf, the coldest known. Nearly invisible below ~3.5 µm because of gaseous CH₄ and H₂O "
+            "absorption in its atmosphere; it emits most of its energy in the 4–5 µm window (D5–D6, W2 = 13.7 mag → "
+            "~0.55 mJy). It is faint for SPHEREx: expect low per-exposure S/N. It moves 8.15″/yr (1.3 native pixels "
+            "per year). Its position is propagated to the date of every exposure."
         ),
     },
     {
         "id": "Barnard",
         "name": "Barnard's Star",
-        "subtitle": "La estrella de mayor movimiento propio del cielo (10.36″/año)",
-        "subtitle_en": "Highest proper-motion star in the sky (10.36″/yr northward)",
+        "subtitle": "Estrella de mayor movimiento propio (10.39″/año) a 1.83 pc",
+        "subtitle_en": "Highest proper-motion star (10.39″/yr) at 1.83 pc",
         "category": "Estrella Cercana (Alto Mov. Propio)",
-        "ra": 269.4485,
-        "dec": 4.7394,
-        "ra_prompt": "17h57m47.6s",
-        "dec_prompt": "+04d44m22s",
-        "ra_j2000": 269.45208,
-        "dec_j2000": 4.69336,
-        "pm_ra": -801.55,
-        "pm_dec": 10362.39,
+        "ra_prompt": "17h57m48.50s",
+        "dec_prompt": "+04d41m36.1s",
+        "prompt_epoch_note": "Posición J2000 (Gaia DR3 propagada). Entre 2000 y 2026 se desplazó ~4.5′ hacia el norte.",
+        "prompt_epoch_note_en": "J2000 position (propagated Gaia DR3). It moved ~4.5′ north between 2000 and 2026.",
+        "astrometry": {
+            "ra_deg": 269.4520769586187, "dec_deg": 4.693364966576667, "epoch_jyear": 2000.0,
+            "pmra_masyr": -801.551, "pmdec_masyr": 10362.394, "parallax_mas": 546.9759, "parallax_err_mas": 0.0401,
+            "rv_kms": -110.11, "ref": "Gaia DR3 (Gaia Collaboration 2023), vía SIMBAD",
+        },
+        "distance_pc": 1.8282, "distance_ref": "π = 546.976 ± 0.040 mas (Gaia DR3)",
+        "sptype": "M4V", "sptype_ref": "SIMBAD",
+        "teff_k_lit": "≈3200 K", "teff_ref": "Literatura (enana M4V)",
+        "object_kind": "star",
+        "saturates": True,
         "recommended_bands": ["D1", "D2", "D3"],
         "recommended_fov": 0.12,
         "science_note": (
-            "Estrella enana roja M4V a solo 1.83 pc (5.96 años luz). Avanza 10.36″/año hacia el norte: "
-            "¡entre la época J2000 y las observaciones de SPHEREx en 2025/2026 se ha desplazado 4.4 minutos "
-            "de arco! Nuestra herramienta propaga automáticamente su posición a la época 2025.5."
+            "Enana roja M4V a 1.83 pc. Avanza 10.39″/año hacia el norte (~1.7 píxeles nativos por año), así que el "
+            "desplazamiento entre las visitas de SPHEREx es visible en modo Blink/Diferencia. Es tan brillante "
+            "(J ≈ 5.2) que satura SPHEREx en todas las bandas: su posición es útil, pero su flujo no es fiable."
         ),
         "science_note_en": (
-            "Nearby M4V red dwarf at just 1.83 pc (5.96 light-years). Moving northward at 10.36″/yr, "
-            "it has shifted by 4.4 arcminutes between J2000 and SPHEREx's 2025/2026 observations! "
-            "SkyChrono automatically propagates its SIMBAD astrometry to the 2025.5 SPHEREx epoch."
+            "M4V red dwarf at 1.83 pc. It moves 10.39″/yr northward (~1.7 native pixels per year), so the shift "
+            "between SPHEREx visits is visible in Blink/Difference mode. It is so bright (J ≈ 5.2) that it saturates "
+            "SPHEREx in every band: its position is useful, but its flux is not reliable."
         ),
     },
     {
         "id": "EpsIndiB",
         "name": "Epsilon Indi Ba/Bb",
-        "subtitle": "Par binario de enanas marrones (T1 + T6) a 3.63 pc",
-        "subtitle_en": "Binary brown dwarf pair (T1 + T6) at 3.63 pc (4.70″/yr)",
+        "subtitle": "Binaria de enanas marrones T1 + T6 a 3.64 pc (4.69″/año)",
+        "subtitle_en": "T1 + T6 binary brown dwarf at 3.64 pc (4.69″/yr)",
         "category": "Par de Enanas Marrones",
-        "ra": 331.0689,
-        "dec": -56.7938,
-        "ra_prompt": "22h04m16.5s",
-        "dec_prompt": "-56d47m38s",
-        "ra_j2000": 331.0442,
-        "dec_j2000": -56.7828,
-        "pm_ra": 3966.7,
-        "pm_dec": -2536.2,
+        "ra_prompt": "22h04m10.60s",
+        "dec_prompt": "-56d46m58.2s",
+        "prompt_epoch_note": "Posición J2000 (Gaia DR3 propagada). La pareja Ba/Bb (0.7″) no se resuelve con píxeles de 6.15″.",
+        "prompt_epoch_note_en": "J2000 position (propagated Gaia DR3). The Ba/Bb pair (0.7″) is unresolved with 6.15″ pixels.",
+        "astrometry": {
+            "ra_deg": 331.04414658852124, "dec_deg": -56.782844195116105, "epoch_jyear": 2000.0,
+            "pmra_masyr": 3981.977, "pmdec_masyr": -2466.832, "parallax_mas": 270.658, "parallax_err_mas": 0.690,
+            "rv_kms": None, "ref": "Gaia DR3 (fotocentro de Ba+Bb), vía SIMBAD",
+        },
+        "distance_pc": 3.6385, "distance_ref": "Distancia del sistema: π(ε Ind A) = 274.843 mas (Gaia DR3)",
+        "sptype": "T1 + T6", "sptype_ref": "SIMBAD",
+        "teff_k_lit": "Ba ≈1300 K, Bb ≈900 K", "teff_ref": "King et al. 2010",
+        "object_kind": "brown_dwarf",
         "recommended_bands": ["D2", "D3", "D5", "D6"],
         "recommended_fov": 0.12,
         "science_note": (
-            "Sistema binario de enanas marrones de metano (T1 + T6) que comparten un movimiento propio de "
-            "4.70″/año con la estrella Epsilon Indi A. Su espectro muestra profundas bandas de absorción "
-            "de H₂O y CH₄ en D2/D3/D4 y emisión térmica en D5/D6."
+            "Par de enanas marrones de metano (T1 + T6) que orbita la estrella ε Indi A (6.7′ al oeste). Comparten "
+            "su movimiento propio (4.69″/año, ~0.8 píxeles/año). Su espectro muestra absorción de CH₄ y H₂O gaseosos "
+            "(1.1–1.7 y 3.3 µm) y la ventana brillante de ~4 µm; no es hielo."
         ),
         "science_note_en": (
-            "Binary methane brown dwarf system (T1 + T6) sharing a 4.70″/yr common proper motion with "
-            "Epsilon Indi A. Its spectrum exhibits deep H₂O and CH₄ absorption troughs across D2/D3/D4 "
-            "and strong thermal emission in D5/D6."
+            "Pair of methane brown dwarfs (T1 + T6) orbiting the star ε Indi A (6.7′ to the west). They share its "
+            "proper motion (4.69″/yr, ~0.8 pixels/yr). Their spectrum shows gaseous CH₄ and H₂O absorption "
+            "(1.1–1.7 and 3.3 µm) and the bright ~4 µm window; it is not ice."
         ),
     },
     {
         "id": "RW_Aur",
         "name": "RW Aurigae",
-        "subtitle": "Estrella joven T Tauri con eclipses y variabilidad extrema en IR",
-        "subtitle_en": "Young T Tauri star with dusty eclipses & extreme IR variability",
+        "subtitle": "Binaria joven T Tauri con oscurecimientos por polvo, a ~156 pc",
+        "subtitle_en": "Young T Tauri binary with dusty dimming events, at ~156 pc",
         "category": "Estrella Variable Joven (T Tauri)",
-        "ra": 76.9565,
-        "dec": 30.4014,
-        "ra_prompt": "05h07m49.57s",
-        "dec_prompt": "+30d24m05.1s",
-        "ra_j2000": 76.95653,
-        "dec_j2000": 30.40142,
-        "pm_ra": 2.7,
-        "pm_dec": -24.5,
+        "ra_prompt": "05h07m49.46s",
+        "dec_prompt": "+30d24m04.3s",
+        "prompt_epoch_note": "Posición de RW Aur A (Gaia DR3, época 2016.0). B está a 1.4″ (no resuelta).",
+        "prompt_epoch_note_en": "RW Aur A position (Gaia DR3, epoch 2016.0). B lies 1.4″ away (unresolved).",
+        "astrometry": {
+            "ra_deg": 76.95608119553, "dec_deg": 30.40120458910, "epoch_jyear": 2016.0,
+            "pmra_masyr": 2.641, "pmdec_masyr": -27.398, "parallax_mas": 6.4062, "parallax_err_mas": 0.0441,
+            "rv_kms": None, "ref": "Gaia DR3 source 156430822114424576 (RW Aur A; RUWE 1.50)",
+        },
+        "distance_pc": 156.1, "distance_ref": "π = 6.406 ± 0.044 mas (Gaia DR3, RW Aur A)",
+        "sptype": "K1/5e + K5e", "sptype_ref": "SIMBAD",
+        "teff_k_lit": None, "teff_ref": None,
+        "object_kind": "variable",
+        "saturates": True,
         "recommended_bands": ["D2", "D3", "D4", "D5"],
         "recommended_fov": 0.12,
         "science_note": (
-            "Sistema binario pre-secuencia principal rodeado de un disco circunestelar perturbado. "
-            "No cambia casi de posición, pero su brillo infrarrojo varía dramáticamente entre épocas "
-            "por ocultaciones de polvo y acreción variable. ¡Ideal para la imagen de diferencia y curva de luz!"
+            "Sistema binario pre-secuencia principal con un disco perturbado por marea. Desde 2010 sufre "
+            "oscurecimientos ópticos profundos por polvo, con variaciones también en el infrarrojo. Es brillante "
+            "(K ≈ 7): varios canales de SPHEREx marcan OVERFLOW en su núcleo, así que revisa los avisos de calidad "
+            "antes de interpretar su curva de luz."
         ),
         "science_note_en": (
-            "Pre-main-sequence binary surrounded by a tidally disrupted circumstellar disk. "
-            "While stationary on the sky, its infrared brightness varies dramatically across epochs due to "
-            "dust occultations and unsteady accretion—ideal for Difference mode and multi-epoch light curves!"
+            "Pre-main-sequence binary with a tidally perturbed disk. Since 2010 it has shown deep optical dimming "
+            "events caused by dust, with infrared variations as well. It is bright (K ≈ 7): several SPHEREx channels "
+            "flag OVERFLOW at its core, so check the quality warnings before interpreting its light curve."
         ),
     },
     {
         "id": "R_Dra",
         "name": "R Draconis",
-        "subtitle": "Gigante roja variable tipo Mira (periodo ~245.6 días, >2400 exp)",
-        "subtitle_en": "Pulsating Mira-type red giant (P ~ 245.6 days, >2,400 exposures)",
+        "subtitle": "Gigante roja variable tipo Mira (P ≈ 245.6 d)",
+        "subtitle_en": "Mira-type pulsating red giant (P ≈ 245.6 d)",
         "category": "Estrella Variable Pulsante (Mira)",
-        "ra": 248.1669,
-        "dec": 66.7549,
-        "ra_prompt": "16h32m40.23s",
-        "dec_prompt": "+66d45m17.9s",
-        "ra_j2000": 248.1676,
-        "dec_j2000": 66.75497,
-        "pm_ra": -16.8,
-        "pm_dec": -32.7,
+        "ra_prompt": "16h32m40.17s",
+        "dec_prompt": "+66d45m18.0s",
+        "prompt_epoch_note": "Posición Gaia DR3 (época 2016.0). Movimiento propio despreciable a escala SPHEREx.",
+        "prompt_epoch_note_en": "Gaia DR3 position (epoch 2016.0). Proper motion negligible at SPHEREx scale.",
+        "astrometry": {
+            "ra_deg": 248.16737836729, "dec_deg": 66.75500674547, "epoch_jyear": 2016.0,
+            "pmra_masyr": -20.643, "pmdec_masyr": 6.149, "parallax_mas": 1.2509, "parallax_err_mas": 0.0648,
+            "rv_kms": None, "ref": "Gaia DR3 source 1648328016354496384 (RUWE 1.30)",
+        },
+        "distance_pc": 799.0, "distance_ref": "1/π con π = 1.251 ± 0.065 mas (Gaia DR3); paralajes de Miras: usar con cautela",
+        "sptype": "M4.5–6e", "sptype_ref": "SIMBAD",
+        "teff_k_lit": None, "teff_ref": None,
+        "object_kind": "variable",
+        "saturates": True,
         "recommended_bands": ["D1", "D2", "D3", "D4"],
         "recommended_fov": 0.12,
         "science_note": (
-            "Ubicada cerca del Polo Norte Eclíptico (zona profunda de SPHEREx con más de 2,400 exposiciones). "
-            "Es una gigante roja AGB que pulsa cada ~245 días, cambiando su flujo infrarrojo y sus bandas "
-            "moleculares de H₂O y CO a lo largo del año."
+            "Gigante AGB tipo Mira que pulsa cada ~245.6 días (GCVS) a ~8.6° del Polo Norte Eclíptico, una zona que "
+            "SPHEREx visita con frecuencia. Es muy brillante en el infrarrojo y SATURA SPHEREx: en DR1 su núcleo no "
+            "tiene píxeles válidos. Su variación puede apreciarse en el Blink, pero sus flujos no son fiables."
         ),
         "science_note_en": (
-            "Located near the North Ecliptic Pole (SPHEREx's deep-field zone with >2,400 exposures). "
-            "An AGB red giant pulsating every ~245.6 days, strongly modulating its infrared continuum and "
-            "circumstellar H₂O and CO molecular bands over the year."
+            "Mira-type AGB giant pulsating every ~245.6 days (GCVS), ~8.6° from the North Ecliptic Pole, an area "
+            "SPHEREx revisits often. It is very bright in the infrared and SATURATES SPHEREx: its core has no valid "
+            "pixels in DR1. Its variation can be seen in Blink, but its fluxes are not reliable."
         ),
     },
 ]
+_TARGETS_BY_ID = {t["id"]: t for t in CHALLENGE_TARGETS}
+
+
+def _jyear_to_mjd(jyear: float) -> float:
+    return float(Time(jyear, format="jyear").mjd)
+
+
+def propagate_astrometry(astrom: Dict[str, Any], mjd: float) -> Tuple[float, float]:
+    """
+    Propaga (RA, Dec) de una astrometría (posición + movimiento propio + paralaje + VR) a la fecha `mjd`
+    con `SkyCoord.apply_space_motion` (incluye aceleración de perspectiva). No incluye la paralaje
+    anual (≤ 0.55″ para estos objetos, < 0.1 píxel nativo).
+    """
+    pmra = float(astrom.get("pmra_masyr") or 0.0)
+    pmdec = float(astrom.get("pmdec_masyr") or 0.0)
+    ra0 = float(astrom["ra_deg"])
+    dec0 = float(astrom["dec_deg"])
+    if abs(pmra) < 1e-9 and abs(pmdec) < 1e-9:
+        return ra0, dec0
+    plx = astrom.get("parallax_mas")
+    kw: Dict[str, Any] = {}
+    if plx is not None and float(plx) > 0.01:
+        kw["distance"] = Distance(parallax=float(plx) * u.mas)
+        kw["radial_velocity"] = float(astrom.get("rv_kms") or 0.0) * u.km / u.s
+    c = SkyCoord(
+        ra=ra0 * u.deg, dec=dec0 * u.deg,
+        pm_ra_cosdec=pmra * u.mas / u.yr, pm_dec=pmdec * u.mas / u.yr,
+        obstime=Time(float(astrom.get("epoch_jyear", 2000.0)), format="jyear"), frame="icrs", **kw,
+    )
+    n = c.apply_space_motion(new_obstime=Time(float(mjd), format="mjd"))
+    return float(n.ra.deg) % 360.0, float(n.dec.deg)
+
+
+def target_display_position(t: Dict[str, Any]) -> Tuple[float, float]:
+    astrom = t.get("astrometry")
+    if not astrom:
+        return float(t.get("ra", 0.0)), float(t.get("dec", 0.0))
+    return propagate_astrometry(astrom, _jyear_to_mjd(DISPLAY_EPOCH_JYEAR))
+
+
+def _finalize_reference_targets() -> None:
+    """Calcula la posición de visualización (época 2026.0) y los campos de compatibilidad."""
+    for t in CHALLENGE_TARGETS:
+        astrom = t.get("astrometry")
+        if not astrom:
+            continue
+        ra_d, dec_d = target_display_position(t)
+        t["ra"] = round(ra_d, 6)
+        t["dec"] = round(dec_d, 6)
+        t["display_epoch"] = DISPLAY_EPOCH_JYEAR
+        t["pm_ra"] = astrom.get("pmra_masyr", 0.0)
+        t["pm_dec"] = astrom.get("pmdec_masyr", 0.0)
+        t["parallax_mas"] = astrom.get("parallax_mas")
+        ra_j, dec_j = propagate_astrometry(astrom, _jyear_to_mjd(2000.0))
+        t["ra_j2000"] = round(ra_j, 6)
+        t["dec_j2000"] = round(dec_j, 6)
+
+
+_finalize_reference_targets()
+
+
+def get_target_astrometry(target_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not target_id:
+        return None
+    t = _TARGETS_BY_ID.get(target_id)
+    return dict(t["astrometry"]) if t and t.get("astrometry") else None
+
+
+# ---------------------------------------------------------------------------
+# Hitos del visor 360° (coordenadas verificadas en SIMBAD / JPL Horizons, nov. 2026).
+# `dist_pc` y `teff` solo se dan para estrellas con medidas publicadas; para campos, nebulosas
+# y galaxias valen None (no tienen una "temperatura" ni una distancia única que mostrar).
+# ---------------------------------------------------------------------------
+ALLSKY_LANDMARKS = [
+    {"id": "NEP_DEEP", "name": "SPHEREx NEP Deep Field (Polo Norte Eclíptico)", "ra": 270.0000, "dec": 66.5607, "dist_pc": None, "teff": None, "stype": "Campo profundo de SPHEREx (Polo Norte Eclíptico)", "stype_en": "SPHEREx deep field (North Ecliptic Pole)", "pm_ra": 0.0, "pm_dec": 0.0},
+    {"id": "SEP_DEEP", "name": "Polo Sur Eclíptico (cerca del campo profundo SEP)", "ra": 90.0000, "dec": -66.5607, "dist_pc": None, "teff": None, "stype": "Polo Sur Eclíptico; el campo profundo SEP está ligeramente desplazado del polo", "stype_en": "South Ecliptic Pole; the SEP deep field is slightly offset from the pole", "pm_ra": 0.0, "pm_dec": 0.0},
+    {"id": "POLARIS", "name": "Polaris (α UMi · Polo Norte)", "ra": 37.9546, "dec": 89.2641, "dist_pc": 132.6, "teff": 6015, "stype": "Supergigante cefeida F7Ib", "stype_en": "F7Ib Cepheid supergiant", "pm_ra": 44.48, "pm_dec": -11.85},
+    {"id": "SIGMA_OCT", "name": "σ Octantis (Polo Sur Celeste)", "ra": 317.1953, "dec": -88.9565, "dist_pc": 90.1, "teff": 7300, "stype": "Subgigante F0IV (δ Scuti)", "stype_en": "F0IV subgiant (δ Scuti)", "pm_ra": 26.32, "pm_dec": 4.72},
+    {"id": "SGR_A", "name": "Sgr A* (Centro Galáctico)", "ra": 266.4168, "dec": -29.0078, "dist_pc": 8178.0, "teff": None, "stype": "Agujero negro supermasivo / centro galáctico (8.18 kpc, GRAVITY 2019)", "stype_en": "Supermassive black hole / Galactic centre (8.18 kpc, GRAVITY 2019)", "pm_ra": -3.16, "pm_dec": -5.59},
+    {"id": "PROXIMA", "name": "Proxima Centauri", "ra": 217.4290, "dec": -62.6795, "dist_pc": 1.301, "teff": 3042, "stype": "Enana roja M5.5Ve (estrella más cercana)", "stype_en": "M5.5Ve red dwarf (nearest star)", "pm_ra": -3781.7, "pm_dec": 769.5},
+    {"id": "LUHMAN16", "name": "Luhman 16AB (WISE 1049−5319)", "ra": 162.3288, "dec": -53.3195, "dist_pc": 1.996, "teff": 1350, "stype": "Binaria de enanas marrones L7.5 + T0.5", "stype_en": "L7.5 + T0.5 binary brown dwarf", "pm_ra": -2759.0, "pm_dec": 354.0},
+    {"id": "WOLF359", "name": "Wolf 359 (CN Leonis)", "ra": 164.1203, "dec": 7.0147, "dist_pc": 2.408, "teff": 2800, "stype": "Enana roja M6.5Ve", "stype_en": "M6.5Ve red dwarf", "pm_ra": -3842.0, "pm_dec": -2725.0},
+    {"id": "TRAPPIST1", "name": "TRAPPIST-1 (2MASS J2306−0502)", "ra": 346.6223, "dec": -5.0414, "dist_pc": 12.43, "teff": 2566, "stype": "Enana ultrafría M8V (7 exoplanetas)", "stype_en": "M8V ultracool dwarf (7 exoplanets)", "pm_ra": 930.9, "pm_dec": -479.4},
+    {"id": "SIRIUS", "name": "Sirius A/B (α CMa)", "ra": 101.2872, "dec": -16.7161, "dist_pc": 2.637, "teff": 9940, "stype": "Binaria A1V + enana blanca DA2", "stype_en": "A1V + DA2 white dwarf binary", "pm_ra": -546.0, "pm_dec": -1223.1},
+    {"id": "VEGA", "name": "Vega (α Lyrae)", "ra": 279.2347, "dec": 38.7837, "dist_pc": 7.68, "teff": 9602, "stype": "Estrella A0Va con disco de escombros", "stype_en": "A0Va star with debris disk", "pm_ra": 200.94, "pm_dec": 286.23},
+    {"id": "BETELGEUSE", "name": "Betelgeuse (α Orionis)", "ra": 88.7929, "dec": 7.4071, "dist_pc": 168.0, "teff": 3600, "stype": "Supergigante roja M1–M2 Ia–Iab", "stype_en": "M1–M2 Ia–Iab red supergiant", "pm_ra": 27.54, "pm_dec": 11.30},
+    {"id": "M42_ORION", "name": "Nebulosa de Orión (M42)", "ra": 83.8201, "dec": -5.3876, "dist_pc": None, "teff": None, "stype": "Región HII y nube molecular (~400 pc)", "stype_en": "HII region and molecular cloud (~400 pc)", "pm_ra": 0.0, "pm_dec": 0.0},
+    {"id": "M31_AND", "name": "Galaxia de Andrómeda (M31)", "ra": 10.6847, "dec": 41.2688, "dist_pc": None, "teff": None, "stype": "Galaxia espiral del Grupo Local (~0.78 Mpc)", "stype_en": "Local Group spiral galaxy (~0.78 Mpc)", "pm_ra": 0.0, "pm_dec": 0.0},
+    {"id": "LMC_30DOR", "name": "Gran Nube de Magallanes (30 Doradus)", "ra": 84.6762, "dec": -69.1009, "dist_pc": None, "teff": None, "stype": "Región de formación estelar extragaláctica (~50 kpc)", "stype_en": "Extragalactic star-forming region (~50 kpc)", "pm_ra": 0.0, "pm_dec": 0.0},
+    {"id": "SPLICES_ELIAS16", "name": "Elias 16 (estándar de hielos tras la nube de Tauro)", "ra": 69.9119, "dec": 26.1907, "dist_pc": 285.0, "teff": None, "stype": "Gigante K1III de fondo; su luz atraviesa la nube de Tauro (hielos H₂O/CO₂/CO)", "stype_en": "Background K1III giant seen through the Taurus cloud (H₂O/CO₂/CO ices)", "pm_ra": 20.33, "pm_dec": -28.80},
+    {"id": "COMET_3I_ATLAS", "name": "3I/ATLAS (C/2025 N1) · posición 2025-08-08", "ra": 248.0824, "dec": -16.9638, "dist_pc": None, "teff": None, "stype": "3er objeto interestelar. Posición geocéntrica JPL Horizons del 2025-08-08 00:00 UTC (SPHEREx lo observó del 1 al 15 de agosto de 2025). Se mueve ~1°/día: no es una posición fija.", "stype_en": "3rd interstellar object. JPL Horizons geocentric position on 2025-08-08 00:00 UTC (SPHEREx observed it on 1–15 Aug 2025). It moves ~1°/day: not a fixed position.", "pm_ra": 0.0, "pm_dec": 0.0},
+]
+
+def _finalize_landmarks() -> None:
+    """Las coordenadas de los hitos estelares están en J2000: se propagan linealmente a la época de visualización."""
+    dt = DISPLAY_EPOCH_JYEAR - 2000.0
+    for lm in ALLSKY_LANDMARKS:
+        lm["ra_j2000"], lm["dec_j2000"] = lm["ra"], lm["dec"]
+        pmra, pmdec = float(lm.get("pm_ra") or 0.0), float(lm.get("pm_dec") or 0.0)
+        if abs(pmra) > 0 or abs(pmdec) > 0:
+            cosd = max(np.cos(np.deg2rad(lm["dec"])), 1e-6)
+            lm["ra"] = round(float((lm["ra"] + pmra * dt / (3.6e6 * cosd)) % 360.0), 6)
+            lm["dec"] = round(lm["dec"] + pmdec * dt / 3.6e6, 6)
+
+
+_finalize_landmarks()
 
 CUSTOM_TARGETS_FILE = os.path.join(CACHE_DIR, "custom_targets.json")
-os.makedirs(os.path.join(CACHE_DIR, "cubes"), exist_ok=True)
 _CUBE_RESP_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
+_PROTECTED_TARGET_KEYS = (
+    "astrometry", "ra", "dec", "pm_ra", "pm_dec", "ra_j2000", "dec_j2000", "ra_prompt", "dec_prompt", "display_epoch",
+    "parallax_mas", "distance_pc", "distance_ref", "sptype", "sptype_ref", "teff_k_lit", "teff_ref", "object_kind",
+    "saturates", "prompt_epoch_note", "prompt_epoch_note_en", "is_allsky", "category",
+)
+
+
 def get_all_targets() -> List[Dict[str, Any]]:
-    """Devuelve los objetivos de referencia oficiales (aplicando ediciones o bajas) más los personalizados."""
+    """Objetivos oficiales (aplicando ediciones o bajas) más los personalizados."""
     custom: List[Dict[str, Any]] = []
     if os.path.exists(CUSTOM_TARGETS_FILE):
         try:
@@ -302,30 +508,32 @@ def get_all_targets() -> List[Dict[str, Any]]:
             custom = []
     custom_by_id = {c.get("id"): c for c in custom if isinstance(c, dict) and c.get("id")}
     official_ids = {t["id"] for t in CHALLENGE_TARGETS}
-    merged_official: List[Dict[str, Any]] = []
+    merged: List[Dict[str, Any]] = []
     for t in CHALLENGE_TARGETS:
         override = custom_by_id.get(t["id"])
         if override and override.get("_deleted"):
             continue
         if override:
-            merged_official.append({**t, **override, "custom": False})
+            # La astrometría y los datos físicos oficiales nunca se sobrescriben desde la UI (ni con ediciones
+            # guardadas por versiones anteriores de la app): solo nombre, textos, bandas y campo de visión.
+            protected = {k: t[k] for k in _PROTECTED_TARGET_KEYS if k in t}
+            merged.append({**t, **override, **protected, "custom": False})
         else:
-            merged_official.append(dict(t))
-    extra_custom = [
-        c
-        for c in custom
-        if isinstance(c, dict) and c.get("id") not in official_ids and not c.get("_deleted")
-    ]
-    return merged_official + extra_custom
+            merged.append(dict(t))
+    extra = [c for c in custom if isinstance(c, dict) and c.get("id") not in official_ids and not c.get("_deleted")]
+    return merged + extra
 
 
 def add_custom_target(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Agrega un nuevo objetivo personalizado o edita un objetivo existente (oficial o personalizado)."""
+    """Agrega un objetivo personalizado o edita los textos de uno existente."""
     edit_id = (data.get("id") or "").strip()
     name = (data.get("name") or "").strip() or "Objetivo Personalizado"
     q_ra = str(data.get("query") or data.get("ra") or "").strip()
     q_dec = str(data.get("dec") or "").strip()
-    if q_ra and not q_dec:
+    official_match = _TARGETS_BY_ID.get(edit_id)
+    if official_match and official_match.get("astrometry"):
+        resolved = {"ra": official_match["ra"], "dec": official_match["dec"], "pm_ra": official_match["pm_ra"], "pm_dec": official_match["pm_dec"]}
+    elif q_ra and not q_dec:
         resolved = parse_coordinates(q_ra, None)
     else:
         resolved = parse_coordinates(q_ra or name, q_dec or None)
@@ -337,36 +545,32 @@ def add_custom_target(data: Dict[str, Any]) -> Dict[str, Any]:
     fov = float(data.get("fov") or data.get("recommended_fov") or 0.10)
     subtitle = (data.get("subtitle") or "").strip() or f"RA {ra_val:.4f}°, Dec {dec_val:.4f}° (Personalizado)"
     subtitle_en = (data.get("subtitle_en") or "").strip() or subtitle
-
-    official_match = next((t for t in CHALLENGE_TARGETS if t["id"] == edit_id), None)
     tid = edit_id if edit_id else f"CUSTOM_{int(time.time() * 1000) % 1000000}"
-
-    new_tgt = {
+    new_tgt: Dict[str, Any] = {
         "id": tid,
-        "custom": False if official_match else True,
+        "custom": not bool(official_match),
         "is_allsky": bool(official_match.get("is_allsky")) if official_match else False,
         "name": name,
         "subtitle": subtitle,
         "subtitle_en": subtitle_en,
         "category": official_match.get("category", "Personalizado") if official_match else "Personalizado",
-        "ra": round(ra_val, 5),
-        "dec": round(dec_val, 5),
+        "ra": round(ra_val, 6),
+        "dec": round(dec_val, 6),
         "ra_prompt": f"{ra_val:.5f}",
         "dec_prompt": f"{dec_val:.5f}",
-        "ra_j2000": round(ra_val, 5),
-        "dec_j2000": round(dec_val, 5),
-        "pm_ra": float(resolved.get("pm_ra") or (official_match.get("pm_ra", 0.0) if official_match else 0.0)),
-        "pm_dec": float(resolved.get("pm_dec") or (official_match.get("pm_dec", 0.0) if official_match else 0.0)),
+        "pm_ra": float(resolved.get("pm_ra") or 0.0),
+        "pm_dec": float(resolved.get("pm_dec") or 0.0),
         "recommended_bands": bands,
         "recommended_fov": fov,
         "science_note": (data.get("science_note") or "").strip()
         or (official_match.get("science_note") if official_match else "")
-        or f"Objetivo guardado en RA {ra_val:.4f}°, Dec {dec_val:.4f}° (ICRS). Explora sus épocas y espectro LVF.",
+        or f"Objetivo guardado en RA {ra_val:.4f}°, Dec {dec_val:.4f}° (ICRS, época {DISPLAY_EPOCH_JYEAR}).",
         "science_note_en": (data.get("science_note_en") or "").strip()
-        or (data.get("science_note") or "").strip()
         or (official_match.get("science_note_en") if official_match else "")
-        or f"Reference target at RA {ra_val:.4f}°, Dec {dec_val:.4f}° (ICRS). Explore its epochs and LVF spectrum.",
+        or f"Saved target at RA {ra_val:.4f}°, Dec {dec_val:.4f}° (ICRS, epoch {DISPLAY_EPOCH_JYEAR}).",
     }
+    if resolved.get("astrometry") and not official_match:
+        new_tgt["astrometry"] = resolved["astrometry"]
     custom: List[Dict[str, Any]] = []
     if os.path.exists(CUSTOM_TARGETS_FILE):
         try:
@@ -378,11 +582,13 @@ def add_custom_target(data: Dict[str, Any]) -> Dict[str, Any]:
     custom.append(new_tgt)
     with open(CUSTOM_TARGETS_FILE, "w", encoding="utf-8") as f:
         json.dump(custom, f, ensure_ascii=False, indent=2)
+    if official_match:
+        return {**official_match, **new_tgt, **{k: official_match[k] for k in ("astrometry", "ra", "dec") if k in official_match}}
     return new_tgt
 
 
 def delete_custom_target(target_id: str) -> bool:
-    """Elimina cualquier objetivo de referencia (oficial o personalizado) o restaura los predeterminados."""
+    """Elimina un objetivo (oficial o personalizado) o restaura los predeterminados."""
     if target_id == "__RESTORE_DEFAULTS__":
         if os.path.exists(CUSTOM_TARGETS_FILE):
             try:
@@ -390,7 +596,6 @@ def delete_custom_target(target_id: str) -> bool:
             except Exception:
                 pass
         return True
-
     custom: List[Dict[str, Any]] = []
     if os.path.exists(CUSTOM_TARGETS_FILE):
         try:
@@ -398,12 +603,9 @@ def delete_custom_target(target_id: str) -> bool:
                 custom = json.load(f)
         except Exception:
             custom = []
-
-    official_ids = {t["id"] for t in CHALLENGE_TARGETS}
     new_custom = [c for c in custom if isinstance(c, dict) and c.get("id") != target_id]
-    if target_id in official_ids:
+    if target_id in _TARGETS_BY_ID:
         new_custom.append({"id": target_id, "_deleted": True})
-
     try:
         with open(CUSTOM_TARGETS_FILE, "w", encoding="utf-8") as f:
             json.dump(new_custom, f, ensure_ascii=False, indent=2)
@@ -412,22 +614,78 @@ def delete_custom_target(target_id: str) -> bool:
         return False
 
 
-# Caché en memoria de la grilla WCS-WAVE por detector (es fija para cada filtro LVF)
-_WCS_WAVE_CACHE: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+# ---------------------------------------------------------------------------
+# Resolución de coordenadas y nombres (Sesame/SIMBAD) con propagación de movimiento propio
+# ---------------------------------------------------------------------------
+def _resolve_name_sesame(name: str) -> Optional[Dict[str, Any]]:
+    """Resuelve un nombre con Sesame (SIMBAD) y devuelve posición J2000, movimiento propio y paralaje."""
+    from urllib.parse import quote
+
+    for base in ("https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/SNV?", "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame/-oxp/SNV?"):
+        try:
+            r = requests.get(base + quote(name), timeout=12)
+            if not r.ok or "<jradeg>" not in r.text:
+                continue
+            t = r.text
+
+            def _g(tag: str) -> Optional[str]:
+                m = re.search(rf"<{tag}>([^<]+)</{tag}>", t)
+                return m.group(1).strip() if m else None
+
+            plx_m = re.search(r"<plx>\s*<v>([^<]+)</v>(?:<e>([^<]+)</e>)?", t)
+            vel_m = re.search(r"<Vel>\s*<v>([^<]+)</v>", t)
+            return {
+                "ra_deg": float(_g("jradeg")),
+                "dec_deg": float(_g("jdedeg")),
+                "epoch_jyear": 2000.0,
+                "pmra_masyr": float(_g("pmRA") or 0.0),
+                "pmdec_masyr": float(_g("pmDE") or 0.0),
+                "parallax_mas": float(plx_m.group(1)) if plx_m else None,
+                "parallax_err_mas": float(plx_m.group(2)) if plx_m and plx_m.group(2) else None,
+                "rv_kms": float(vel_m.group(1)) if vel_m else None,
+                "ref": "SIMBAD vía Sesame (" + (_g("refPos") or "s/ref") + ")",
+                "oname": _g("oname") or name,
+                "otype": _g("otype"),
+                "sptype": _g("spType"),
+            }
+        except Exception:
+            continue
+    return None
 
 
-def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr: float = 2025.5) -> Dict[str, Any]:
+def _match_reference_by_coords(ra: float, dec: float, tol_arcsec: float = 15.0) -> Optional[Tuple[Dict[str, Any], float]]:
+    """¿Coinciden unas coordenadas con un objetivo de referencia en alguna época entre 2000 y 2027 (p. ej. las del enunciado NASA)?"""
+    c0 = SkyCoord(ra * u.deg, dec * u.deg)
+    for t in CHALLENGE_TARGETS:
+        astrom = t.get("astrometry")
+        if not astrom or abs(float(astrom["dec_deg"]) - dec) > 0.2:
+            continue
+        best_ep, best_sep = None, tol_arcsec
+        for ep in np.arange(2000.0, 2027.01, 0.1):
+            r_t, d_t = propagate_astrometry(astrom, _jyear_to_mjd(float(ep)))
+            sep = float(c0.separation(SkyCoord(r_t * u.deg, d_t * u.deg)).arcsec)
+            if sep <= best_sep:
+                best_ep, best_sep = float(ep), sep
+        if best_ep is not None:
+            return t, best_ep
+    return None
+
+
+def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr: float = DISPLAY_EPOCH_JYEAR) -> Dict[str, Any]:
     """
-    Convierte coordenadas (decimales, sexagesimales o nombre de objeto) a RA/Dec ICRS en grados.
-    Si es un nombre o coincide con uno de los objetivos de alto movimiento propio, propaga a `epoch_yr`.
+    Convierte coordenadas (decimales, sexagesimales) o un nombre a RA/Dec ICRS.
+    Coordenadas numéricas: se interpretan tal cual (sin movimiento propio).
+    Nombres: se resuelven con Sesame/SIMBAD y se propagan a `epoch_yr` con su movimiento propio.
     """
     q = (query_or_ra or "").strip()
     d = (dec_str or "").strip()
+    if not q:
+        raise ValueError("Consulta vacía")
 
-    # 1. ¿Coincide con un objetivo predefinido o landmark 360° por ID o nombre?
-    for tgt in list(get_all_targets()) + globals().get("ALLSKY_LANDMARKS", []):
-        if q.lower() in (tgt["id"].lower(), tgt["name"].lower()) or tgt["name"].lower().startswith(q.lower()):
-            return {
+    ql = q.lower()
+    for tgt in list(get_all_targets()) + ALLSKY_LANDMARKS:
+        if ql in (str(tgt["id"]).lower(), str(tgt["name"]).lower()) or (len(ql) >= 4 and str(tgt["name"]).lower().startswith(ql)):
+            out = {
                 "ra": tgt["ra"],
                 "dec": tgt["dec"],
                 "ra_j2000": tgt.get("ra_j2000", tgt["ra"]),
@@ -438,113 +696,77 @@ def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr:
                 "epoch": epoch_yr,
                 "preset_id": tgt["id"],
             }
+            if tgt.get("astrometry"):
+                out["astrometry"] = tgt["astrometry"]
+            return out
 
-    # 2. Si se pasaron RA y Dec por separado
+    def _plain(ra_v: float, dec_v: float, label: str) -> Dict[str, Any]:
+        ref = _match_reference_by_coords(ra_v, dec_v)
+        if ref is not None:
+            t, ep = ref
+            return {
+                "ra": t["ra"], "dec": t["dec"], "ra_j2000": t.get("ra_j2000"), "dec_j2000": t.get("dec_j2000"),
+                "pm_ra": t.get("pm_ra", 0.0), "pm_dec": t.get("pm_dec", 0.0), "parallax_mas": t.get("parallax_mas"),
+                "resolved_name": f"{t['name']} ({label})", "epoch": epoch_yr, "preset_id": t["id"], "astrometry": t["astrometry"],
+                "note": f"Coordenadas reconocidas como {t['name']} en la época ≈{ep:.1f}; se usa su posición propagada a {epoch_yr}.",
+                "note_en": f"Coordinates recognised as {t['name']} at epoch ≈{ep:.1f}; its position propagated to {epoch_yr} is used.",
+            }
+        return {
+            "ra": ra_v, "dec": dec_v, "ra_j2000": ra_v, "dec_j2000": dec_v,
+            "pm_ra": 0.0, "pm_dec": 0.0, "resolved_name": label, "epoch": epoch_yr,
+            "note": "Coordenadas tomadas tal cual (sin movimiento propio).",
+            "note_en": "Coordinates taken as given (no proper motion).",
+        }
+
     if d:
         try:
-            ra_val = float(q)
-            dec_val = float(d)
-            return {
-                "ra": ra_val,
-                "dec": dec_val,
-                "ra_j2000": ra_val,
-                "dec_j2000": dec_val,
-                "pm_ra": 0.0,
-                "pm_dec": 0.0,
-                "resolved_name": f"RA {ra_val:.4f}°, Dec {dec_val:.4f}°",
-                "epoch": epoch_yr,
-            }
+            return _plain(float(q), float(d), f"RA {float(q):.4f}°, Dec {float(d):.4f}°")
         except ValueError:
             pass
-        # Sexagesimal en dos campos (p.ej. "08h55m10.831s", "-07d14m42.53s" o "08:55:10.8", "-07:14:42.5")
         try:
             c = SkyCoord(f"{q} {d}", frame="icrs")
-            return _check_nearby_preset(float(c.ra.deg), float(c.dec.deg), f"{q} {d}", epoch_yr)
         except Exception:
             c = SkyCoord(q, d, unit=(u.hourangle, u.deg), frame="icrs")
-            return _check_nearby_preset(float(c.ra.deg), float(c.dec.deg), f"{q} {d}", epoch_yr)
+        return _plain(float(c.ra.deg), float(c.dec.deg), f"{q} {d}")
 
-    # 3. Un solo string: puede ser "133.795 -7.245" o "08h55m10.831s -07d14m42.53s"
     parts = re.split(r"[\s,]+", q)
     if len(parts) == 2:
         try:
-            ra_val, dec_val = float(parts[0]), float(parts[1])
-            return _check_nearby_preset(ra_val, dec_val, f"{ra_val:.4f}, {dec_val:.4f}", epoch_yr)
+            ra_v, dec_v = float(parts[0]), float(parts[1])
+            return _plain(ra_v, dec_v, f"{ra_v:.4f}, {dec_v:.4f}")
         except ValueError:
             try:
                 c = SkyCoord(q, frame="icrs")
-                return _check_nearby_preset(float(c.ra.deg), float(c.dec.deg), q, epoch_yr)
+                return _plain(float(c.ra.deg), float(c.dec.deg), q)
             except Exception:
                 pass
 
-    # 4. Resolver nombre de objeto vía SIMBAD TAP (incluyendo movimiento propio pmra, pmdec)
-    try:
-        sim_q = (
-            "SELECT TOP 1 main_id, ra, dec, pmra, pmdec "
-            "FROM basic JOIN ident ON oid = oidref "
-            f"WHERE id = '{q.replace(chr(39), '')}'"
-        )
-        r = requests.get(
-            "https://simbad.cds.unistra.fr/simbad/sim-tap/sync",
-            params={"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": sim_q},
-            timeout=12,
-        )
-        if r.ok:
-            rows = list(csv.DictReader(io.StringIO(r.text)))
-            if rows and rows[0].get("ra"):
-                row = rows[0]
-                ra0 = float(row["ra"])
-                dec0 = float(row["dec"])
-                pmra = float(row["pmra"]) if row.get("pmra") else 0.0
-                pmdec = float(row["pmdec"]) if row.get("pmdec") else 0.0
-                dt = epoch_yr - 2000.0
-                dec_prop = dec0 + (pmdec * dt) / 3600000.0
-                cos_dec = max(np.cos(np.deg2rad(dec0)), 0.05)
-                ra_prop = ra0 + (pmra * dt) / (3600000.0 * cos_dec)
-                return {
-                    "ra": round(ra_prop, 6),
-                    "dec": round(dec_prop, 6),
-                    "ra_j2000": round(ra0, 6),
-                    "dec_j2000": round(dec0, 6),
-                    "pm_ra": pmra,
-                    "pm_dec": pmdec,
-                    "resolved_name": row.get("main_id", q),
-                    "epoch": epoch_yr,
-                }
-    except Exception:
-        pass
+    astrom = _resolve_name_sesame(q)
+    if astrom:
+        ra_p, dec_p = propagate_astrometry(astrom, _jyear_to_mjd(epoch_yr))
+        return {
+            "ra": round(ra_p, 6),
+            "dec": round(dec_p, 6),
+            "ra_j2000": round(astrom["ra_deg"], 6),
+            "dec_j2000": round(astrom["dec_deg"], 6),
+            "pm_ra": astrom["pmra_masyr"],
+            "pm_dec": astrom["pmdec_masyr"],
+            "parallax_mas": astrom.get("parallax_mas"),
+            "resolved_name": astrom.get("oname", q),
+            "sptype": astrom.get("sptype"),
+            "epoch": epoch_yr,
+            "astrometry": {k: astrom[k] for k in ("ra_deg", "dec_deg", "epoch_jyear", "pmra_masyr", "pmdec_masyr", "parallax_mas", "parallax_err_mas", "rv_kms", "ref")},
+        }
 
-    # Fallback a Astropy Sesame
     c = SkyCoord.from_name(q)
-    return _check_nearby_preset(float(c.ra.deg), float(c.dec.deg), q, epoch_yr)
+    return _plain(float(c.ra.deg), float(c.dec.deg), q)
 
 
-def _check_nearby_preset(ra: float, dec: float, label: str, epoch_yr: float) -> Dict[str, Any]:
-    """Si las coordenadas coinciden con uno de los 5 objetivos (p.ej. WISE 0855 en el prompt), adjunta su info."""
-    for tgt in CHALLENGE_TARGETS:
-        dist = np.hypot((ra - tgt["ra_j2000"]) * np.cos(np.deg2rad(dec)), dec - tgt["dec_j2000"])
-        if dist < 0.02 or np.hypot((ra - tgt["ra"]) * np.cos(np.deg2rad(dec)), dec - tgt["dec"]) < 0.02:
-            return {
-                "ra": ra,
-                "dec": dec,
-                "ra_j2000": tgt["ra_j2000"],
-                "dec_j2000": tgt["dec_j2000"],
-                "pm_ra": tgt["pm_ra"],
-                "pm_dec": tgt["pm_dec"],
-                "resolved_name": f"{tgt['name']} ({label})",
-                "epoch": epoch_yr,
-                "preset_id": tgt["id"],
-            }
-    return {
-        "ra": ra,
-        "dec": dec,
-        "ra_j2000": ra,
-        "dec_j2000": dec,
-        "pm_ra": 0.0,
-        "pm_dec": 0.0,
-        "resolved_name": label,
-        "epoch": epoch_yr,
-    }
+# ---------------------------------------------------------------------------
+# Descubrimiento de exposiciones (IRSA TAP)
+# ---------------------------------------------------------------------------
+_TAP_STATUS: Dict[str, Any] = {"ok": None, "error": None, "t": 0.0, "via": None, "tap_fail_t": 0.0, "sia_fail_t": 0.0}
+SERVICE_RETRY_S = 300.0
 
 
 def query_spherex_exposures(
@@ -554,12 +776,12 @@ def query_spherex_exposures(
     release: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Consulta IRSA TAP (spherex.artifact JOIN spherex.plane) para obtener todas las exposiciones
-    que cubren (ra, dec) sin necesidad de llamadas extra a DataLink. Cachea el resultado en disco.
+    Consulta IRSA TAP (spherex.artifact ⋈ spherex.plane) por las exposiciones L2b cuyo polígono
+    contiene (ra, dec). Cachea en disco solo respuestas válidas. Si IRSA no responde devuelve []
+    y deja constancia en `_TAP_STATUS` (la UI lo comunica en vez de inventar datos).
     """
     key_str = f"tap_v2_{ra:.4f}_{dec:.4f}"
     cache_file = os.path.join(CACHE_DIR, "tap", f"{key_str}.json")
-
     all_rows: Optional[List[Dict[str, Any]]] = None
     if os.path.exists(cache_file):
         try:
@@ -568,24 +790,22 @@ def query_spherex_exposures(
         except Exception:
             all_rows = None
 
-    # Si el usuario desplazó ligeramente el campo (<0.20°), reutilizar la lista de exposiciones TAP cercana en caché
     if all_rows is None:
+        # Reutilizar una consulta cercana (≤ 0.05°): cada exposición cubre 3.5° × 3.5°, y luego se
+        # comprueba la cobertura real con el WCS de cada archivo.
         tap_dir = os.path.join(CACHE_DIR, "tap")
-        best_file = None
-        best_dist = 999.0
-        if os.path.exists(tap_dir):
-            for fname in os.listdir(tap_dir):
-                m_tap = re.match(r"tap_v2_([-\d.]+)_([-\d.]+)\.json$", fname)
-                if m_tap:
-                    try:
-                        c_ra, c_dec = float(m_tap.group(1)), float(m_tap.group(2))
-                        dist = float(np.hypot((ra - c_ra) * np.cos(np.deg2rad(dec)), dec - c_dec))
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_file = os.path.join(tap_dir, fname)
-                    except Exception:
-                        pass
-        if best_file and best_dist <= 0.14:
+        best_file, best_dist = None, 999.0
+        for fname in os.listdir(tap_dir):
+            m_tap = re.match(r"tap_v2_([-\d.]+)_([-\d.]+)\.json$", fname)
+            if m_tap:
+                try:
+                    c_ra, c_dec = float(m_tap.group(1)), float(m_tap.group(2))
+                    dist = float(np.hypot(((ra - c_ra + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(dec)), dec - c_dec))
+                    if dist < best_dist:
+                        best_dist, best_file = dist, os.path.join(tap_dir, fname)
+                except Exception:
+                    pass
+        if best_file and best_dist <= 0.05:
             try:
                 with open(best_file, "r", encoding="utf-8") as f:
                     all_rows = json.load(f)
@@ -593,137 +813,239 @@ def query_spherex_exposures(
                 all_rows = None
 
     if all_rows is None:
-        q = (
-            "SELECT a.uri, p.obsid, p.datarelease, p.energy_bandpassname, "
-            "p.time_bounds_lower AS t_min, p.time_exposure AS t_exptime, "
-            "p.energy_bounds_lower AS em_min, p.energy_bounds_upper AS em_max "
-            "FROM spherex.artifact a "
-            "JOIN spherex.plane p ON a.planeid = p.planeid "
-            f"WHERE 1 = CONTAINS(POINT('ICRS', {ra:.6f}, {dec:.6f}), p.poly) "
-            "ORDER BY p.time_bounds_lower ASC"
-        )
-        try:
-            r = requests.get(TAP_URL, params={"LANG": "ADQL", "FORMAT": "csv", "QUERY": q}, timeout=4.0)
-            r.raise_for_status()
-            raw_rows = list(csv.DictReader(io.StringIO(r.text)))
-            all_rows = []
-            for row in raw_rows:
-                uri = row.get("uri", "")
-                if not uri.endswith(".fits"):
-                    continue
-                m = re.search(r"level2_([^_]+_[^_]+_[^_]+_\d+)", uri)
-                obs_id = m.group(1) if m else row.get("obsid", "")
-                band_full = row.get("energy_bandpassname", "")
-                band_short = band_full.replace("SPHEREx-", "")
-                t_min = float(row["t_min"]) if row.get("t_min") else 0.0
-                all_rows.append({
-                    "obs_id": obs_id,
-                    "uri": uri,
-                    "release": row.get("datarelease") or "dr1",
-                    "band": band_short,
-                    "band_full": band_full,
-                    "t_min": t_min,
-                    "date_iso": Time(t_min, format="mjd").iso[:19] if t_min else "",
-                    "exptime": float(row["t_exptime"]) if row.get("t_exptime") else 113.58,
-                    "lmin_um": round(float(row["em_min"]) * 1e6, 4) if row.get("em_min") else DETECTOR_INFO.get(band_short, {}).get("lmin", 0),
-                    "lmax_um": round(float(row["em_max"]) * 1e6, 4) if row.get("em_max") else DETECTOR_INFO.get(band_short, {}).get("lmax", 0),
-                })
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(all_rows, f)
-        except Exception:
-            all_rows = []
+        # Descubrimiento: IRSA TAP y, si falla, IRSA SIA (método de los tutoriales oficiales). Un servicio que acaba
+        # de fallar no se vuelve a esperar durante SERVICE_RETRY_S (cortacircuito), para no bloquear cada consulta.
+        now = time.time()
+        errors: List[str] = []
+        if now - float(_TAP_STATUS.get("tap_fail_t") or 0.0) >= SERVICE_RETRY_S:
+            all_rows, tap_err = _query_tap_exposures(ra, dec)
+            if all_rows is None:
+                _TAP_STATUS["tap_fail_t"] = time.time()
+                errors.append("TAP: " + str(tap_err))
+            else:
+                _TAP_STATUS["via"] = "TAP"
+        else:
+            errors.append("TAP: falló hace menos de 5 min (no se reintenta todavía)")
+        if all_rows is None:
+            if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
+                all_rows = _query_sia_exposures(ra, dec)
+                if all_rows is None:
+                    _TAP_STATUS["sia_fail_t"] = time.time()
+                    errors.append("SIA: sin respuesta válida")
+                else:
+                    _TAP_STATUS["via"] = "SIA"
+            else:
+                errors.append("SIA: falló hace menos de 5 min (no se reintenta todavía)")
+        if all_rows is None:
+            _TAP_STATUS.update({"ok": False, "error": " · ".join(errors), "t": time.time()})
+            return []
+        _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time()})
+        if all_rows:  # una respuesta vacía no se cachea: puede cambiar con nuevas versiones de datos
+            try:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(all_rows, f)
+            except Exception:
+                pass
+    else:
+        _TAP_STATUS.update({"ok": True, "error": None, "via": "caché"})
 
     filtered = all_rows
     if bands:
         band_set = {b.upper().replace("SPHEREX-", "") for b in bands}
         filtered = [r for r in filtered if r["band"].upper() in band_set]
     if release and release.lower() != "all":
-        filtered = [r for r in filtered if r["release"].lower() == release.lower()]
+        filtered = [r for r in filtered if (r.get("release") or "").lower() == release.lower()]
     return filtered
 
 
+def _query_tap_exposures(ra: float, dec: float) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Exposiciones L2b cuyo polígono contiene (ra, dec) vía IRSA TAP (spherex.artifact ⋈ spherex.plane)."""
+    q = (
+        "SELECT a.uri, p.obsid, p.datarelease, p.energy_bandpassname, "
+        "p.time_bounds_lower AS t_min, p.time_exposure AS t_exptime, "
+        "p.energy_bounds_lower AS em_min, p.energy_bounds_upper AS em_max "
+        "FROM spherex.artifact a "
+        "JOIN spherex.plane p ON a.planeid = p.planeid "
+        f"WHERE 1 = CONTAINS(POINT('ICRS', {ra:.6f}, {dec:.6f}), p.poly) "
+        "ORDER BY p.time_bounds_lower ASC"
+    )
+    try:
+        r = requests.get(TAP_URL, params={"LANG": "ADQL", "FORMAT": "csv", "QUERY": q}, timeout=TAP_TIMEOUT_S)
+        r.raise_for_status()
+        if not r.text.startswith("uri"):
+            raise RuntimeError("Respuesta TAP inesperada")
+        rows: List[Dict[str, Any]] = []
+        for row in csv.DictReader(io.StringIO(r.text)):
+            uri = row.get("uri", "")
+            if not uri.endswith(".fits"):
+                continue
+            m = re.search(r"level2_([^_]+_[^_]+_[^_]+_\d+)", uri)
+            band_full = row.get("energy_bandpassname", "")
+            t_min = float(row["t_min"]) if row.get("t_min") else 0.0
+            rows.append({
+                "obs_id": m.group(1) if m else row.get("obsid", ""),
+                "uri": uri,
+                "release": (row.get("datarelease") or "").lower(),
+                "band": band_full.replace("SPHEREx-", ""),
+                "band_full": band_full,
+                "t_min": t_min,
+                "date_iso": Time(t_min, format="mjd").isot[:19] if t_min else "",
+                "exptime": float(row["t_exptime"]) if row.get("t_exptime") else EXPTIME_S,
+            })
+        return rows, None
+    except Exception as exc:  # IRSA caído o lento: no se inventa nada
+        return None, str(exc)[:200]
+
+
+SIA_URL = "https://irsa.ipac.caltech.edu/SIA"
+SIA_COLLECTIONS = ("spherex_dr1", "spherex_dr1_deep", "spherex_qr3", "spherex_qr3_deep")
+
+
+def _query_sia_exposures(ra: float, dec: float) -> Optional[List[Dict[str, Any]]]:
+    """Lista de exposiciones L2b vía IRSA SIA v2 (método de los tutoriales oficiales de IRSA). None si falla."""
+    params: List[Tuple[str, str]] = [("POS", f"CIRCLE {ra:.6f} {dec:.6f} 0.0005"), ("RESPONSEFORMAT", "CSV")]
+    params += [("COLLECTION", c) for c in SIA_COLLECTIONS]
+    try:
+        r = requests.get(SIA_URL, params=params, timeout=SIA_TIMEOUT_S)
+        if not r.ok or "access_url" not in r.text[:4000]:
+            return None
+        out: List[Dict[str, Any]] = []
+        for row in csv.DictReader(io.StringIO(r.text)):
+            url = row.get("access_url", "")
+            if ".fits" not in url:
+                continue
+            uri = url.split("irsa.ipac.caltech.edu/", 1)[-1].split("?")[0]
+            m = re.search(r"level2_([^_]+_[^_]+_[^_]+_\d+)", uri)
+            band = (row.get("energy_bandpassname") or "").replace("SPHEREx-", "")
+            if not band:
+                mb = re.search(r"_\d(D\d)_spx", uri)
+                band = mb.group(1) if mb else ""
+            t_min = float(row["t_min"]) if row.get("t_min") else 0.0
+            coll = (row.get("obs_collection") or "").lower()
+            rel = "dr1" if "dr1" in coll else ("qr3" if "qr3" in coll else coll.replace("spherex_", ""))
+            out.append({"obs_id": m.group(1) if m else row.get("obs_id", ""), "uri": uri, "release": rel, "band": band,
+                        "band_full": f"SPHEREx-{band}", "t_min": t_min, "date_iso": Time(t_min, format="mjd").isot[:19] if t_min else "",
+                        "exptime": float(row["t_exptime"]) if row.get("t_exptime") else EXPTIME_S})
+        return sorted(out, key=lambda x: x["t_min"])
+    except Exception:
+        return None
+
+
 def eval_wcs_wave(X: np.ndarray, Y: np.ndarray, V: np.ndarray, x_raw: float, y_raw: float) -> Tuple[float, float]:
-    """Interpolación bilineal exacta sobre la tabla WCS-WAVE (longitud de onda central y ancho de banda en µm)."""
+    """
+    Interpolación bilineal de la tabla WCS-WAVE (coordenadas FITS 1-based del detector) →
+    (longitud de onda central, ancho de banda) en µm. Verificado contra CWAVE/CBAND oficiales.
+    """
     ix = int(np.clip(np.searchsorted(X, x_raw) - 1, 0, len(X) - 2))
     iy = int(np.clip(np.searchsorted(Y, y_raw) - 1, 0, len(Y) - 2))
     tx = float(np.clip((x_raw - X[ix]) / (X[ix + 1] - X[ix]), 0.0, 1.0))
     ty = float(np.clip((y_raw - Y[iy]) / (Y[iy + 1] - Y[iy]), 0.0, 1.0))
-    v00 = V[iy, ix]
-    v10 = V[iy, ix + 1]
-    v01 = V[iy + 1, ix]
-    v11 = V[iy + 1, ix + 1]
+    v00, v10, v01, v11 = V[iy, ix], V[iy, ix + 1], V[iy + 1, ix], V[iy + 1, ix + 1]
     val = (1 - tx) * (1 - ty) * v00 + tx * (1 - ty) * v10 + (1 - tx) * ty * v01 + tx * ty * v11
     return float(val[0]), float(val[1])
 
 
+# ---------------------------------------------------------------------------
+# Recortes L2b (AWS S3 HTTP Range → IRSA IBE) con metadatos para fotometría y astrometría
+# ---------------------------------------------------------------------------
+_HTTP_POOL = requests.Session()
+_HTTP_POOL.mount("https://", requests.adapters.HTTPAdapter(pool_connections=24, pool_maxsize=24))
+_CUT_META_KEYS = ("mjd_avg", "psf_fwhm", "detector", "x0_det", "y0_det", "sc_start", "sc_end", "vsc_start", "vsc_end", "t_span_s")
+
+
+def _hdr_meta(hdr: fits.Header) -> Dict[str, Any]:
+    def _f(k: str, default: float = np.nan) -> float:
+        try:
+            return float(hdr.get(k, default))
+        except Exception:
+            return default
+
+    meta = {
+        "mjd_avg": _f("MJD-AVG", _f("MJD-OBS")),
+        "mjd_beg": _f("MJD-BEG", _f("MJD-OBS")),
+        "mjd_end": _f("MJD-END", np.nan),
+        "psf_fwhm": _f("PSF_FWHM"),
+        "detector": int(hdr.get("DETECTOR", 0) or 0),
+        "sc_start": [_f("X_SC_START"), _f("Y_SC_START"), _f("Z_SC_START")],
+        "sc_end": [_f("X_SC_END"), _f("Y_SC_END"), _f("Z_SC_END")],
+        "vsc_start": [_f("VX_SC_START"), _f("VY_SC_START"), _f("VZ_SC_START")],
+        "vsc_end": [_f("VX_SC_END"), _f("VY_SC_END"), _f("VZ_SC_END")],
+    }
+    if np.isfinite(meta["mjd_end"]) and np.isfinite(meta["mjd_beg"]):
+        meta["t_span_s"] = (meta["mjd_end"] - meta["mjd_beg"]) * 86400.0
+    else:
+        meta["t_span_s"] = float(hdr.get("TELAPSE", EXPTIME_S) or EXPTIME_S)
+    return meta
+
+
+def _read_epsf_row(url: str, data_offset: int, row_len: int, det: int, x_det: float, y_det: float) -> Optional[np.ndarray]:
+    """Lee por HTTP Range la fila de la ePSF oficial (33×33, 5× sobremuestreada) de la zona que contiene (x_det, y_det)."""
+    nx_z, ny_z = (11, 41) if det == 3 else (21, 21)
+    bx = int(np.clip(x_det // (2040.0 / nx_z), 0, nx_z - 1))
+    by = int(np.clip(y_det // (2040.0 / ny_z), 0, ny_z - 1))
+    for row_idx in (by * nx_z + bx, bx * ny_z + by):
+        try:
+            b0 = data_offset + row_idx * row_len
+            r = _HTTP_POOL.get(url, headers={"Range": f"bytes={b0}-{b0 + row_len - 1}"}, timeout=20)
+            if r.status_code not in (200, 206) or len(r.content) != row_len:
+                continue
+            raw = r.content
+            xc, yc, xw, yw = np.frombuffer(raw[8:24], ">f4")
+            if abs(x_det - xc) <= 0.51 * xw + 1 and abs(y_det - yc) <= 0.51 * yw + 1:
+                psf = np.frombuffer(raw[40:40 + 1089 * 8], ">f8").reshape(33, 33).astype(np.float64)
+                if np.isfinite(psf).all() and psf.sum() > 0:
+                    return psf
+        except Exception:
+            continue
+    return None
+
+
+def _epsf_from_table(tbl: Any, x_det: float, y_det: float) -> Optional[np.ndarray]:
+    try:
+        xc = np.asarray(tbl["XCENTER"], float)
+        yc = np.asarray(tbl["YCENTER"], float)
+        i = int(np.argmin((xc - x_det) ** 2 + (yc - y_det) ** 2))
+        psf = np.asarray(tbl["EPSF"][i], dtype=np.float64).reshape(33, 33)
+        return psf if np.isfinite(psf).all() and psf.sum() > 0 else None
+    except Exception:
+        return None
+
+
+def _cut_from_npz(d: Any, row: Dict[str, Any], source: str) -> Dict[str, Any]:
+    hdr = fits.Header.fromstring(str(d["header_str"]))
+    meta = json.loads(str(d["meta_json"]))
+    return {
+        "row": row,
+        "img": d["img"].astype(np.float32),
+        "zodi": float(d["zodi_med"]),
+        "flags": d["flags"].astype(np.int64),
+        "var": d["var"].astype(np.float32),
+        "wcs": WCS(hdr),
+        "wave_tab": (d["wave_x"], d["wave_y"], d["wave_v"]),
+        "psf": d["psf"] if d["psf"].size == 1089 else None,
+        "meta": meta,
+        "source": source,
+    }
+
+
 def fetch_cutout_cached(row: Dict[str, Any], ra: float, dec: float, size_deg: float) -> Optional[Dict[str, Any]]:
     """
-    Obtiene el recorte (IMAGE, ZODI, FLAGS, VARIANCE, WCS y longitud de onda LVF en el centro)
-    para una exposición. Usa caché en disco -> archivo local poc/out -> AWS S3 Range -> IRSA IBE.
+    Devuelve el recorte nativo (IMAGE−ZODI, FLAGS, VARIANCE, WCS TAN-SIP, tabla WCS-WAVE, ePSF y
+    metadatos de cabecera) de una exposición L2b. Orden: caché en disco → AWS S3 (HTTP Range) → IRSA IBE.
     """
     uri = row["uri"]
     obs_id = row["obs_id"]
     band = row["band"]
     cid = hashlib.md5(f"{uri}_{ra:.4f}_{dec:.4f}_{size_deg:.3f}".encode()).hexdigest()[:16]
-    cpath = os.path.join(CACHE_DIR, "cutouts", f"{obs_id}_{band}_{cid}.npz")
+    cpath = os.path.join(CACHE_DIR, "cutouts", f"{obs_id}_{band}_{cid}_r2.npz")
 
     if os.path.exists(cpath):
         try:
-            d = np.load(cpath, allow_pickle=True)
-            hdr = fits.Header.fromstring(str(d["header_str"]))
-            return {
-                "row": row,
-                "img": d["img"].astype(np.float32),
-                "zodi": float(d["zodi_med"]),
-                "flags": d["flags"].astype(np.int32),
-                "var": d["var"].astype(np.float32),
-                "wcs": WCS(hdr),
-                "wavelength_um": float(d["wavelength_um"]),
-                "bandwidth_um": float(d["bandwidth_um"]),
-                "source": "cache",
-            }
+            with np.load(cpath, allow_pickle=False) as d:
+                return _cut_from_npz(d, row, "cache")
         except Exception:
             pass
 
-    # 0b. ¿Existe otro recorte cacheado de la misma exposición (obs_id + band) que cubra (ra, dec)?
-    cutouts_dir = os.path.join(CACHE_DIR, "cutouts")
-    prefix = f"{obs_id}_{band}_"
-    if os.path.exists(cutouts_dir):
-        for fn in os.listdir(cutouts_dir):
-            if fn.startswith(prefix) and fn.endswith(".npz"):
-                alt_path = os.path.join(cutouts_dir, fn)
-                try:
-                    d = np.load(alt_path, allow_pickle=True)
-                    hdr = fits.Header.fromstring(str(d["header_str"]))
-                    w_alt = WCS(hdr)
-                    img_alt = d["img"].astype(np.float32)
-                    ny_a, nx_a = img_alt.shape
-                    xa, ya = w_alt.world_to_pixel_values(ra, dec)
-                    if -8 <= float(xa) <= nx_a + 8 and -8 <= float(ya) <= ny_a + 8:
-                        return {
-                            "row": row,
-                            "img": img_alt,
-                            "zodi": float(d["zodi_med"]),
-                            "flags": d["flags"].astype(np.int32),
-                            "var": d["var"].astype(np.float32),
-                            "wcs": w_alt,
-                            "wavelength_um": float(d["wavelength_um"]),
-                            "bandwidth_um": float(d["bandwidth_um"]),
-                            "source": "cache_wcs",
-                        }
-                except Exception:
-                    pass
-
-    # 1. ¿Existe ya en poc/out/ (p.ej. de la primera prueba con WISE 0855)?
-    local_poc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poc", "out", f"{obs_id}_{band}.fits")
-    if os.path.exists(local_poc) and size_deg <= 0.12:
-        try:
-            with fits.open(local_poc) as h:
-                return _extract_from_cutout_hdul(h, row, cpath)
-        except Exception:
-            pass
-
-    # 2. Lectura parcial (HTTP Range) desde AWS S3 con radio diagonal √2·(size_deg/2)
     s3_key = uri.replace("ibe/data/spherex/", "")
     s3_url = S3_BASE + s3_key
     try:
@@ -731,127 +1053,400 @@ def fetch_cutout_cached(row: Dict[str, Any], ra: float, dec: float, size_deg: fl
             hdr_full = h["IMAGE"].header
             w_full = WCS(hdr_full)
             ny, nx = h["IMAGE"].shape
-            x_det, y_det = w_full.world_to_pixel_values(ra, dec)
-            x_det, y_det = float(x_det), float(y_det)
-            r_pix = int(np.ceil(size_deg * 0.78 * 3600.0 / PIX_SCALE_NATIVE)) + 6
+            x_det, y_det = [float(v) for v in w_full.world_to_pixel_values(ra, dec)]
+            r_pix = int(np.ceil(size_deg * 0.78 * 3600.0 / PIX_SCALE_NATIVE)) + 10
             x0, x1 = max(int(round(x_det)) - r_pix, 0), min(int(round(x_det)) + r_pix, nx)
             y0, y1 = max(int(round(y_det)) - r_pix, 0), min(int(round(y_det)) + r_pix, ny)
-            if x1 - x0 < 6 or y1 - y0 < 6:
+            if x1 - x0 < 12 or y1 - y0 < 12:
                 return None
-
             img_raw = h["IMAGE"].section[y0:y1, x0:x1].astype(np.float32)
             zod_raw = h["ZODI"].section[y0:y1, x0:x1].astype(np.float32)
-            flg_raw = h["FLAGS"].section[y0:y1, x0:x1].astype(np.int32)
+            flg_raw = h["FLAGS"].section[y0:y1, x0:x1].astype(np.int64)
             var_raw = h["VARIANCE"].section[y0:y1, x0:x1].astype(np.float32)
-
-            if band not in _WCS_WAVE_CACHE:
-                wtbl = h["WCS-WAVE"].data
-                _WCS_WAVE_CACHE[band] = (
-                    wtbl["X"][0].astype(float),
-                    wtbl["Y"][0].astype(float),
-                    wtbl["VALUES"][0].astype(float),
-                )
-            X_w, Y_w, V_w = _WCS_WAVE_CACHE[band]
-            lam_um, bw_um = eval_wcs_wave(X_w, Y_w, V_w, x_det + 1.0, y_det + 1.0)
-
-            w_sub = w_full[y0:y1, x0:x1]
-            hdr_sub = w_sub.to_header(relax=True)
-            img_clean = img_raw - zod_raw
-            zodi_med = float(np.nanmedian(zod_raw))
-
-            np.savez_compressed(
-                cpath,
-                img=img_clean,
-                zodi_med=zodi_med,
-                flags=flg_raw,
-                var=var_raw,
-                header_str=hdr_sub.tostring(),
-                wavelength_um=lam_um,
-                bandwidth_um=bw_um,
-            )
-            return {
-                "row": row,
-                "img": img_clean,
-                "zodi": zodi_med,
-                "flags": flg_raw,
-                "var": var_raw,
-                "wcs": w_sub,
-                "wavelength_um": lam_um,
-                "bandwidth_um": bw_um,
-                "source": "aws_s3",
-            }
+            wtbl = h["WCS-WAVE"].data
+            X_w, Y_w, V_w = (wtbl["X"][0].astype(float), wtbl["Y"][0].astype(float), wtbl["VALUES"][0].astype(float))
+            meta = _hdr_meta(hdr_full)
+            meta["x0_det"], meta["y0_det"] = int(x0), int(y0)
+            psf = None
+            try:
+                e = h["EPSF"]
+                psf = _read_epsf_row(s3_url, int(e._data_offset), int(e.header["NAXIS1"]), meta["detector"], x_det, y_det)
+            except Exception:
+                psf = None
+        w_sub = w_full[y0:y1, x0:x1]
+        hdr_sub = w_sub.to_header(relax=True)
+        img_clean = img_raw - zod_raw
+        zodi_med = float(np.nanmedian(zod_raw))
+        np.savez_compressed(
+            cpath, img=img_clean, zodi_med=zodi_med, flags=flg_raw, var=var_raw,
+            header_str=hdr_sub.tostring(), wave_x=X_w, wave_y=Y_w, wave_v=V_w,
+            psf=psf if psf is not None else np.zeros(1), meta_json=json.dumps(meta),
+        )
+        return {
+            "row": row, "img": img_clean, "zodi": zodi_med, "flags": flg_raw, "var": var_raw,
+            "wcs": w_sub, "wave_tab": (X_w, Y_w, V_w), "psf": psf, "meta": meta, "source": "aws_s3",
+        }
     except Exception:
         pass
 
-    # 2. Fallback al servicio de cutouts IBE de IRSA (con factor diagonal 1.45 para cubrir rotación)
+    # Respaldo: servicio de recortes IBE de IRSA
     ibe_url = f"{IBE_BASE}{uri}?center={ra},{dec}&size={min(size_deg * 1.45, 0.5):.4f}"
     r = requests.get(ibe_url, timeout=90)
     r.raise_for_status()
     with fits.open(io.BytesIO(r.content)) as h:
-        return _extract_from_cutout_hdul(h, row, cpath)
-
-
-def _extract_from_cutout_hdul(h: fits.HDUList, row: Dict[str, Any], cpath: str) -> Dict[str, Any]:
-    hdr = h["IMAGE"].header
-    img_raw = h["IMAGE"].data.astype(np.float32)
-    zod_raw = h["ZODI"].data.astype(np.float32) if "ZODI" in h else np.zeros_like(img_raw)
-    flg_raw = h["FLAGS"].data.astype(np.int32)
-    var_raw = h["VARIANCE"].data.astype(np.float32) if "VARIANCE" in h else np.zeros_like(img_raw)
+        hdr = h["IMAGE"].header
+        img_raw = h["IMAGE"].data.astype(np.float32)
+        zod_raw = h["ZODI"].data.astype(np.float32) if "ZODI" in h else np.zeros_like(img_raw)
+        flg_raw = h["FLAGS"].data.astype(np.int64)
+        var_raw = h["VARIANCE"].data.astype(np.float32) if "VARIANCE" in h else np.full_like(img_raw, np.nan)
+        w_sub = WCS(hdr)
+        meta = _hdr_meta(hdr)
+        # Desplazamiento del recorte en el detector a partir del WCS alternativo 'A' (píxeles activos 0-based)
+        try:
+            wa = WCS(hdr, key="A")
+            ox, oy = wa.pixel_to_world_values(0.0, 0.0)
+            meta["x0_det"], meta["y0_det"] = int(round(float(ox))), int(round(float(oy)))
+        except Exception:
+            meta["x0_det"], meta["y0_det"] = 0, 0
+        if "WCS-WAVE" in h:
+            wtbl = h["WCS-WAVE"].data
+            X_w, Y_w, V_w = (wtbl["X"][0].astype(float), wtbl["Y"][0].astype(float), wtbl["VALUES"][0].astype(float))
+        else:
+            X_w = Y_w = V_w = np.zeros(1)
+        xc, yc = [float(v) for v in w_sub.world_to_pixel_values(ra, dec)]
+        psf = _epsf_from_table(h["EPSF"].data, xc + meta["x0_det"], yc + meta["y0_det"]) if "EPSF" in h else None
     img_clean = img_raw - zod_raw
     zodi_med = float(np.nanmedian(zod_raw))
-    w_sub = WCS(hdr)
-    ny, nx = img_clean.shape
-
-    band = row["band"]
-    if "WCS-WAVE" in h:
-        wtbl = h["WCS-WAVE"].data
-        X_w = wtbl["X"][0].astype(float)
-        Y_w = wtbl["Y"][0].astype(float)
-        V_w = wtbl["VALUES"][0].astype(float)
-        _WCS_WAVE_CACHE[band] = (X_w, Y_w, V_w)
-        x_raw = (nx / 2.0) + 1.0 - float(hdr.get("CRPIX1W", 0.0))
-        y_raw = (ny / 2.0) + 1.0 - float(hdr.get("CRPIX2W", 0.0))
-        lam_um, bw_um = eval_wcs_wave(X_w, Y_w, V_w, x_raw, y_raw)
-    else:
-        lam_um = 0.5 * (row["lmin_um"] + row["lmax_um"])
-        bw_um = (row["lmax_um"] - row["lmin_um"]) / 17.0
-
-    hdr_str = w_sub.to_header(relax=True).tostring()
     np.savez_compressed(
-        cpath,
-        img=img_clean,
-        zodi_med=zodi_med,
-        flags=flg_raw,
-        var=var_raw,
-        header_str=hdr_str,
-        wavelength_um=lam_um,
-        bandwidth_um=bw_um,
+        cpath, img=img_clean, zodi_med=zodi_med, flags=flg_raw, var=var_raw,
+        header_str=w_sub.to_header(relax=True).tostring(), wave_x=X_w, wave_y=Y_w, wave_v=V_w,
+        psf=psf if psf is not None else np.zeros(1), meta_json=json.dumps(meta),
     )
     return {
-        "row": row,
-        "img": img_clean,
-        "zodi": zodi_med,
-        "flags": flg_raw,
-        "var": var_raw,
-        "wcs": w_sub,
-        "wavelength_um": lam_um,
-        "bandwidth_um": bw_um,
-        "source": "irsa_ibe",
+        "row": row, "img": img_clean, "zodi": zodi_med, "flags": flg_raw, "var": var_raw, "wcs": w_sub,
+        "wave_tab": (X_w, Y_w, V_w), "psf": psf, "meta": meta, "source": "irsa_ibe",
     }
 
 
-def group_exposures_into_epochs(
-    rows: List[Dict[str, Any]],
-    gap_days: float = 20.0,
-    max_span_days: Optional[float] = None,
-) -> List[List[Dict[str, Any]]]:
-    """
-    Agrupa exposiciones ordenadas por tiempo en épocas separadas por más de `gap_days` días.
+def _safe_fetch(row: Dict[str, Any], ra: float, dec: float, size_deg: float) -> Optional[Dict[str, Any]]:
+    try:
+        return fetch_cutout_cached(row, ra, dec, size_deg)
+    except Exception:
+        return None
 
-    En campos de cobertura continua (p. ej. los Polos Eclípticos, donde SPHEREx observa
-    casi a diario) la agrupación por huecos produce UNA sola época de >1 año. Para evitarlo,
-    cualquier grupo cuya duración supere `max_span_days` se subdivide en ventanas temporales
-    consecutivas de esa duración.
+
+def cut_wavelength_at(cut: Dict[str, Any], ra: float, dec: float) -> Tuple[float, float, float, float]:
+    """λ y Δλ (µm) en la posición del detector donde cae (ra, dec) en esta exposición; también (x, y) del recorte."""
+    x, y = [float(v) for v in cut["wcs"].world_to_pixel_values(ra, dec)]
+    X_w, Y_w, V_w = cut["wave_tab"]
+    if np.size(X_w) < 2:
+        return float("nan"), float("nan"), x, y
+    x_det = x + float(cut["meta"].get("x0_det", 0))
+    y_det = y + float(cut["meta"].get("y0_det", 0))
+    lam, bw = eval_wcs_wave(np.asarray(X_w), np.asarray(Y_w), np.asarray(V_w), x_det + 1.0, y_det + 1.0)
+    return lam, bw, x, y
+
+
+DET_NPIX = 2040          # tamaño de la matriz activa de cada detector H2RG en las imágenes L2b
+LVF_EDGE_MARGIN_PX = 32  # margen del borde del detector donde la respuesta del LVF y la calibración no son fiables
+
+
+def lvf_edge_reason(cut: Dict[str, Any], x: float, y: float, lam: float) -> Optional[str]:
+    """
+    'edge' si la fuente cae a < LVF_EDGE_MARGIN_PX del borde del detector; 'lambda' si su λ está fuera del rango
+    nominal del detector (extremos del filtro LVF, p. ej. 5.006 µm en D6). En esos casos el flujo no se usa
+    para afirmar variabilidad (validado: una medición en D6 a 5.006 µm daba ×4.8 el flujo real de una estrella).
+    """
+    x_det = x + float(cut["meta"].get("x0_det", 0))
+    y_det = y + float(cut["meta"].get("y0_det", 0))
+    m = LVF_EDGE_MARGIN_PX
+    if x_det < m or y_det < m or x_det > DET_NPIX - 1 - m or y_det > DET_NPIX - 1 - m:
+        return "edge"
+    info = DETECTOR_INFO.get(str(cut["row"].get("band", "")))
+    if info and np.isfinite(lam) and not (info["lmin"] <= lam <= info["lmax"]):
+        return "lambda"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Fotometría forzada con la ePSF oficial (Suplemento v2.1 sec. 3.3 y 4.2.3)
+# ---------------------------------------------------------------------------
+def _bilinear_sample(arr: np.ndarray, fy: np.ndarray, fx: np.ndarray) -> np.ndarray:
+    ny, nx = arr.shape
+    fx = np.clip(fx, 0.0, nx - 1.000001)
+    fy = np.clip(fy, 0.0, ny - 1.000001)
+    x0 = np.floor(fx).astype(int)
+    y0 = np.floor(fy).astype(int)
+    tx = fx - x0
+    ty = fy - y0
+    return (
+        arr[y0, x0] * (1 - tx) * (1 - ty) + arr[y0, x0 + 1] * tx * (1 - ty)
+        + arr[y0 + 1, x0] * (1 - tx) * ty + arr[y0 + 1, x0 + 1] * tx * ty
+    )
+
+
+def psf_native_model(psf: Optional[np.ndarray], xs: np.ndarray, ys: np.ndarray, x0: float, y0: float, fwhm_px: float) -> np.ndarray:
+    """
+    Respuesta por píxel nativo de una fuente puntual en (x0, y0).
+    - Con ePSF oficial (33×33, 5× sobremuestreada, centro en el índice 16): muestreo bilineal y
+      normalización de la red nativa a flujo total unidad.
+    - Sin ePSF: gaussiana con FWHM = PSF_FWHM de la cabecera, integrada por píxel (normalizada).
+    """
+    if psf is not None and psf.shape == (33, 33):
+        fx = 16.0 + 5.0 * (xs - x0)
+        fy = 16.0 + 5.0 * (ys - y0)
+        inside = (fx >= 0) & (fx <= 32) & (fy >= 0) & (fy <= 32)
+        m = np.where(inside, _bilinear_sample(psf, fy, fx), 0.0)
+        norm = float(psf[1::5, 1::5].sum())
+        return m / norm if norm > 0 else m
+    sig = max(float(fwhm_px), 0.6) / 2.3548
+    g = np.exp(-((xs - x0) ** 2 + (ys - y0) ** 2) / (2.0 * sig ** 2))
+    return g / (2.0 * np.pi * sig ** 2)
+
+
+def pixel_solid_angle_sr(w: WCS, x: float, y: float) -> float:
+    """Ángulo sólido del píxel en (x, y) con el Jacobiano del WCS completo (incluye la distorsión SIP)."""
+    try:
+        (r1, r2), (d1, d2) = w.pixel_to_world_values([x - 0.5, x + 0.5], [y, y])
+        (r3, r4), (d3, d4) = w.pixel_to_world_values([x, x], [y - 0.5, y + 0.5])
+        c = np.cos(np.radians(0.5 * (d1 + d2)))
+        dra1 = ((r2 - r1 + 180.0) % 360.0) - 180.0
+        dra2 = ((r4 - r3 + 180.0) % 360.0) - 180.0
+        a = np.radians(dra1 * c)
+        b = np.radians(d2 - d1)
+        cc = np.radians(dra2 * c)
+        dd = np.radians(d4 - d3)
+        om = abs(a * dd - cc * b)
+        return float(om) if np.isfinite(om) and om > 0 else SOLID_ANGLE_SR
+    except Exception:
+        return SOLID_ANGLE_SR
+
+
+def _wls_flux(img: np.ndarray, var: np.ndarray, good: np.ndarray, P: np.ndarray, extra: Optional[List[np.ndarray]] = None) -> Optional[Tuple[float, float, float, float, int]]:
+    """
+    Mínimos cuadrados ponderados (pesos 1/VARIANCE): datos = F·P + Σ F_k·P_k + B. Las P_k son fuentes vecinas
+    (posición fija de Gaia) ajustadas a la vez para que no contaminen el flujo del objetivo (como Tractor en
+    modo forzado). Devuelve (F, σF, B, χ²ν, n).
+    """
+    n = int(good.sum())
+    if n < 6 or float(P[good].sum()) < 0.25:
+        return None
+    cols = [P[good]] + [Pk[good] for Pk in (extra or []) if float(Pk[good].sum()) > 0.05] + [np.ones(n)]
+    A = np.stack(cols, axis=1)
+    if n <= A.shape[1] + 2:
+        return None
+    wv = 1.0 / var[good]
+    ATA = A.T @ (A * wv[:, None])
+    try:
+        cov = np.linalg.inv(ATA)
+    except np.linalg.LinAlgError:
+        return None
+    th = cov @ (A.T @ (img[good] * wv))
+    res = img[good] - A @ th
+    chi2 = float(np.sum(res ** 2 * wv) / max(n - A.shape[1], 1))
+    return float(th[0]), float(np.sqrt(max(cov[0, 0], 0.0))), float(th[-1]), chi2, n
+
+
+def _saturated_core_astrometry(out: Dict[str, Any], st_flg: np.ndarray, xs: np.ndarray, ys: np.ndarray, x: float, y: float, w: WCS) -> None:
+    """
+    Posición de una estrella saturada: centroide de los píxeles con OVERFLOW (bit 1) a ≤ 4 px de la posición
+    predicha. El flujo no es medible, pero la mancha saturada está centrada en la estrella (validado con
+    Barnard en 28 exposiciones L2b: mediana 0.2 px). Solo se usa para astrometría, nunca para fotometría.
+    """
+    m = (np.hypot(xs - x, ys - y) <= 4.0) & ((st_flg & (1 << 1)) != 0)
+    n = int(m.sum())
+    if n < 2:
+        return
+    cx, cy = float(xs[m].mean()), float(ys[m].mean())
+    try:
+        rr_m, dd_m = w.pixel_to_world_values(cx, cy)
+    except Exception:
+        return
+    out["ra_meas"], out["dec_meas"] = round(float(rr_m), 6), round(float(dd_m), 6)
+    out["offset_arcsec"] = round(float(np.hypot(cx - x, cy - y) * PIX_SCALE_NATIVE), 2)
+    out["astrometry_method"] = "saturated_core"
+    out["n_saturated_px"] = n
+
+
+def forced_photometry_cut(cut: Dict[str, Any], ra: float, dec: float, fit_position: bool = True, neighbors: Optional[List[Tuple[float, float]]] = None) -> Dict[str, Any]:
+    """
+    Fotometría PSF forzada en una exposición nativa L2b en (ra, dec):
+    flujo (µJy) con error (VARIANCE + 3 % sistemático), S/N, magnitud AB (o límite superior 3σ),
+    banderas oficiales en r ≤ 2.5 px, aviso de saturación y desplazamiento medido del centroide.
+    """
+    img = cut["img"]
+    var = cut["var"]
+    flg = cut["flags"]
+    w = cut["wcs"]
+    lam, bw, x, y = cut_wavelength_at(cut, ra, dec)
+    ny, nx = img.shape
+    out: Dict[str, Any] = {
+        "obs_id": cut["row"]["obs_id"], "band": cut["row"]["band"], "release": cut["row"].get("release"),
+        "mjd": round(float(cut["meta"].get("mjd_avg", cut["row"].get("t_min", 0.0))), 6),
+        "date_iso": Time(float(cut["meta"].get("mjd_avg", cut["row"].get("t_min", 0.0))), format="mjd").isot[:19],
+        "wavelength_um": round(lam, 4) if np.isfinite(lam) else None,
+        "bandwidth_um": round(bw, 4) if np.isfinite(bw) else None,
+        "ra_pred": round(float(ra), 6), "dec_pred": round(float(dec), 6),
+        "psf_fwhm_arcsec": round(float(cut["meta"].get("psf_fwhm", np.nan)), 2) if np.isfinite(cut["meta"].get("psf_fwhm", np.nan)) else None,
+        "psf_model": "ePSF oficial" if cut.get("psf") is not None else "Gaussiana (PSF_FWHM de cabecera)",
+        "flux_ujy": None, "err_ujy": None, "snr": None, "ab_mag": None, "ab_mag_err": None, "upper_limit_ujy": None,
+        "quality": "no_coverage", "flags": [], "chi2_red": None, "offset_arcsec": None, "n_pix": 0,
+    }
+    if not (3 <= x < nx - 3 and 3 <= y < ny - 3):
+        return out
+    r = 6
+    xi, yi = int(round(x)), int(round(y))
+    ys0, ys1 = max(0, yi - r), min(ny, yi + r + 1)
+    xs0, xs1 = max(0, xi - r), min(nx, xi + r + 1)
+    st_img = img[ys0:ys1, xs0:xs1].astype(np.float64)
+    st_var = var[ys0:ys1, xs0:xs1].astype(np.float64)
+    st_flg = flg[ys0:ys1, xs0:xs1].astype(np.int64)
+    ys, xs = np.mgrid[ys0:ys1, xs0:xs1]
+    fwhm_px = float(cut["meta"].get("psf_fwhm", 7.5) or 7.5) / PIX_SCALE_NATIVE
+    psf = cut.get("psf")
+    good = np.isfinite(st_img) & np.isfinite(st_var) & (st_var > 0) & ((st_flg & PHOT_MASK) == 0)
+    rr = np.hypot(xs - x, ys - y)
+    near = rr <= 2.5
+    warn_bits = int(np.bitwise_or.reduce(st_flg[near].ravel())) if np.any(near) else 0
+    out["flags"] = [n for n in flag_names(warn_bits & PHOT_WARN_MASK)]
+    core = rr <= 1.2
+    core_lost = int(np.sum(core & ~good))
+    saturated = bool((warn_bits & SATURATION_MASK) or core_lost >= 2)
+
+    extra: List[np.ndarray] = []
+    for (ra_n, dec_n) in neighbors or []:
+        try:
+            xn, yn = [float(v) for v in w.world_to_pixel_values(ra_n, dec_n)]
+        except Exception:
+            continue
+        if xs0 - 3 <= xn <= xs1 + 2 and ys0 - 3 <= yn <= ys1 + 2 and np.hypot(xn - x, yn - y) >= 0.25:
+            extra.append(psf_native_model(psf, xs, ys, xn, yn, fwhm_px))
+    out["n_deblended"] = len(extra)
+    best_dx, best_dy = 0.0, 0.0
+    if fit_position:
+        best_chi = None
+        for dx in np.arange(-1.5, 1.501, 0.25):
+            for dy in np.arange(-1.5, 1.501, 0.25):
+                res = _wls_flux(st_img, st_var, good, psf_native_model(psf, xs, ys, x + dx, y + dy, fwhm_px), extra)
+                if res is not None and res[0] > 0 and (best_chi is None or res[3] < best_chi):
+                    best_chi, best_dx, best_dy = res[3], dx, dy
+    P_t = psf_native_model(psf, xs, ys, x, y, fwhm_px)
+    res = _wls_flux(st_img, st_var, good, P_t, extra)
+    if saturated:
+        _saturated_core_astrometry(out, st_flg, xs, ys, x, y, w)
+    if res is None:
+        # Sin píxeles válidos suficientes: si el núcleo tiene OVERFLOW/NONLINEAR/BLOOM es una estrella saturada
+        out["quality"] = "saturated" if saturated else "masked"
+        return out
+    F, sF, B, chi2, n = res
+    # Métrica oficial de calidad del ajuste (Suplemento sec. 3.3, Nota 2): ⟨|p − m|/σ⟩ en r ≤ 2.5 px
+    model = F * P_t + B
+    fq_mask = good & near
+    fit_quality = float(np.mean(np.abs(st_img[fq_mask] - model[fq_mask]) / np.sqrt(st_var[fq_mask]))) if np.any(fq_mask) else float("nan")
+    om = pixel_solid_angle_sr(w, x, y)
+    f_ujy = F * om * 1e12  # (MJy/sr)·sr = MJy → µJy
+    stat_ujy = sF * om * 1e12
+    err_ujy = float(np.hypot(stat_ujy, SYSTEMATIC_FRAC * abs(f_ujy)))
+    snr = f_ujy / err_ujy if err_ujy > 0 else 0.0
+    out.update({
+        "flux_ujy": round(f_ujy, 2), "err_ujy": round(err_ujy, 2), "snr": round(snr, 2),
+        "chi2_red": round(chi2, 2), "fit_quality": round(fit_quality, 2) if np.isfinite(fit_quality) else None,
+        "n_pix": n, "pix_solid_angle_sr": float(f"{om:.4e}"), "bg_mjy_sr": round(B, 5),
+    })
+    if snr >= 3.0 and f_ujy > 0:
+        out["ab_mag"] = round(AB_ZP_UJY - 2.5 * np.log10(f_ujy), 3)
+        out["ab_mag_err"] = round(1.0857 / snr, 3)
+    else:
+        out["upper_limit_ujy"] = round(max(f_ujy, 0.0) + 3.0 * err_ujy, 2)
+    if fit_position and snr >= 5.0 and not saturated:
+        off = np.hypot(best_dx, best_dy) * PIX_SCALE_NATIVE
+        out["offset_arcsec"] = round(float(off), 2)
+        try:
+            rr_m, dd_m = w.pixel_to_world_values(x + best_dx, y + best_dy)
+            out["ra_meas"], out["dec_meas"] = round(float(rr_m), 6), round(float(dd_m), 6)
+            out["astrometry_method"] = "epsf"
+        except Exception:
+            pass
+    edge = lvf_edge_reason(cut, x, y, lam)
+    out["lvf_edge"] = edge
+    if saturated:
+        out["quality"] = "saturated"
+    elif snr < 3.0:
+        out["quality"] = "non_detection"
+    elif edge:
+        # Borde del detector o λ fuera del rango nominal: flujo poco fiable (se muestra, pero no cuenta para variabilidad)
+        out["quality"] = "warning"
+    elif (np.isfinite(fit_quality) and fit_quality > 3.0 * max(1.0, abs(snr) / 30.0)) or out["flags"]:
+        # Para fuentes muy brillantes el residuo está dominado por el error sistemático de la PSF (~3 %)
+        out["quality"] = "warning"
+    else:
+        out["quality"] = "good"
+    return out
+
+
+def fit_source_position(cut: Dict[str, Any], ra_guess: float, dec_guess: float, neighbors: Optional[List[Tuple[float, float]]] = None, search_px: float = 1.5) -> Optional[Dict[str, Any]]:
+    """
+    Centroide por ajuste de ePSF (búsqueda en dos etapas: paso 0.25 px y luego 0.05 px) alrededor de una posición
+    inicial. Devuelve RA/Dec medidas, flujo, S/N y la incertidumbre de posición aproximada (FWHM / (2.35·S/N)).
+    """
+    img, var, flg, w = cut["img"], cut["var"], cut["flags"], cut["wcs"]
+    try:
+        x0, y0 = [float(v) for v in w.world_to_pixel_values(ra_guess, dec_guess)]
+    except Exception:
+        return None
+    ny, nx = img.shape
+    if not (4 <= x0 < nx - 4 and 4 <= y0 < ny - 4):
+        return None
+    r = 6
+    xi, yi = int(round(x0)), int(round(y0))
+    ys0, ys1 = max(0, yi - r), min(ny, yi + r + 1)
+    xs0, xs1 = max(0, xi - r), min(nx, xi + r + 1)
+    st_img = img[ys0:ys1, xs0:xs1].astype(np.float64)
+    st_var = var[ys0:ys1, xs0:xs1].astype(np.float64)
+    st_flg = flg[ys0:ys1, xs0:xs1].astype(np.int64)
+    ys, xs = np.mgrid[ys0:ys1, xs0:xs1]
+    good = np.isfinite(st_img) & np.isfinite(st_var) & (st_var > 0) & ((st_flg & PHOT_MASK) == 0)
+    fwhm_px = float(cut["meta"].get("psf_fwhm", 7.5) or 7.5) / PIX_SCALE_NATIVE
+    psf = cut.get("psf")
+    extra = []
+    for (ra_n, dec_n) in neighbors or []:
+        try:
+            xn, yn = [float(v) for v in w.world_to_pixel_values(ra_n, dec_n)]
+        except Exception:
+            continue
+        if xs0 - 3 <= xn <= xs1 + 2 and ys0 - 3 <= yn <= ys1 + 2 and np.hypot(xn - x0, yn - y0) >= 0.8:
+            extra.append(psf_native_model(psf, xs, ys, xn, yn, fwhm_px))
+    best = None
+    for step, half in ((0.25, search_px), (0.05, 0.3)):
+        cx, cy = (x0, y0) if best is None else (best[0], best[1])
+        for dx in np.arange(-half, half + 1e-9, step):
+            for dy in np.arange(-half, half + 1e-9, step):
+                res = _wls_flux(st_img, st_var, good, psf_native_model(psf, xs, ys, cx + dx, cy + dy, fwhm_px), extra)
+                if res is not None and res[0] > 0 and (best is None or res[3] < best[2]):
+                    best = (cx + dx, cy + dy, res[3], res[0], res[1])
+    if best is None:
+        return None
+    xb, yb, chi2, F, sF = best
+    om = pixel_solid_angle_sr(w, xb, yb)
+    f_ujy = F * om * 1e12
+    err = float(np.hypot(sF * om * 1e12, SYSTEMATIC_FRAC * abs(f_ujy)))
+    snr = f_ujy / err if err > 0 else 0.0
+    rr, dd = [float(v) for v in w.pixel_to_world_values(xb, yb)]
+    lam, bw, _, _ = cut_wavelength_at(cut, rr, dd)
+    sat_bits = int(np.bitwise_or.reduce(st_flg[np.hypot(xs - xb, ys - yb) <= 2.5].ravel())) & SATURATION_MASK
+    return {"ra": rr, "dec": dd, "flux_ujy": f_ujy, "err_ujy": err, "snr": snr, "wavelength_um": lam,
+            "pos_err_arcsec": float(max(fwhm_px * PIX_SCALE_NATIVE / (2.35 * max(snr, 1.0)), 0.05 * PIX_SCALE_NATIVE)),
+            "saturated": bool(sat_bits), "mjd": float(cut["meta"].get("mjd_avg") or cut["row"]["t_min"]),
+            "lvf_edge": lvf_edge_reason(cut, xb, yb, lam), "obs_id": cut["row"].get("obs_id")}
+
+
+# ---------------------------------------------------------------------------
+# Agrupación temporal y grilla común
+# ---------------------------------------------------------------------------
+def group_exposures_into_epochs(rows: List[Dict[str, Any]], gap_days: float = 20.0, max_span_days: Optional[float] = None) -> List[List[Dict[str, Any]]]:
+    """
+    Agrupa exposiciones ordenadas en épocas separadas por más de `gap_days` días. En zonas de cobertura
+    continua (polos eclípticos) los grupos largos se dividen en ventanas de `max_span_days`.
     """
     if not rows:
         return []
@@ -864,11 +1459,9 @@ def group_exposures_into_epochs(
             groups.append([r])
         else:
             groups[-1].append(r)
-
     out: List[List[Dict[str, Any]]] = []
     for g in groups:
-        span = g[-1]["t_min"] - g[0]["t_min"]
-        if span <= 1.5 * max_span_days:
+        if g[-1]["t_min"] - g[0]["t_min"] <= 1.5 * max_span_days:
             out.append(g)
             continue
         start = g[0]["t_min"]
@@ -876,8 +1469,7 @@ def group_exposures_into_epochs(
         for r in g:
             if cur and r["t_min"] - start > max_span_days:
                 out.append(cur)
-                cur = [r]
-                start = r["t_min"]
+                cur, start = [r], r["t_min"]
             else:
                 cur.append(r)
         if cur:
@@ -886,12 +1478,7 @@ def group_exposures_into_epochs(
 
 
 def _select_band_balanced(grp: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
-    """
-    Selecciona hasta `k` exposiciones de una época repartidas equitativamente entre detectores
-    (round-robin) y espaciadas uniformemente en el tiempo dentro de cada detector. Así todas las
-    épocas contienen la misma mezcla de bandas y las comparaciones temporales no se contaminan
-    con diferencias espectrales.
-    """
+    """Hasta `k` exposiciones por época, repartidas entre detectores y espaciadas en el tiempo."""
     if len(grp) <= k:
         return list(grp)
     by_band: Dict[str, List[Dict[str, Any]]] = {}
@@ -917,14 +1504,13 @@ def _select_band_balanced(grp: List[Dict[str, Any]], k: int) -> List[Dict[str, A
     return sorted(picked, key=lambda x: x["t_min"])
 
 
-# Memoria LRU de cubos reproyectados para extraer espectros/curvas de luz en cualquier píxel
 _CUBE_MEMO: "Dict[str, Dict[str, Any]]" = {}
 _CUBE_MEMO_ORDER: List[str] = []
 MAX_EPOCHS = 8
 
 
 def make_common_wcs(ra: float, dec: float, size_deg: float, oversample: float = 2.0) -> Tuple[WCS, Tuple[int, int], float]:
-    """Construye una grilla WCS tangencial común (Norte arriba, Este a la izquierda)."""
+    """Grilla tangencial común (Norte arriba, Este a la izquierda), muestreada a 6.15″/oversample."""
     pix_arcsec = PIX_SCALE_NATIVE / oversample
     raw_n = round(size_deg * 3600.0 / pix_arcsec)
     n = int(np.clip(raw_n, 36, 180))
@@ -940,232 +1526,147 @@ def make_common_wcs(ra: float, dec: float, size_deg: float, oversample: float = 
     return w, (n, n), pix_arcsec
 
 
-def compute_forced_psf_photometry(
-    img_arr: np.ndarray,
-    px: int,
-    py: int,
-    pix_arcsec: float,
-) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Reporte astrométrico IAU MPC (formato de 80 columnas para observaciones desde satélite)
+# Especificación: https://www.minorplanetcenter.net/iau/info/SatelliteObs.html
+# ---------------------------------------------------------------------------
+def _mpc_date_field(mjd_utc: float) -> str:
+    t = Time(float(mjd_utc), format="mjd", scale="utc")
+    ymd = t.ymdhms
+    day_frac = float(ymd.day) + (float(ymd.hour) * 3600.0 + float(ymd.minute) * 60.0 + float(ymd.second)) / 86400.0
+    return f"{int(ymd.year):04d} {int(ymd.month):02d} {day_frac:09.6f}"  # 17 caracteres (col. 16–32)
+
+
+def _mpc_ra_dec_fields(ra_deg: float, dec_deg: float) -> Tuple[str, str]:
+    c = SkyCoord(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg)
+    h, m, s = c.ra.hms
+    if round(s, 2) >= 60.0:
+        s, m = 0.0, m + 1
+    if m >= 60:
+        m, h = 0, (h + 1) % 24
+    ra_s = f"{int(h):02d} {int(m):02d} {s:05.2f}".ljust(12)  # col. 33–44
+    sign = "+" if dec_deg >= 0 else "-"
+    d_abs = abs(float(dec_deg))
+    dd = int(d_abs)
+    mm_tot = (d_abs - dd) * 60.0
+    mm = int(mm_tot)
+    ss = (mm_tot - mm) * 60.0
+    if round(ss, 1) >= 60.0:
+        ss, mm = 0.0, mm + 1
+    if mm >= 60:
+        mm, dd = 0, dd + 1
+    dec_s = f"{sign}{dd:02d} {mm:02d} {ss:04.1f}".ljust(12)  # col. 45–56
+    return ra_s, dec_s
+
+
+def _mpc_vector_field(v_km: float) -> str:
+    """Componente del vector geocéntrico en km: signo en la primera columna y punto decimal en la 7.ª (|v| < 100 000 km)."""
+    sign = "+" if v_km >= 0 else "-"
+    return f"{sign}{abs(v_km):10.4f}"  # 11 caracteres
+
+
+def format_mpc_satellite_obs(desig: str, mjd_utc_mid: float, ra_deg: float, dec_deg: float, sc_pos_km: Sequence[float], obs_code: str = MPC_OBS_CODE_SPHEREX) -> List[str]:
     """
-    Fotometría forzada lineal estilo Tractor (recorte 15x15 píxeles):
-    Ajusta M(x, y) = B_0 + F_src * G(x - x0, y - y0; sigma_PSF) por mínimos cuadrados
-    lineales ponderados, devolviendo flujo puntual (µJy), magnitud AB, FWHM (arcsec),
-    centroide sub-píxel y calidad de ajuste (fit_ql).
+    Dos registros de 80 columnas para una observación desde satélite ("S" en col. 15 y "s" en col. 15
+    con el vector geocéntrico en km, sistema ecuatorial J2000). La magnitud se deja en blanco porque
+    el formato de 80 columnas no tiene códigos de banda para los canales de 0.75–5 µm de SPHEREx.
     """
-    ny, nx = img_arr.shape
-    px_c = int(np.clip(px, 0, nx - 1))
-    py_c = int(np.clip(py, 0, ny - 1))
-    r_half = 7  # estampilla 15x15
-    y0, y1 = max(0, py_c - r_half), min(ny, py_c + r_half + 1)
-    x0, x1 = max(0, px_c - r_half), min(nx, px_c + r_half + 1)
-    stamp = np.nan_to_num(img_arr[y0:y1, x0:x1], nan=0.0).astype(np.float64)
-    sy, sx = stamp.shape
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-
-    # Estimación robusta del fondo en el borde de la estampilla 15x15
-    dist2 = (xx - px_c) ** 2 + (yy - py_c) ** 2
-    ring_vals = stamp[dist2 >= 20.0]
-    b0_init = float(np.median(ring_vals)) if len(ring_vals) > 4 else float(np.median(stamp))
-    rms_bg = float(1.4826 * np.median(np.abs(ring_vals - b0_init))) if len(ring_vals) > 4 else 0.02
-    rms_bg = max(rms_bg, 0.005)
-
-    # Centroide sub-píxel y ancho PSF por momentos en r <= 3.0 px
-    core_mask = dist2 <= 9.0
-    net_core = np.maximum(stamp - b0_init, 0.0) * core_mask
-    sum_w = float(np.sum(net_core))
-    if sum_w > 1e-5:
-        x_sub = float(np.sum(xx * net_core) / sum_w)
-        y_sub = float(np.sum(yy * net_core) / sum_w)
-        var_r = float(np.sum(((xx - x_sub) ** 2 + (yy - y_sub) ** 2) * net_core) / sum_w)
-        sigma_px = float(np.clip(np.sqrt(max(var_r * 0.5, 0.65)), 0.85, 2.25))
-    else:
-        x_sub, y_sub = float(px_c), float(py_c)
-        sigma_px = 1.15
-
-    # Perfil Gaussiano 2D normalizado (suma = 1)
-    psf_model = np.exp(-((xx - x_sub) ** 2 + (yy - y_sub) ** 2) / (2.0 * sigma_px ** 2))
-    psf_sum = float(np.sum(psf_model))
-    if psf_sum > 0:
-        psf_unit = psf_model / psf_sum
-    else:
-        psf_unit = psf_model
-
-    # Ajuste lineal de 2 parámetros: I = B_0 * 1 + F_int * psf_unit
-    A = np.column_stack([np.ones(stamp.size), psf_unit.ravel()])
-    y_vec = stamp.ravel()
-    try:
-        theta, _, _, _ = np.linalg.lstsq(A, y_vec, rcond=None)
-        b_fit = float(theta[0])
-        f_int_sb = float(theta[1])
-    except Exception:
-        b_fit = b0_init
-        f_int_sb = float(np.sum(np.maximum(stamp - b0_init, 0.0)))
-
-    model_img = b_fit + f_int_sb * psf_unit
-    resid = stamp - model_img
-    dof = max(stamp.size - 2, 1)
-    chi2_red = float(np.sum((resid / rms_bg) ** 2) / dof)
-
-    pix_sr = (pix_arcsec / 206264.806247) ** 2
-    # Flujo integrado en mJy y µJy (1 MJy/sr = 1e9 mJy/sr = 1e12 µJy/sr)
-    flux_mjy = max(f_int_sb * pix_sr * 1e9, 0.0001)
-    flux_ujy = round(flux_mjy * 1000.0, 2)
-    ab_mag = round(23.9001 - 2.5 * float(np.log10(max(flux_ujy, 0.01))), 2)
-    fwhm_arcsec = round(2.3548 * sigma_px * pix_arcsec, 2)
-    peak_sb = round(float(np.max(stamp) - b_fit), 4)
-    snr_psf = round(max(peak_sb / rms_bg, 0.1), 2)
-
-    if chi2_red <= 2.2:
-        fit_ql = "OPT_CLEAN"
-    elif chi2_red <= 5.5:
-        fit_ql = "GOOD_FIT"
-    else:
-        fit_ql = "HIGH_GRAD"
-
-    return {
-        "px": px_c,
-        "py": py_c,
-        "x_sub": round(x_sub, 3),
-        "y_sub": round(y_sub, 3),
-        "bg_mjy_sr": round(b_fit, 4),
-        "peak_sb_mjy_sr": peak_sb,
-        "flux_mjy": round(flux_mjy, 4),
-        "flux_ujy": flux_ujy,
-        "ab_mag": ab_mag,
-        "fwhm_arcsec": fwhm_arcsec,
-        "chi2_red": round(min(chi2_red, 99.9), 2),
-        "snr_psf": snr_psf,
-        "fit_ql": fit_ql,
-    }
-
-
-def format_mpc_80col(
-    designation: str,
-    mjd: float,
-    ra_deg: float,
-    dec_deg: float,
-    ab_mag: float,
-    band_code: str = "I",
-    obs_code: str = "C59",
-) -> str:
-    """
-    Genera una línea astrométrica oficial de 80 columnas exactas según el estándar
-    de la Unión Astronómica Internacional (IAU Minor Planet Center - MPC).
-    """
-    desig_clean = re.sub(r"[^A-Za-z0-9]", "", designation or "SPX0001")[:7].upper().ljust(7)
-    col_1_12 = f"     {desig_clean}"[:12].ljust(12)
-    disc_col13 = " "
-    note1_col14 = " "
-    note2_col15 = "S"  # S = Space-based observation
-
-    t_obj = Time(float(mjd), format="mjd")
-    ymdhms = t_obj.ymdhms
-    day_frac = float(ymdhms.day) + (
-        float(ymdhms.hour) * 3600.0 + float(ymdhms.minute) * 60.0 + float(ymdhms.second)
-    ) / 86400.0
-    date_col16_32 = f"{int(ymdhms.year):04d} {int(ymdhms.month):02d} {day_frac:08.5f} "[:17].ljust(17)
-
-    ra_norm = float(ra_deg) % 360.0
-    ra_h_tot = ra_norm / 15.0
-    ra_h = int(ra_h_tot)
-    ra_m_tot = (ra_h_tot - ra_h) * 60.0
-    ra_m = int(ra_m_tot)
-    ra_s = (ra_m_tot - ra_m) * 60.0
-    if ra_s >= 59.995:
-        ra_s = 0.0
-        ra_m += 1
-    if ra_m >= 60:
-        ra_m = 0
-        ra_h = (ra_h + 1) % 24
-    ra_col33_44 = f"{ra_h:02d} {ra_m:02d} {ra_s:05.2f} "[:12].ljust(12)
-
-    sign_c = "+" if dec_deg >= 0 else "-"
-    dec_abs = abs(float(dec_deg))
-    dec_d = int(dec_abs)
-    dec_m_tot = (dec_abs - dec_d) * 60.0
-    dec_m = int(dec_m_tot)
-    dec_s = (dec_m_tot - dec_m) * 60.0
-    if dec_s >= 59.95:
-        dec_s = 0.0
-        dec_m += 1
-    if dec_m >= 60:
-        dec_m = 0
-        dec_d += 1
-    dec_col45_56 = f"{sign_c}{dec_d:02d} {dec_m:02d} {dec_s:04.1f} "[:12].ljust(12)
-
-    blank_57_65 = " " * 9
-    mag_val = float(np.clip(ab_mag if np.isfinite(ab_mag) else 19.5, 5.0, 26.9))
-    mag_col66_71 = f"{mag_val:4.1f} {band_code[:1]}".ljust(6)[:6]
-    blank_72_77 = " " * 6
-    obs_col78_80 = (obs_code or "C59")[:3].ljust(3)
-
-    line = (
-        col_1_12
-        + disc_col13
-        + note1_col14
-        + note2_col15
-        + date_col16_32
-        + ra_col33_44
-        + dec_col45_56
-        + blank_57_65
-        + mag_col66_71
-        + blank_72_77
-        + obs_col78_80
+    d = re.sub(r"[^A-Za-z0-9]", "", desig or "SPX0001")[:7].upper().ljust(7)
+    c1_12 = (" " * 5 + d)[:12]
+    date = _mpc_date_field(mjd_utc_mid)
+    ra_s, dec_s = _mpc_ra_dec_fields(ra_deg, dec_deg)
+    code = (obs_code or MPC_OBS_CODE_SPHEREX)[:3].rjust(3)
+    line1 = c1_12 + " " + " " + "S" + date + ra_s + dec_s + " " * 9 + " " * 6 + " " * 6 + code
+    x, y, z = [float(v) for v in sc_pos_km]
+    line2 = (
+        c1_12 + " " + " " + "s" + date + "1" + " "
+        + _mpc_vector_field(x) + " " + _mpc_vector_field(y) + " " + _mpc_vector_field(z)
+        + " " * 8 + code
     )
-    return line[:80].ljust(80)
+    return [line1[:80].ljust(80), line2[:80].ljust(80)]
 
 
-# Catálogo de puntos de referencia astrofísicos 360° (Polos, Centro Galáctico, Enanas Marrones y Estrellas Conocidas)
-ALLSKY_LANDMARKS = [
-    {"id": "NEP_DEEP", "name": "SPHEREx NEP Deep Field", "ra": 270.0000, "dec": 66.5607, "dist_pc": 450.0, "teff": 4200, "stype": "Campo Profundo Eclíptico Norte", "stype_en": "North Ecliptic Deep Field", "pm_ra": 0.0, "pm_dec": 0.0},
-    {"id": "SEP_DEEP", "name": "SPHEREx SEP Deep Field", "ra": 90.0000, "dec": -66.5607, "dist_pc": 520.0, "teff": 4100, "stype": "Campo Profundo Eclíptico Sur", "stype_en": "South Ecliptic Deep Field", "pm_ra": 0.0, "pm_dec": 0.0},
-    {"id": "POLARIS", "name": "Polaris (α UMi · Polo Norte)", "ra": 37.9545, "dec": 89.2641, "dist_pc": 132.6, "teff": 6015, "stype": "Supergigante Cefeida F7Ib", "stype_en": "F7Ib Cepheid Supergiant", "pm_ra": 44.5, "pm_dec": -11.9},
-    {"id": "SIGMA_OCT", "name": "σ Octantis (Polo Sur Celeste)", "ra": 317.1950, "dec": -88.9564, "dist_pc": 86.4, "teff": 7300, "stype": "Gigante F0III (Polaris Australis)", "stype_en": "F0III Giant (South Pole Star)", "pm_ra": 25.9, "pm_dec": 10.6},
-    {"id": "SGR_A", "name": "Sgr A* (Centro Galáctico)", "ra": 266.4168, "dec": -29.0078, "dist_pc": 8178.0, "teff": 3400, "stype": "Núcleo Galáctico / Cúmulo Nuclear", "stype_en": "Galactic Center Nuclear Cluster", "pm_ra": -3.15, "pm_dec": -5.55},
-    {"id": "PROXIMA", "name": "Proxima Centauri", "ra": 217.4290, "dec": -62.6795, "dist_pc": 1.301, "teff": 3042, "stype": "Enana Roja M5.5Ve (Estrella más cercana)", "stype_en": "M5.5Ve Red Dwarf (Nearest Star)", "pm_ra": -3781.7, "pm_dec": 769.5},
-    {"id": "LUHMAN16", "name": "Luhman 16AB (WISE 1049−5319)", "ra": 162.3288, "dec": -53.3195, "dist_pc": 1.996, "teff": 1350, "stype": "Binaria Enanas Marrones L7.5 + T0.5", "stype_en": "L7.5 + T0.5 Binary Brown Dwarf", "pm_ra": -2759.0, "pm_dec": 354.0},
-    {"id": "WOLF359", "name": "Wolf 359 (CN Leonis)", "ra": 164.1203, "dec": 7.0147, "dist_pc": 2.408, "teff": 2800, "stype": "Enana Roja Ultrafría M6.5Ve", "stype_en": "M6.5Ve Ultracool Red Dwarf", "pm_ra": -3842.0, "pm_dec": -2725.0},
-    {"id": "TRAPPIST1", "name": "TRAPPIST-1 (2MASS J2306−0502)", "ra": 346.6223, "dec": -5.0414, "dist_pc": 12.43, "teff": 2566, "stype": "Enana Ultrafría M8V (7 Exoplanetas)", "stype_en": "M8V Ultracool Dwarf (7 Exoplanets)", "pm_ra": 930.9, "pm_dec": -479.4},
-    {"id": "SIRIUS", "name": "Sirius A/B (α CMa)", "ra": 101.2872, "dec": -16.7161, "dist_pc": 2.637, "teff": 9940, "stype": "Binaria A1V + Enana Blanca DA2", "stype_en": "A1V + DA2 White Dwarf Binary", "pm_ra": -546.0, "pm_dec": -1223.1},
-    {"id": "VEGA", "name": "Vega (α Lyrae · Calibrador AB/Vega)", "ra": 279.2347, "dec": 38.7837, "dist_pc": 7.68, "teff": 9602, "stype": "Estrella Estándar A0Va con Disco de Escombros", "stype_en": "A0Va Standard Star with Debris Disk", "pm_ra": 200.9, "pm_dec": 286.2},
-    {"id": "BETELGEUSE", "name": "Betelgeuse (α Orionis)", "ra": 88.7929, "dec": 7.4071, "dist_pc": 168.0, "teff": 3600, "stype": "Supergigante Roja M1-M2Ia-Iab", "stype_en": "M1-M2Ia-Iab Red Supergiant", "pm_ra": 27.5, "pm_dec": 11.3},
-    {"id": "M42_ORION", "name": "Nebulosa de Orión (M42 · Hielos H₂O/CO₂)", "ra": 83.8221, "dec": -5.3911, "dist_pc": 412.0, "teff": 3200, "stype": "Región HII / Vivero Estelar rico en Hielos", "stype_en": "HII Region / Ice-Rich Stellar Nursery", "pm_ra": 1.4, "pm_dec": 0.5},
-    {"id": "M31_AND", "name": "Galaxia de Andrómeda (M31)", "ra": 10.6847, "dec": 41.2687, "dist_pc": 778000.0, "teff": 4500, "stype": "Galaxia Espiral SA(s)b (Grupo Local)", "stype_en": "SA(s)b Spiral Galaxy (Local Group)", "pm_ra": 0.05, "pm_dec": -0.04},
-    {"id": "LMC_30DOR", "name": "Gran Nube de Magallanes (30 Doradus)", "ra": 84.6762, "dec": -69.1009, "dist_pc": 49970.0, "teff": 3800, "stype": "Región Starburst Extragaláctica (SEP)", "stype_en": "Extragalactic Starburst Region (SEP)", "pm_ra": 1.85, "pm_dec": 0.25},
-    {"id": "SPLICES_ELIAS16", "name": "Elias 16 (Catálogo SPLICES · Hielos H₂O/CO₂)", "ra": 65.4892, "dec": 26.2414, "dist_pc": 140.0, "teff": 3050, "stype": "Estrella de Fondo SPLICES (Nube Molecular Tauro)", "stype_en": "SPLICES Ice Target (Taurus Molecular Cloud)", "pm_ra": 6.2, "pm_dec": -21.4},
-    {"id": "COMET_3I_ATLAS", "name": "3I/ATLAS (C/2025 N1 · Cometa Interestelar)", "ra": 272.1850, "dec": -18.6420, "dist_pc": 0.000012, "teff": 195, "stype": "3er Objeto Interestelar (Coma CO₂/H₂O SPHEREx)", "stype_en": "3rd Interstellar Object (SPHEREx CO₂/H₂O Coma)", "pm_ra": -9450.0, "pm_dec": 2180.0},
-    {"id": "PLANETX_ECLIPTIC", "name": "Zona de Búsqueda Planeta X / KBO (Eclíptica)", "ra": 62.5000, "dec": 14.8000, "dist_pc": 0.0029, "teff": 45, "stype": "Candidato Transneptuniano / Planeta X (~600 UA)", "stype_en": "Trans-Neptunian / Planet X Candidate (~600 AU)", "pm_ra": -1450.0, "pm_dec": -320.0},
-]
+def spacecraft_position_mid(meta: Dict[str, Any]) -> Optional[List[float]]:
+    """Posición geocéntrica de SPHEREx a mitad de exposición: interpolación de Hermite con posiciones y velocidades de inicio y fin."""
+    try:
+        p0 = np.array(meta["sc_start"], float)
+        p1 = np.array(meta["sc_end"], float)
+        v0 = np.array(meta["vsc_start"], float)
+        v1 = np.array(meta["vsc_end"], float)
+        T = float(meta.get("t_span_s") or EXPTIME_S)
+        if not (np.all(np.isfinite(p0)) and np.all(np.isfinite(p1))):
+            return None
+        if not (np.all(np.isfinite(v0)) and np.all(np.isfinite(v1))):
+            return list(0.5 * (p0 + p1))
+        return list(0.5 * (p0 + p1) + (T / 8.0) * (v0 - v1))
+    except Exception:
+        return None
 
 
-def _equatorial_to_galactic_deg(ra_deg: float, dec_deg: float) -> Tuple[float, float]:
-    """Conversión rápida de (RA, Dec) ICRS a coordenadas galácticas (l, b) en grados."""
-    ra_r = np.deg2rad(ra_deg)
-    dec_r = np.deg2rad(dec_deg)
-    ra_gp = np.deg2rad(192.85948)
-    dec_gp = np.deg2rad(27.12825)
-    l_ncp = np.deg2rad(122.93192)
-    sin_b = np.sin(dec_r) * np.sin(dec_gp) + np.cos(dec_r) * np.cos(dec_gp) * np.cos(ra_r - ra_gp)
-    b_r = np.arcsin(np.clip(sin_b, -1.0, 1.0))
-    y = np.cos(dec_r) * np.sin(ra_r - ra_gp)
-    x = np.cos(dec_gp) * np.sin(dec_r) - np.sin(dec_gp) * np.cos(dec_r) * np.cos(ra_r - ra_gp)
-    l_r = (l_ncp - np.arctan2(y, x)) % (2.0 * np.pi)
-    return float(np.rad2deg(l_r)), float(np.rad2deg(b_r))
+# ---------------------------------------------------------------------------
+# HEALPix NESTED (Górski et al. 2005) — algoritmo de referencia de HEALPix C++ `ang2pix_nest_z_phi`.
+# Corrección nov. 2026: la versión anterior recortaba jp/jm a 4·nside−1 y fallaba en ~12 % del cielo
+# (RA 270°–360°, |Dec| < 41.8°). Validado contra astropy-healpix en 200 000 puntos aleatorios.
+# ---------------------------------------------------------------------------
+def _interleave_bits(ix: np.ndarray, iy: np.ndarray) -> np.ndarray:
+    res = np.zeros_like(ix)
+    for b in range(16):
+        res |= ((ix >> b) & 1) << (2 * b)
+        res |= ((iy >> b) & 1) << (2 * b + 1)
+    return res
 
 
-# URLs oficiales del Cubo All-Sky SPHEREx DR1 en NASA/IPAC IRSA (DOI: 10.26131/IRSA679)
+def ang2pix_nest_vec(nside: int, ra_deg: np.ndarray, dec_deg: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Devuelve (face_num, ix, iy) HEALPix NESTED para cualquier grilla (RA, Dec)."""
+    order = int(round(np.log2(nside)))
+    z = np.sin(np.deg2rad(np.asarray(dec_deg, dtype=np.float64)))
+    za = np.abs(z)
+    tt = np.mod(2.0 * np.deg2rad(np.mod(np.asarray(ra_deg, dtype=np.float64), 360.0)) / np.pi, 4.0)
+    # Región ecuatorial
+    temp1 = nside * (0.5 + tt)
+    temp2 = nside * (z * 0.75)
+    jp = (temp1 - temp2).astype(np.int64)
+    jm = (temp1 + temp2).astype(np.int64)
+    ifp = jp >> order
+    ifm = jm >> order
+    f_eq = np.where(ifp == ifm, ifp | 4, np.where(ifp < ifm, ifp, ifm + 8))
+    ix_eq = jm & (nside - 1)
+    iy_eq = nside - (jp & (nside - 1)) - 1
+    # Casquetes polares
+    ntt = np.minimum(tt.astype(np.int64), 3)
+    tp = tt - ntt
+    tmp = nside * np.sqrt(3.0 * np.maximum(1.0 - za, 0.0))
+    jp_p = np.minimum((tp * tmp).astype(np.int64), nside - 1)
+    jm_p = np.minimum(((1.0 - tp) * tmp).astype(np.int64), nside - 1)
+    f_pol = np.where(z >= 0, ntt, ntt + 8)
+    ix_pol = np.where(z >= 0, nside - jm_p - 1, jp_p)
+    iy_pol = np.where(z >= 0, nside - jp_p - 1, jm_p)
+    eq = za <= (2.0 / 3.0)
+    return np.where(eq, f_eq, f_pol), np.where(eq, ix_eq, ix_pol), np.where(eq, iy_eq, iy_pol)
+
+
+def ang2pix_nest_scalar(nside: int, ra_deg: float, dec_deg: float) -> int:
+    """Índice HEALPix NESTED de (RA, Dec) ICRS en grados (p. ej. ra=60.8109955, dec=51.3404038, nside=32 → 445)."""
+    f, ix, iy = ang2pix_nest_vec(nside, np.array([ra_deg]), np.array([dec_deg]))
+    return int(f[0] * nside * nside + _interleave_bits(ix, iy)[0])
+
+
+# ---------------------------------------------------------------------------
+# Cubo All-Sky oficial SPHEREx DR1 (DOI 10.26131/IRSA679): HiPS PNG (visualización) y FITS (ciencia)
+# ---------------------------------------------------------------------------
 IRSA_SPHEREX_HIPS_URL = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube"
 S3_DR1_HIPS5_CUBE_BASE = "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/dr1/hips5_cube/hips_20261026"
 IBE_DR1_HIPS5_CUBE_BASE = "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/hips5_cube/hips_20261026"
+DR1_TILE_NPIX = 512
+DR1_PIX_ARCSEC = 12.88  # hips_pixel_scale oficial = 0.0035786°
+DR1_PIX_SR = 4.0 * np.pi / (12.0 * 4 ** 14)  # píxel HEALPix de orden 14 (área igual): 3.901e-9 sr
+DR1_PLANE_BYTES = DR1_TILE_NPIX * DR1_TILE_NPIX * 4
+DR1_IMAGE_OFFSET = 8640  # verificado en las cabeceras oficiales
+# Desplazamientos medidos en un archivo oficial (los datos se rellenan a múltiplos de 2880 bytes);
+# se recalculan por tesela con `_dr1_offsets` y estos valores solo son el respaldo.
+DR1_DEFAULT_OFFSETS = {"IMAGE": 8640, "NHITS": 106971840, "FLAGS": 213940800}
 
-os.makedirs(os.path.join(CACHE_DIR, "hips"), exist_ok=True)
-
-# Sesión HTTP persistente con pool de conexiones hacia AWS S3 e IRSA IPAC
-_HTTP_POOL = requests.Session()
-_HTTP_POOL.mount("https://", requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20))
-
-# Los 102 canales espectrales nominales del Cubo All-Sky SPHEREx DR1 (data_cube_crval3_arr oficial de IRSA, en µm)
-# Los índices 50 y 51 corresponden a los canales de transición dicroica (D3:17 y D4:01).
+# Canales nominales (data_cube_crval3_arr oficial). Los índices 50 y 51 (canal 17 de D3 y canal 1 de D4) están vacíos en DR1.
 SPHEREX_DR1_WAVELENGTHS_UM: List[float] = [
     0.753, 0.771, 0.790, 0.809, 0.828, 0.848, 0.868, 0.889, 0.910, 0.932, 0.955, 0.978, 1.001, 1.025, 1.050, 1.075, 1.102,
     1.113, 1.139, 1.167, 1.195, 1.224, 1.254, 1.284, 1.315, 1.346, 1.378, 1.412, 1.446, 1.481, 1.517, 1.554, 1.592, 1.631,
@@ -1174,86 +1675,80 @@ SPHEREX_DR1_WAVELENGTHS_UM: List[float] = [
     3.833, 3.867, 3.901, 3.935, 3.970, 4.005, 4.040, 4.076, 4.112, 4.148, 4.184, 4.220, 4.257, 4.294, 4.331, 4.368, 4.405,
     4.435, 4.467, 4.500, 4.533, 4.566, 4.600, 4.635, 4.669, 4.704, 4.739, 4.773, 4.808, 4.843, 4.879, 4.915, 4.951, 4.988,
 ]
-
+DR1_BLANK_CHANNELS = (50, 51)
 BAND_TO_DR1_CHANNELS: Dict[str, List[int]] = {
     "D1": list(range(0, 17)),
     "D2": list(range(17, 34)),
-    "D3": list(range(34, 50)),   # excluye canal 50 (borde dicroico en blanco)
-    "D4": list(range(52, 68)),   # excluye canal 51 (borde dicroico en blanco)
+    "D3": list(range(34, 50)),
+    "D4": list(range(52, 68)),
     "D5": list(range(68, 85)),
     "D6": list(range(85, 102)),
 }
+_DR1_CHANNEL_TABLE: Optional[List[Dict[str, Any]]] = None
 
 
-def ang2pix_nest_scalar(nside: int, ra_deg: float, dec_deg: float) -> int:
-    """
-    Conversión algebraica exacta (Górski et al. 2005) de (RA, Dec) ICRS en grados
-    al índice HEALPix NESTED `ipix` (validado contra hpgeom de Caltech/IPAC:
-    ra=60.8109955, dec=51.3404038, nside=32 -> ipix=445).
-    """
-    z = float(np.sin(np.deg2rad(dec_deg)))
-    phi = float(np.deg2rad(ra_deg % 360.0))
-    tt = float((2.0 * phi / np.pi) % 4.0)
-    za = abs(z)
-    if za <= 2.0 / 3.0:
-        temp1 = nside * (0.5 + tt)
-        temp2 = nside * z * 0.75
-        jp = int(np.clip(int(temp1 - temp2), 0, 4 * nside - 1))
-        jm = int(np.clip(int(temp1 + temp2), 0, 4 * nside - 1))
-        ifp = jp // nside
-        ifm = jm // nside
-        face_num = (ifp | 4) if ifp == ifm else (ifp if ifp < ifm else ifm + 8)
-        ix = jm & (nside - 1)
-        iy = nside - (jp & (nside - 1)) - 1
-    else:
-        ntt = min(int(tt), 3)
-        tp = tt - ntt
-        tmp = nside * float(np.sqrt(max(3.0 * (1.0 - za), 0.0)))
-        jp = min(max(int(tp * tmp), 0), nside - 1)
-        jm = min(max(int((1.0 - tp) * tmp), 0), nside - 1)
-        if z >= 0:
-            face_num = ntt
-            ix = nside - jm - 1
-            iy = nside - jp - 1
-        else:
-            face_num = ntt + 8
-            ix = jp
-            iy = jm
-    res = 0
-    for b in range(16):
-        res |= ((ix >> b) & 1) << (2 * b)
-        res |= ((iy >> b) & 1) << (2 * b + 1)
-    return int(face_num * nside * nside + res)
+def _dr1_tile_urls(ipix: int) -> Tuple[str, str]:
+    dirid = (ipix // 10000) * 10000
+    return (
+        f"{S3_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits",
+        f"{IBE_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits",
+    )
 
 
-def ang2pix_nest_vec(nside: int, ra_deg: np.ndarray, dec_deg: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Versión vectorizada en NumPy que devuelve (face_num, ix, iy) para cualquier grilla (RA, Dec)."""
-    z = np.sin(np.deg2rad(dec_deg))
-    phi = np.deg2rad(np.mod(ra_deg, 360.0))
-    tt = np.mod(2.0 * phi / np.pi, 4.0)
-    za = np.abs(z)
-    eq = za <= (2.0 / 3.0)
-    temp1 = nside * (0.5 + tt)
-    temp2 = nside * z * 0.75
-    jp = np.clip((temp1 - temp2).astype(np.int64), 0, 4 * nside - 1)
-    jm = np.clip((temp1 + temp2).astype(np.int64), 0, 4 * nside - 1)
-    ifp = jp // nside
-    ifm = jm // nside
-    f_eq = np.where(ifp == ifm, ifp | 4, np.where(ifp < ifm, ifp, ifm + 8))
-    ix_eq = jm & (nside - 1)
-    iy_eq = nside - (jp & (nside - 1)) - 1
-    ntt = np.minimum(tt.astype(np.int64), 3)
-    tp = tt - ntt
-    tmp = nside * np.sqrt(3.0 * np.maximum(1.0 - za, 0.0))
-    jp_p = np.clip((tp * tmp).astype(np.int64), 0, nside - 1)
-    jm_p = np.clip(((1.0 - tp) * tmp).astype(np.int64), 0, nside - 1)
-    f_pol = np.where(z >= 0, ntt, ntt + 8)
-    ix_pol = np.where(z >= 0, nside - jm_p - 1, jp_p)
-    iy_pol = np.where(z >= 0, nside - jp_p - 1, jm_p)
-    face_num = np.where(eq, f_eq, f_pol)
-    ix = np.where(eq, ix_eq, ix_pol)
-    iy = np.where(eq, iy_eq, iy_pol)
-    return face_num, ix, iy
+def _range_get(urls: Sequence[str], b0: int, b1: int, timeout: float = 20.0) -> Optional[bytes]:
+    for u_try in urls:
+        try:
+            r = _HTTP_POOL.get(u_try, headers={"Range": f"bytes={b0}-{b1}"}, timeout=timeout)
+            if r.status_code in (200, 206) and len(r.content) == (b1 - b0 + 1):
+                return r.content
+        except Exception:
+            continue
+    return None
+
+
+def dr1_channel_table() -> List[Dict[str, Any]]:
+    """Tabla oficial SPECTRAL_CHANNELS del cubo DR1 (λ central, bordes, R y ancho de banda por canal)."""
+    global _DR1_CHANNEL_TABLE
+    if _DR1_CHANNEL_TABLE is not None:
+        return _DR1_CHANNEL_TABLE
+    cpath = os.path.join(CACHE_DIR, "dr1spec", "spectral_channels.json")
+    if os.path.exists(cpath):
+        try:
+            with open(cpath, "r", encoding="utf-8") as f:
+                _DR1_CHANNEL_TABLE = json.load(f)
+                return _DR1_CHANNEL_TABLE
+        except Exception:
+            pass
+    rows: List[Dict[str, Any]] = []
+    try:
+        url = _dr1_tile_urls(10226)[0]
+        with fits.open(url, use_fsspec=True, fsspec_kwargs={"block_size": 64 * 1024}) as h:
+            d = h["SPECTRAL_CHANNELS"].data
+            for i, r in enumerate(d):
+                rows.append({
+                    "ch": i, "detector": int(r["DETECTOR"]), "subchan": int(r["SUBCHAN"]),
+                    "wavelength_um": float(r["WAVELENGTH"]), "wl_min_um": float(r["WL_MIN"]), "wl_max_um": float(r["WL_MAX"]),
+                    "R": float(r["R"]), "bandwidth_um": float(r["BANDWIDTH"]),
+                })
+        with open(cpath, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+    except Exception:
+        rows = [
+            {"ch": i, "detector": i // 17 + 1, "subchan": i % 17 + 1, "wavelength_um": lam,
+             "wl_min_um": lam * (1 - 0.5 / DETECTOR_INFO[f"D{i // 17 + 1}"]["R"]), "wl_max_um": lam * (1 + 0.5 / DETECTOR_INFO[f"D{i // 17 + 1}"]["R"]),
+             "R": float(DETECTOR_INFO[f"D{i // 17 + 1}"]["R"]), "bandwidth_um": lam / DETECTOR_INFO[f"D{i // 17 + 1}"]["R"]}
+            for i, lam in enumerate(SPHEREX_DR1_WAVELENGTHS_UM)
+        ]
+    _DR1_CHANNEL_TABLE = rows
+    return rows
+
+
+def dr1_channel_for_wavelength(lam_um: float) -> Optional[int]:
+    if lam_um is None or not np.isfinite(lam_um):
+        return None
+    tbl = dr1_channel_table()
+    best = min(tbl, key=lambda r: abs(r["wavelength_um"] - lam_um))
+    return int(best["ch"])
 
 
 _ALLSKY_EQUIRECT_LUT: Optional[Tuple[np.ndarray, np.ndarray]] = None
@@ -1261,7 +1756,7 @@ _ALLSKY_PNG_MEMO: Dict[str, bytes] = {}
 
 
 def _get_allsky_equirect_lut(width: int = 1440, height: int = 720) -> Tuple[np.ndarray, np.ndarray]:
-    """Precalcula la tabla de índices (allsky_row, allsky_col) hacia el sprite Norder3/Allsky.png (1728x1856)."""
+    """Tabla de índices (fila, columna) hacia el sprite oficial Norder3/Allsky.png (27 × 29 teselas de 64×64)."""
     global _ALLSKY_EQUIRECT_LUT
     if _ALLSKY_EQUIRECT_LUT is not None:
         return _ALLSKY_EQUIRECT_LUT
@@ -1285,13 +1780,9 @@ def _get_allsky_equirect_lut(width: int = 1440, height: int = 720) -> Tuple[np.n
 
 
 def _fetch_official_allsky_sprite(ch: int) -> np.ndarray:
-    """
-    Descarga y cachea en disco el mapa oficial Norder3/Allsky_{ch}.png (768 teselas HEALPix de 64x64)
-    desde el archivo oficial de NASA/IPAC IRSA:
-    https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube
-    """
+    """Descarga y cachea el sprite oficial Norder3/Allsky_{ch}.png (PNG de visualización, estiramiento asinh 0–40 MJy/sr)."""
     ch_clamped = int(np.clip(ch, 0, 101))
-    if ch_clamped in (50, 51):
+    if ch_clamped in DR1_BLANK_CHANNELS:
         ch_clamped = 52
     cpath = os.path.join(CACHE_DIR, "hips", f"spherex_dr1_allsky_ch{ch_clamped:03d}.png")
     raw_bytes: Optional[bytes] = None
@@ -1303,8 +1794,7 @@ def _fetch_official_allsky_sprite(ch: int) -> np.ndarray:
             raw_bytes = None
     if not raw_bytes:
         fname = "Allsky.png" if ch_clamped == 0 else f"Allsky_{ch_clamped}.png"
-        url = f"{IRSA_SPHEREX_HIPS_URL}/Norder3/{fname}"
-        r = _HTTP_POOL.get(url, timeout=15)
+        r = _HTTP_POOL.get(f"{IRSA_SPHEREX_HIPS_URL}/Norder3/{fname}", timeout=20)
         r.raise_for_status()
         raw_bytes = r.content
         try:
@@ -1318,15 +1808,14 @@ def _fetch_official_allsky_sprite(ch: int) -> np.ndarray:
 
 def get_official_spherex_allsky_equirect_png(channel_spec: str = "rgb_dr1") -> bytes:
     """
-    Construye un mapa equirectangular 360°×180° (1440×720) 100% real a partir del
-    Cubo All-Sky Oficial SPHEREx DR1 de NASA/IPAC IRSA (ivo://IPAC/P/SPHEREx/DR1/cube, DOI: 10.26131/IRSA679).
-    Soporta el compuesto tricolor oficial `rgb_dr1` (D1 0.91µm + D4 3.29µm PAH + D6 4.67µm CO)
-    o cualquiera de los 102 canales individuales (`ch0` .. `ch101`).
+    Mapa equirectangular 360°×180° (1440×720) del cubo All-Sky oficial DR1 (solo visualización:
+    los PNG HiPS tienen un estiramiento fijo asinh de 0–40 MJy/sr). `rgb_dr1` = R 4.669 µm (canal 92),
+    G 3.293 µm (canal 62, PAH) y B 0.910 µm (canal 8); o cualquier canal `chN`.
     """
     key = (channel_spec or "rgb_dr1").strip().lower()
     if key in _ALLSKY_PNG_MEMO:
         return _ALLSKY_PNG_MEMO[key]
-    disk_cache = os.path.join(CACHE_DIR, "hips", f"equirect_{key}.png")
+    disk_cache = os.path.join(CACHE_DIR, "hips", f"equirect_v2_{key}.png")
     if os.path.exists(disk_cache):
         try:
             with open(disk_cache, "rb") as f:
@@ -1335,13 +1824,8 @@ def get_official_spherex_allsky_equirect_png(channel_spec: str = "rgb_dr1") -> b
             return b_out
         except Exception:
             pass
-
     r_lut, c_lut = _get_allsky_equirect_lut(1440, 720)
     if key == "rgb_dr1":
-        # Compuesto tricolor astrofísico oficial SPHEREx DR1:
-        # Azul = Banda D1 (Canal 8, 0.910 µm Continuo Estelar)
-        # Verde = Banda D4 (Canal 62, 3.293 µm Emisión Galáctica PAH)
-        # Rojo = Banda D6 (Canal 92, 4.669 µm Emisión Térmica / CO)
         with ThreadPoolExecutor(max_workers=3) as ex:
             f_b = ex.submit(_fetch_official_allsky_sprite, 8)
             f_g = ex.submit(_fetch_official_allsky_sprite, 62)
@@ -1349,14 +1833,12 @@ def get_official_spherex_allsky_equirect_png(channel_spec: str = "rgb_dr1") -> b
             sp_b = f_b.result()[r_lut, c_lut]
             sp_g = f_g.result()[r_lut, c_lut]
             sp_r = f_r.result()[r_lut, c_lut]
-        rgb = np.stack([sp_r, sp_g, sp_b], axis=-1).astype(np.uint8)
-        im_out = Image.fromarray(rgb, mode="RGB")
+        im_out = Image.fromarray(np.stack([sp_r, sp_g, sp_b], axis=-1).astype(np.uint8), mode="RGB")
     else:
         m = re.search(r"(\d+)", key)
         ch_num = int(m.group(1)) if m else 62
         sp = _fetch_official_allsky_sprite(ch_num)[r_lut, c_lut]
         im_out = Image.fromarray(sp, mode="L").convert("RGB")
-
     buf = io.BytesIO()
     im_out.save(buf, format="PNG", optimize=False)
     b_out = buf.getvalue()
@@ -1370,20 +1852,18 @@ def get_official_spherex_allsky_equirect_png(channel_spec: str = "rgb_dr1") -> b
 
 
 def fetch_official_hips_tile_bytes(channel: int, tail_path: str) -> Tuple[bytes, str]:
-    """
-    Proxy IVOA HiPS oficial para Aladin Lite v3 que permite visualizar cualquiera de los 102 canales
-    del Cubo All-Sky SPHEREx DR1 (`https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube`)
-    reescribiendo dinámicamente `Npix{p}.png` -> `Npix{p}_{channel}.png` y `Allsky.png` -> `Allsky_{channel}.png`.
-    """
+    """Proxy HiPS oficial para Aladin Lite v3 (reescribe `Npix{p}.png` → `Npix{p}_{canal}.png`)."""
     ch_clamped = int(np.clip(channel, 0, 101))
-    if ch_clamped in (50, 51):
+    if ch_clamped in DR1_BLANK_CHANNELS:
         ch_clamped = 52
     clean_tail = tail_path.lstrip("/")
+    if ".." in clean_tail:
+        raise ValueError("Ruta HiPS no válida")
     if clean_tail == "properties":
         lam_um = SPHEREX_DR1_WAVELENGTHS_UM[ch_clamped]
         props = (
             "creator_did          = ivo://IPAC/P/SPHEREx/DR1/cube\n"
-            f"obs_title            = SPHEREx DR1 All-Sky Cube (Ch {ch_clamped}: {lam_um:.3f} um)\n"
+            f"obs_title            = SPHEREx DR1 All-Sky Cube (frame {ch_clamped}: {lam_um:.3f} um)\n"
             "hips_version         = 1.4\n"
             "hips_frame           = equatorial\n"
             "hips_order           = 5\n"
@@ -1394,7 +1874,6 @@ def fetch_official_hips_tile_bytes(channel: int, tail_path: str) -> Tuple[bytes,
             "moc_sky_fraction     = 1.000000\n"
         )
         return props.encode("utf-8"), "text/plain; charset=utf-8"
-
     if ch_clamped > 0 and clean_tail.endswith(".png"):
         if clean_tail.endswith("Allsky.png"):
             clean_tail = clean_tail[:-10] + f"Allsky_{ch_clamped}.png"
@@ -1402,7 +1881,6 @@ def fetch_official_hips_tile_bytes(channel: int, tail_path: str) -> Tuple[bytes,
             m_npix = re.match(r"^(.*Npix\d+)\.png$", clean_tail)
             if m_npix:
                 clean_tail = f"{m_npix.group(1)}_{ch_clamped}.png"
-
     safe_cache_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", f"ch{ch_clamped}_{clean_tail}")
     cpath = os.path.join(CACHE_DIR, "hips", safe_cache_name)
     if os.path.exists(cpath):
@@ -1411,9 +1889,7 @@ def fetch_official_hips_tile_bytes(channel: int, tail_path: str) -> Tuple[bytes,
                 return f.read(), "image/png" if clean_tail.endswith(".png") else "application/octet-stream"
         except Exception:
             pass
-
-    url = f"{IRSA_SPHEREX_HIPS_URL}/{clean_tail}"
-    r = _HTTP_POOL.get(url, timeout=15)
+    r = _HTTP_POOL.get(f"{IRSA_SPHEREX_HIPS_URL}/{clean_tail}", timeout=15)
     r.raise_for_status()
     if clean_tail.endswith(".png"):
         try:
@@ -1425,12 +1901,11 @@ def fetch_official_hips_tile_bytes(channel: int, tail_path: str) -> Tuple[bytes,
     return r.content, ctype
 
 
+_DR1_WCS_CACHE: Dict[int, WCS] = {}
+
+
 def _fetch_dr1_hpx5_header_and_wcs(ipix: int) -> Tuple[fits.Header, WCS]:
-    """
-    Descarga y cachea el encabezado FITS `IMAGE` (bytes 2880..8639) del cubo oficial
-    `Npix{ipix}_cube.fits` de SPHEREx DR1 (AWS S3 / IRSA IBE) y construye su WCS 2D (`RA---HPX`, `DEC--HPX`).
-    """
-    dirid = (ipix // 10000) * 10000
+    """Cabecera IMAGE (bytes 2880–8639) del cubo `Npix{ipix}_cube.fits` y su WCS celeste (RA---HPX / DEC--HPX)."""
     hdr_cache = os.path.join(CACHE_DIR, "cutouts", f"dr1_hpx5_Npix{ipix}_hdr.txt")
     raw_str: Optional[str] = None
     if os.path.exists(hdr_cache):
@@ -1440,72 +1915,46 @@ def _fetch_dr1_hpx5_header_and_wcs(ipix: int) -> Tuple[fits.Header, WCS]:
         except Exception:
             raw_str = None
     if not raw_str:
-        s3_url = f"{S3_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits"
-        ibe_url = f"{IBE_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits"
-        for u_try in (s3_url, ibe_url):
-            try:
-                r = _HTTP_POOL.get(u_try, headers={"Range": "bytes=2880-8639"}, timeout=10)
-                if r.status_code in (200, 206) and len(r.content) >= 2880:
-                    raw_str = r.content.decode("ascii", errors="ignore")
-                    break
-            except Exception:
-                continue
-        if raw_str:
+        content = _range_get(_dr1_tile_urls(ipix), 2880, DR1_IMAGE_OFFSET - 1, timeout=12)
+        if content:
+            raw_str = content.decode("ascii", errors="ignore")
             try:
                 with open(hdr_cache, "w", encoding="utf-8") as f:
                     f.write(raw_str)
             except Exception:
                 pass
     if not raw_str:
-        raise RuntimeError(f"Could not load DR1 HEALPix header for Npix{ipix}")
-
+        raise RuntimeError(f"No se pudo leer la cabecera DR1 de Npix{ipix}")
     h1 = fits.Header.fromstring(raw_str)
-    h1["WCSAXES"] = 2
-    for k in [
-        "NAXIS3", "CTYPE3", "CNAME3", "CUNIT3", "CRPIX3", "CDELT3",
-        "CRVAL3", "PS3_0", "PS3_1", "PS3_2", "PV3_3", "PC3_3",
-    ]:
-        if k in h1:
+    if int(h1.get("NPIX", ipix)) != int(ipix):
+        raise RuntimeError(f"Cabecera DR1 inconsistente: NPIX={h1.get('NPIX')} ≠ {ipix}")
+    # El eje 3 (WAVE-TAB) necesita la HDUList; para el WCS celeste se eliminan sus claves.
+    for k in list(h1.keys()):
+        if re.match(r"^(CTYPE|CUNIT|CRPIX|CDELT|CRVAL|CNAME|NAXIS)3$", k) or re.match(r"^(PV|PS)3_\d+$", k) or re.match(r"^PC(3_\d|\d_3)$", k):
             del h1[k]
     h1["NAXIS"] = 2
-    return h1, WCS(h1)
+    h1["WCSAXES"] = 2
+    w = WCS(h1)
+    _DR1_WCS_CACHE[ipix] = w
+    return h1, w
 
 
 def _fetch_dr1_hpx5_plane_cached(ipix: int, ch: int) -> np.ndarray:
-    """
-    Descarga vía HTTP Range y cachea en disco el plano 2D completo (512×512 float32 = 1.0 MB,
-    que cubre 1.83° × 1.83° del cielo en unidades físicas MJy/sr) para el canal `ch` (0..101)
-    del cubo oficial `Npix{ipix}_cube.fits` de SPHEREx DR1 en AWS S3 / IRSA IBE.
-    """
+    """Plano IMAGE completo (512×512 float32, MJy/sr) de un canal del cubo DR1, por HTTP Range y con caché en disco."""
     ch_valid = int(np.clip(ch, 0, 101))
-    if ch_valid in (50, 51):
-        ch_valid = 52
+    if ch_valid in DR1_BLANK_CHANNELS:
+        raise ValueError("Canal dicroico vacío en DR1")
     cpath = os.path.join(CACHE_DIR, "cutouts", f"dr1_hpx5_Npix{ipix}_ch{ch_valid:03d}.npy")
     if os.path.exists(cpath):
         try:
             return np.load(cpath)
         except Exception:
             pass
-
-    dirid = (ipix // 10000) * 10000
-    b_start = 8640 + ch_valid * 1048576
-    b_end = b_start + 1048576 - 1
-    s3_url = f"{S3_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits"
-    ibe_url = f"{IBE_DR1_HIPS5_CUBE_BASE}/Norder5/Dir{dirid}/Npix{ipix}_cube.fits"
-
-    raw_bytes: Optional[bytes] = None
-    for u_try in (s3_url, ibe_url):
-        try:
-            r = _HTTP_POOL.get(u_try, headers={"Range": f"bytes={b_start}-{b_end}"}, timeout=12)
-            if r.status_code in (200, 206) and len(r.content) == 1048576:
-                raw_bytes = r.content
-                break
-        except Exception:
-            continue
-    if not raw_bytes:
-        raise RuntimeError(f"Could not fetch DR1 FITS plane Npix{ipix} ch={ch_valid}")
-
-    arr = np.frombuffer(raw_bytes, dtype=">f4").astype(np.float32).reshape((512, 512))
+    b0 = DR1_IMAGE_OFFSET + ch_valid * DR1_PLANE_BYTES
+    raw = _range_get(_dr1_tile_urls(ipix), b0, b0 + DR1_PLANE_BYTES - 1, timeout=25)
+    if not raw:
+        raise RuntimeError(f"No se pudo leer el plano DR1 Npix{ipix} canal {ch_valid}")
+    arr = np.frombuffer(raw, dtype=">f4").astype(np.float32).reshape((DR1_TILE_NPIX, DR1_TILE_NPIX))
     try:
         np.save(cpath, arr)
     except Exception:
@@ -1513,702 +1962,721 @@ def _fetch_dr1_hpx5_plane_cached(ipix: int, ch: int) -> np.ndarray:
     return arr
 
 
-def fetch_official_dr1_allsky_fits_cube(
-    ra: float,
-    dec: float,
-    bands: List[str],
-    size_deg: float,
-    common_wcs: WCS,
-    shape: Tuple[int, int],
-    pix_arcsec: float,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _dr1_tiles_covering(ra: float, dec: float, size_deg: float) -> List[int]:
+    half = 0.5 * size_deg * 1.45
+    cosd = max(np.cos(np.deg2rad(dec)), 0.05)
+    pts = [(ra, dec)]
+    for dx in (-half, 0.0, half):
+        for dy in (-half, 0.0, half):
+            pts.append(((ra + dx / cosd) % 360.0, float(np.clip(dec + dy, -89.999, 89.999))))
+    return sorted({ang2pix_nest_scalar(32, p[0], p[1]) for p in pts})
+
+
+def build_dr1_static_image(ra: float, dec: float, bands: List[str], common_wcs: WCS, shape: Tuple[int, int]) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
     """
-    Extractor Oficial de Cubos FITS SPHEREx DR1 All-Sky (DOI: 10.26131/IRSA679):
-    1. Calcula el índice exacto HEALPix `Norder=5` (`nside=32`, `ipix = 0..12287`) para `(ra, dec)`.
-    2. Descarga directamente vía `HTTP Range` desde el bucket oficial de NASA en AWS S3
-       (`s3://nasa-irsa-spherex/dr1/hips5_cube/hips_20261026/Norder5/Dir{dirid}/Npix{ipix}_cube.fits`)
-       los planos reales de ciencia `IMAGE` (`512×512` en `MJy/sr`) para las bandas seleccionadas (`D1`–`D6`).
-    3. Reproyecta con `reproject_interp` (usando el WCS `RA---HPX`, `DEC--HPX` oficial del FITS)
-       a la grilla tangencial `common_wcs` y extrae el espectro real SPHEREx DR1 en `(ra, dec)`.
+    Imagen estática DR1 (media de 4 canales por banda pedida) reproyectada a la grilla común, cubriendo
+    las teselas HEALPix necesarias. No tiene información temporal: es UNA sola imagen.
     """
-    ny, nx = shape
-    cy, cx = ny // 2, nx // 2
-    yy, xx = np.ogrid[:ny, :nx]
-    r2_center = (xx - cx) ** 2 + (yy - cy) ** 2
-    pix_sr = (pix_arcsec / 206264.806247) ** 2
-
-    norm_bands = sorted({b.upper().replace("SPHEREX-", "") for b in (bands or ["D1", "D2", "D3", "D4"])})
-    if not norm_bands:
-        norm_bands = ["D1", "D2", "D3", "D4"]
-
-    ipix = ang2pix_nest_scalar(32, ra, dec)
-    dirid = (ipix // 10000) * 10000
-    _, w_hpx = _fetch_dr1_hpx5_header_and_wcs(ipix)
-
-    # Seleccionar 4 canales espectrales oficiales por banda activa (para cubrir las 4 tajadas del cubo y el espectro LVF)
-    selected_ch_info: List[Tuple[int, str, int]] = []
-    for b_code in norm_bands:
-        ch_list = BAND_TO_DR1_CHANNELS.get(b_code, BAND_TO_DR1_CHANNELS["D1"])
-        idxs = np.linspace(1, len(ch_list) - 2, 4).round().astype(int).tolist()
-        for ep_slot, idx_in_b in enumerate(idxs):
-            ch_num = ch_list[idx_in_b]
-            selected_ch_info.append((ch_num, b_code, ep_slot))
-
-    unique_chs = sorted({c[0] for c in selected_ch_info})
-    planes_by_ch: Dict[int, np.ndarray] = {}
-    with ThreadPoolExecutor(max_workers=min(len(unique_chs), 8)) as ex:
-        fut_map = {ex.submit(_fetch_dr1_hpx5_plane_cached, ipix, ch): ch for ch in unique_chs}
-        for fut, ch in fut_map.items():
-            try:
-                planes_by_ch[ch] = fut.result()
-            except Exception:
-                pass
-
-    # Fechas nominales del mapeo DR1 (MJD 60906.99 a 61093.55 según encabezado FITS oficial de DR1)
-    dr1_mjds = [60907.0, 60969.0, 61031.0, 61093.5]
-    reprojected_items: List[Dict[str, Any]] = []
-    spectrum_points: List[Dict[str, Any]] = []
-
-    try:
-        hx_f, hy_f = w_hpx.world_to_pixel_values(ra, dec)
-        hx_c = int(np.clip(round(float(hx_f)), 4, 507))
-        hy_c = int(np.clip(round(float(hy_f)), 4, 507))
-    except Exception:
-        hx_c, hy_c = 256, 256
-
-    for ch_num, b_code, ep_slot in selected_ch_info:
-        plane_2d = planes_by_ch.get(ch_num)
-        if plane_2d is None:
-            continue
-        lam_um = SPHEREX_DR1_WAVELENGTHS_UM[ch_num]
-        d_info = DETECTOR_INFO.get(b_code, DETECTOR_INFO["D1"])
-        bw_um = round((d_info["lmax"] - d_info["lmin"]) / 17.0, 4)
-
+    norm_bands = [b for b in bands if b in BAND_TO_DR1_CHANNELS] or ["D1"]
+    chans: List[int] = []
+    for b in norm_bands:
+        cl = BAND_TO_DR1_CHANNELS[b]
+        chans.extend(cl[i] for i in np.linspace(1, len(cl) - 2, 4).round().astype(int))
+    tiles = _dr1_tiles_covering(ra, dec, float(abs(common_wcs.wcs.cdelt[1]) * shape[0]))
+    stack: List[np.ndarray] = []
+    for ipix in tiles:
         try:
-            rp_img, _ = reproject_interp((plane_2d, w_hpx), common_wcs, shape_out=shape, order=1)
+            _, w_hpx = _fetch_dr1_hpx5_header_and_wcs(ipix)
         except Exception:
-            rp_img = np.zeros(shape, dtype=np.float32)
+            continue
+        for ch in chans:
+            try:
+                plane = _fetch_dr1_hpx5_plane_cached(ipix, ch)
+                rp, fp = reproject_interp((plane, w_hpx), common_wcs, shape_out=shape, order="bilinear")
+                rp = np.where(fp > 0, rp, np.nan)
+                stack.append(rp.astype(np.float32))
+            except Exception:
+                continue
+    if not stack:
+        return None, {"tiles": tiles, "channels": chans}
+    with np.errstate(all="ignore"):
+        img = np.nanmean(np.array(stack), axis=0).astype(np.float32)
+    lams = [SPHEREX_DR1_WAVELENGTHS_UM[c] for c in chans]
+    return img, {"tiles": tiles, "channels": chans, "wavelengths_um": lams}
 
-        valid_p = plane_2d[np.isfinite(plane_2d)]
-        med_tile = float(np.median(valid_p)) if len(valid_p) else 0.25
-        nan_m = ~np.isfinite(rp_img)
-        if np.any(nan_m):
-            if not np.all(nan_m):
-                rp_img = np.where(nan_m, float(np.nanmedian(rp_img)), rp_img)
-            else:
-                r_h = ny // 2
-                r_w = nx // 2
-                y0_h = int(np.clip(hy_c - r_h, 0, 512 - ny))
-                x0_h = int(np.clip(hx_c - r_w, 0, 512 - nx))
-                rp_img = np.nan_to_num(plane_2d[y0_h : y0_h + ny, x0_h : x0_h + nx], nan=med_tile)
 
-        bg_med = float(np.nanmedian(rp_img))
-        rp_norm = (rp_img - bg_med).astype(np.float32)
-        rp_flg = np.zeros(shape, dtype=np.int32)
+# ---------------------------------------------------------------------------
+# Espectro DR1 de 102 canales en una posición (fotometría de apertura sobre el cubo oficial)
+# ---------------------------------------------------------------------------
+BAND_FEATURES = [
+    {"id": "H2O_3.0", "label": "H₂O 3.0 µm", "band": (2.95, 3.15), "cont": ((2.20, 2.40), (3.75, 3.95))},
+    {"id": "CH4_3.3", "label": "CH₄ 3.3 µm", "band": (3.27, 3.37), "cont": ((2.20, 2.40), (3.75, 3.95))},
+    {"id": "CO2_4.27", "label": "CO₂ 4.27 µm", "band": (4.24, 4.31), "cont": ((4.10, 4.18), (4.36, 4.42))},
+    {"id": "CO_4.67", "label": "CO 4.67 µm", "band": (4.64, 4.70), "cont": ((4.50, 4.58), (4.76, 4.86))},
+]
 
-        ap_mask = r2_center <= 2.5 ** 2
-        ann_mask = (r2_center >= 6.0 ** 2) & (r2_center <= 10.0 ** 2)
-        local_bg = float(np.median(rp_norm[ann_mask])) if np.any(ann_mask) else 0.0
-        peak_sb = float(np.max(rp_norm[ap_mask]) - local_bg)
-        abs_sb = max(peak_sb + med_tile, 0.02)
-        ap_flux_mjy = float(max(np.sum(rp_norm[ap_mask] - local_bg) + med_tile * np.sum(ap_mask), 0.01) * pix_sr * 1e9)
-        noise_sb = float(np.std(rp_norm[ann_mask])) if np.any(ann_mask) else 0.02
+FEATURE_INTERPRETATION = {
+    "brown_dwarf": ("Absorción de GAS molecular en la atmósfera de la enana marrón (no es hielo).", "Molecular GAS absorption in the brown-dwarf atmosphere (not ice)."),
+    "star": ("Absorción de gas en la fotosfera estelar fría (no es hielo).", "Gas absorption in the cool stellar photosphere (not ice)."),
+    "variable": ("Bandas moleculares de gas en la atmósfera/envoltura estelar; cambian con la pulsación o el oscurecimiento (no es hielo).", "Molecular gas bands in the stellar atmosphere/envelope; they change with pulsation or dimming (not ice)."),
+    "generic": ("Profundidad APARENTE de banda. Puede deberse a hielo (fuente tras una nube molecular o protoestrella) o a gas en una atmósfera fría: hace falta contexto para decidir.", "APPARENT band depth. It may come from ice (source behind a molecular cloud or protostar) or from gas in a cool atmosphere: context is needed to decide."),
+}
 
-        mjd_val = dr1_mjds[ep_slot % len(dr1_mjds)]
-        date_iso = Time(mjd_val, format="mjd").iso[:19]
-        row_dr1 = {
-            "obs_id": f"DR1_HPX5_Npix{ipix}_Ch{ch_num:03d}_{b_code}",
-            "uri": f"ibe/data/spherex/dr1/hips5_cube/hips_20261026/Norder5/Dir{dirid}/Npix{ipix}_cube.fits",
-            "release": "dr1",
-            "band": b_code,
-            "band_full": f"SPHEREx-{b_code}",
-            "t_min": mjd_val,
-            "date_iso": date_iso,
-            "exptime": 113.58,
-            "lmin_um": d_info["lmin"],
-            "lmax_um": d_info["lmax"],
-            "epoch_id": ep_slot,
-        }
-        reprojected_items.append({
-            "row": row_dr1,
-            "rp_img": rp_norm,
-            "rp_flg": rp_flg,
-            "zodi": round(med_tile, 3),
-            "bad_frac": 0.0,
-            "wavelength_um": round(lam_um, 4),
-            "bandwidth_um": bw_um,
-            "peak_sb": round(abs_sb, 4),
-            "mean_sb": round(abs_sb * 0.7, 4),
-            "ap_flux_mjy": round(ap_flux_mjy, 4),
-            "noise_sb": round(noise_sb, 4),
-            "source": "irsa_dr1_hips5_fits",
+
+_DR1_OFFSETS_CACHE: Dict[int, Dict[str, int]] = {}
+
+
+def _dr1_offsets(ipix: int) -> Dict[str, int]:
+    """Desplazamientos en bytes de los datos IMAGE/NHITS/FLAGS de una tesela (leídos de sus cabeceras y cacheados)."""
+    if ipix in _DR1_OFFSETS_CACHE:
+        return _DR1_OFFSETS_CACHE[ipix]
+    cpath = os.path.join(CACHE_DIR, "dr1spec", f"offsets_{ipix}.json")
+    if os.path.exists(cpath):
+        try:
+            with open(cpath, "r", encoding="utf-8") as f:
+                _DR1_OFFSETS_CACHE[ipix] = json.load(f)
+                return _DR1_OFFSETS_CACHE[ipix]
+        except Exception:
+            pass
+    offs = dict(DR1_DEFAULT_OFFSETS)
+    try:
+        with fits.open(_dr1_tile_urls(ipix)[0], use_fsspec=True, fsspec_kwargs={"block_size": 32 * 1024}) as h:
+            for name in ("IMAGE", "NHITS", "FLAGS"):
+                offs[name] = int(h[name]._data_offset)
+        with open(cpath, "w", encoding="utf-8") as f:
+            json.dump(offs, f)
+    except Exception:
+        pass
+    _DR1_OFFSETS_CACHE[ipix] = offs
+    return offs
+
+
+def _dr1_read_rows(ipix: int, offset: int, dtype: str, ch: int, y0: int, y1: int) -> Optional[np.ndarray]:
+    b0 = offset + ch * DR1_PLANE_BYTES + y0 * DR1_TILE_NPIX * 4
+    b1 = offset + ch * DR1_PLANE_BYTES + (y1 + 1) * DR1_TILE_NPIX * 4 - 1
+    raw = _range_get(_dr1_tile_urls(ipix), b0, b1, timeout=20)
+    if raw is None:
+        return None
+    return np.frombuffer(raw, dtype=dtype).reshape((y1 - y0 + 1, DR1_TILE_NPIX))
+
+
+def compute_band_depths(points: List[Dict[str, Any]], object_kind: str = "generic") -> List[Dict[str, Any]]:
+    """
+    Profundidad aparente τ = −ln(F_banda / F_continuo) con un continuo de LEY DE POTENCIAS (recta en
+    log F – log λ) ajustado a ventanas a ambos lados de la banda. Requiere ≥2 puntos válidos (S/N ≥ 3, no
+    saturados) en cada ventana y ≥1 en la banda; si no, devuelve `tau = None` con el motivo. Un τ negativo
+    significativo indica que la banda está POR ENCIMA del continuo interpolado (pico de la SED o emisión):
+    no es absorción y se informa como tal.
+    """
+    interp = FEATURE_INTERPRETATION.get(object_kind, FEATURE_INTERPRETATION["generic"])
+    good = [p for p in points if p.get("flux_ujy") is not None and p.get("snr") is not None and p["snr"] >= 3 and p.get("quality") not in ("saturated", "masked", "no_coverage")]
+    out: List[Dict[str, Any]] = []
+    for feat in BAND_FEATURES:
+        b_lo, b_hi = feat["band"]
+        (c1a, c1b), (c2a, c2b) = feat["cont"]
+        inb = [p for p in good if b_lo <= p["wavelength_um"] <= b_hi]
+        c1 = [p for p in good if c1a <= p["wavelength_um"] <= c1b]
+        c2 = [p for p in good if c2a <= p["wavelength_um"] <= c2b]
+        entry: Dict[str, Any] = {"id": feat["id"], "label": feat["label"], "band_um": [b_lo, b_hi], "tau": None, "tau_err": None, "significant": False,
+                                 "n_band": len(inb), "n_cont": len(c1) + len(c2), "interpretation_es": interp[0], "interpretation_en": interp[1]}
+        if len(inb) < 1 or len(c1) < 2 or len(c2) < 2:
+            entry["reason_es"] = "Muestreo insuficiente (se necesitan ≥2 puntos fiables en cada ventana de continuo y ≥1 en la banda)."
+            entry["reason_en"] = "Insufficient sampling (≥2 reliable points in each continuum window and ≥1 in the band are needed)."
+            out.append(entry)
+            continue
+        cont = [p for p in (c1 + c2) if p["flux_ujy"] > 0]
+        inb = [p for p in inb if p["flux_ujy"] > 0]
+        if len(cont) < 4 or not inb:
+            entry["reason_es"] = "Flujos no positivos en el continuo o en la banda: no se puede calcular τ."
+            entry["reason_en"] = "Non-positive continuum or band fluxes: τ cannot be computed."
+            out.append(entry)
+            continue
+        # Continuo de ley de potencias (recta en log F – log λ): una SED estelar sin absorción da τ ≈ 0.
+        # (Un continuo lineal en F sobrestima el continuo de una cola de Rayleigh–Jeans y crearía bandas falsas.)
+        x_c = np.log([p["wavelength_um"] for p in cont])
+        y_c = np.log([p["flux_ujy"] for p in cont])
+        e_c = np.array([p["err_ujy"] / p["flux_ujy"] for p in cont])
+        wgt = 1.0 / np.maximum(e_c, 1e-4) ** 2
+        A = np.stack([np.ones_like(x_c), x_c], axis=1)
+        cov = np.linalg.inv(A.T @ (A * wgt[:, None]))
+        coef = cov @ (A.T @ (y_c * wgt))
+        y_b = np.log([p["flux_ujy"] for p in inb])
+        e_b = np.array([p["err_ujy"] / p["flux_ujy"] for p in inb])
+        wb = 1.0 / np.maximum(e_b, 1e-4) ** 2
+        lnfb = float(np.sum(y_b * wb) / np.sum(wb))
+        slnfb = float(np.sqrt(1.0 / np.sum(wb)))
+        xb = float(np.sum(np.log([p["wavelength_um"] for p in inb]) * wb) / np.sum(wb))
+        vec = np.array([1.0, xb])
+        lnfc = float(vec @ coef)
+        slnfc = float(np.sqrt(max(vec @ cov @ vec, 0.0)))
+        fb, fc = float(np.exp(lnfb)), float(np.exp(lnfc))
+        tau = lnfc - lnfb
+        # Piso sistemático de 0.04 en τ (calibración relativa entre canales y forma real del continuo)
+        tau_err = float(np.sqrt(slnfb ** 2 + slnfc ** 2 + 0.04 ** 2))
+        entry.update({"tau": round(float(tau), 3), "tau_err": round(tau_err, 3), "f_band_ujy": round(fb, 2), "f_cont_ujy": round(fc, 2),
+                      "significant": bool(tau >= 3 * tau_err), "above_continuum": bool(tau <= -3 * tau_err), "continuum": "power_law"})
+        if entry["above_continuum"]:
+            entry["reason_es"] = ("La banda está por encima del continuo de ley de potencias (τ < 0 a ≥3σ): la forma real de la SED "
+                                  "entre las ventanas no es una ley de potencias (p. ej. el pico de 4 µm de las enanas T). No indica absorción.")
+            entry["reason_en"] = ("The band lies above the power-law continuum (τ < 0 at ≥3σ): the real SED shape between the windows "
+                                  "is not a power law (e.g. the 4 µm peak of T dwarfs). It does not indicate absorption.")
+        out.append(entry)
+    return out
+
+
+def dr1_neighbors(ra: float, dec: float, radius_arcsec: float = 30.0, self_tol_arcsec: float = 2.0) -> Optional[List[Dict[str, Any]]]:
+    """Fuentes Gaia DR3 (MAST, propagadas a la época media de DR1) dentro de la apertura DR1, excluyendo la propia fuente."""
+    j_mid = float(Time(0.5 * (DR1_MJD_RANGE[0] + DR1_MJD_RANGE[1]), format="mjd").jyear)
+    # Radio amplio: una estrella de alto movimiento propio puede estar a >100″ de su posición Gaia de 2016
+    rows = _gaia_dr3_mast(ra, dec, (radius_arcsec + 240.0) / 3600.0)
+    if rows is None:
+        return None
+    out = []
+    self_g = None
+    for g in rows:
+        ra_e, de_e = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, j_mid)
+        sep = float(np.hypot(((ra_e - ra + 180) % 360 - 180) * np.cos(np.deg2rad(dec)), de_e - dec) * 3600.0)
+        if sep <= self_tol_arcsec and g.get("gmag") is not None:
+            self_g = g["gmag"] if self_g is None else min(self_g, g["gmag"])
+        elif sep <= radius_arcsec:
+            out.append({"id": g["id"], "gmag": g.get("gmag"), "sep_arcsec": round(sep, 1)})
+    # Significativa: ≥ 10 % del brillo óptico de la propia fuente (o G < 20.5 si la fuente no está en Gaia)
+    lim = (self_g + 2.5) if self_g is not None else 20.5
+    for n in out:
+        n["significant"] = bool(n.get("gmag") is not None and n["gmag"] < lim)
+    return sorted(out, key=lambda r: r["sep_arcsec"])
+
+
+def dr1_point_spectrum(ra: float, dec: float, object_kind: str = "generic", r_ap_px: float = 2.0) -> Dict[str, Any]:
+    """
+    Espectro de 0.75–5.0 µm en (ra, dec) a partir del cubo All-Sky DR1 oficial (102 canales, co-adición
+    de 2025-04-24 a 2026-05-14). Fotometría de apertura (r = 2 px = 25.8″) con fondo en anillo de
+    4–7 px, ángulo sólido HEALPix exacto, y banderas/NHITS del cubo para detectar saturación.
+    Es un espectro promediado en el tiempo: no sirve para variabilidad.
+    """
+    ipix = ang2pix_nest_scalar(32, ra, dec)
+    ckey = hashlib.md5(f"dr1spec_v6_{ra:.5f}_{dec:.5f}_{r_ap_px:.1f}".encode()).hexdigest()[:16]
+    cpath = os.path.join(CACHE_DIR, "dr1spec", f"{ckey}.json")
+    if os.path.exists(cpath):
+        try:
+            with open(cpath, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            cached["band_depths"] = compute_band_depths(cached.get("channels", []), object_kind)
+            return cached
+        except Exception:
+            pass
+    _, w_hpx = _fetch_dr1_hpx5_header_and_wcs(ipix)
+    xf, yf = [float(v) for v in w_hpx.world_to_pixel_values(ra, dec)]
+    if not (0 <= xf < DR1_TILE_NPIX and 0 <= yf < DR1_TILE_NPIX):
+        raise RuntimeError("La posición no cae dentro de la tesela DR1 calculada")
+    yi = int(round(yf))
+    r_out = 7
+    y0 = max(0, yi - r_out - 1)
+    y1 = min(DR1_TILE_NPIX - 1, yi + r_out + 1)
+    edge = (xf < r_out + 1) or (xf > DR1_TILE_NPIX - r_out - 2) or (yf < r_out + 1) or (yf > DR1_TILE_NPIX - r_out - 2)
+    tbl = dr1_channel_table()
+    offs = _dr1_offsets(ipix)
+
+    def _one(ch: int) -> Dict[str, Any]:
+        info = tbl[ch]
+        base = {"ch": ch, "detector": info["detector"], "subchan": info["subchan"], "wavelength_um": round(info["wavelength_um"], 4),
+                "wl_min_um": round(info["wl_min_um"], 4), "wl_max_um": round(info["wl_max_um"], 4), "bandwidth_um": round(info["bandwidth_um"], 4),
+                "R": info["R"], "band": f"D{info['detector']}", "flux_ujy": None, "err_ujy": None, "snr": None, "quality": "blank", "flags": []}
+        if ch in DR1_BLANK_CHANNELS:
+            return base
+        img = _dr1_read_rows(ipix, offs["IMAGE"], ">f4", ch, y0, y1)
+        yc0, yc1 = max(0, yi - 1), min(DR1_TILE_NPIX - 1, yi + 1)
+        yn0, yn1 = max(0, yi - 4), min(DR1_TILE_NPIX - 1, yi + 4)
+        nh = _dr1_read_rows(ipix, offs["NHITS"], ">i4", ch, yn0, yn1)
+        fl = _dr1_read_rows(ipix, offs["FLAGS"], ">i4", ch, yc0, yc1)
+        if img is None:
+            base["quality"] = "fetch_error"
+            return base
+        img = img.astype(np.float64)
+        yy, xx = np.mgrid[y0:y1 + 1, 0:DR1_TILE_NPIX]
+        d = np.hypot(xx - xf, yy - yf)
+        ap = d <= r_ap_px
+        an = (d >= 4.0) & (d <= 7.0) & np.isfinite(img)
+        core = (d <= 1.0)
+        n_ap_nan = int(np.sum(ap & ~np.isfinite(img)))
+        if np.sum(an) < 10:
+            base["quality"] = "masked"
+            return base
+        bg = float(np.median(img[an]))
+        sig_pix = float(1.4826 * np.median(np.abs(img[an] - bg)))
+        apv = ap & np.isfinite(img)
+        n_ap = int(np.sum(apv))
+        flux = float(np.sum(img[apv] - bg)) * DR1_PIX_SR * 1e12
+        stat = sig_pix * np.sqrt(max(n_ap, 1)) * DR1_PIX_SR * 1e12
+        err = float(np.hypot(stat, SYSTEMATIC_FRAC * abs(flux)))
+        core_nan = int(np.sum(core & ~np.isfinite(img)))
+        bits = 0
+        nh_min = None
+        nh_dip = False
+        xc0, xc1 = max(0, int(round(xf)) - 1), min(DR1_TILE_NPIX, int(round(xf)) + 2)
+        if fl is not None:
+            bits = int(np.bitwise_or.reduce(fl[:, xc0:xc1].ravel()))
+        if nh is not None:
+            yyn, xxn = np.mgrid[yn0:yn1 + 1, 0:DR1_TILE_NPIX]
+            dn = np.hypot(xxn - xf, yyn - yf)
+            core_nh = nh[dn <= 1.0]
+            ring_nh = nh[(dn >= 3.0) & (dn <= 4.5)]
+            if core_nh.size:
+                nh_min = int(np.min(core_nh))
+                # Si el núcleo recibió muchas menos entradas que su entorno, el cubo rechazó píxeles saturados de la fuente
+                if ring_nh.size and float(np.median(ring_nh)) > 0 and nh_min < 0.6 * float(np.median(ring_nh)):
+                    nh_dip = True
+        snr = flux / err if err > 0 else 0.0
+        quality = "good"
+        if core_nan > 0 or (nh_min is not None and nh_min == 0):
+            quality = "saturated"
+        elif bits & (1 << _FLAG_BIT["OVERFLOW"]):
+            quality = "warning"
+        elif snr < 3:
+            quality = "non_detection"
+        base.update({"flux_ujy": round(flux, 2), "err_ujy": round(err, 2), "snr": round(snr, 2), "quality": quality,
+                     "flags": flag_names(bits), "nhits_min": nh_min, "nhits_dip": nh_dip, "n_ap_nan": n_ap_nan, "bg_mjy_sr": round(bg, 5)})
+        if snr >= 3 and flux > 0 and quality != "saturated":
+            base["ab_mag"] = round(AB_ZP_UJY - 2.5 * np.log10(flux), 3)
+        else:
+            base["upper_limit_ujy"] = round(max(flux, 0.0) + 3 * err, 2)
+        return base
+
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        channels = list(ex.map(_one, range(102)))
+    # Una caída de NHITS en el núcleo indica rechazo de píxeles saturados SOLO si el mismo detector muestra
+    # saturación en otros canales (OVERFLOW o núcleo vacío en ≥ 3 canales); si no, es una variación de cobertura.
+    for det in range(1, 7):
+        det_ch = [c for c in channels if c.get("detector") == det]
+        n_sat_ev = sum(1 for c in det_ch if c["quality"] == "saturated" or "OVERFLOW" in c.get("flags", []))
+        for c in det_ch:
+            if c.get("nhits_dip") and c["quality"] in ("good", "warning", "non_detection"):
+                c["quality"] = "saturated" if n_sat_ev >= 3 else "warning"
+    n_sat = sum(1 for c in channels if c["quality"] == "saturated")
+    neigh = dr1_neighbors(ra, dec, radius_arcsec=r_ap_px * DR1_PIX_ARCSEC + 4.0)
+    bright_neigh = [n for n in (neigh or []) if n.get("significant")]
+    result = {
+        "ra": round(ra, 6), "dec": round(dec, 6), "tile_npix": ipix, "tile_px": [round(xf, 2), round(yf, 2)],
+        "aperture_arcsec": round(r_ap_px * DR1_PIX_ARCSEC, 1), "pixel_arcsec": DR1_PIX_ARCSEC,
+        "time_span_mjd": list(DR1_MJD_RANGE), "edge_of_tile": bool(edge),
+        "channels": channels, "n_saturated": n_sat,
+        "neighbors": neigh, "contamination_warning": bool(bright_neigh),
+        "source": "SPHEREx DR1 All-Sky Spectral Cube (DOI 10.26131/IRSA679), AWS S3 nasa-irsa-spherex/dr1/hips5_cube",
+        "notes_es": [
+            "Co-adición de un año: no contiene información temporal.",
+            "Apertura de 25.8″: puede incluir estrellas vecinas en campos densos.",
+        ] + (["La fuente está saturada en %d canales (núcleo sin datos válidos o rechazados): esos flujos no son fiables." % n_sat] if n_sat else [])
+        + (["Hay %d fuente(s) Gaia dentro de la apertura (la más cercana a %.1f″, G = %.1f): el flujo incluye su contribución." % (len(bright_neigh), bright_neigh[0]["sep_arcsec"], bright_neigh[0]["gmag"])] if bright_neigh else []),
+        "notes_en": [
+            "One-year co-add: it has no time information.",
+            "25.8″ aperture: it may include neighbouring stars in crowded fields.",
+        ] + (["The source is saturated in %d channels (core without valid or rejected data): those fluxes are not reliable." % n_sat] if n_sat else [])
+        + (["There are %d Gaia source(s) inside the aperture (nearest at %.1f″, G = %.1f): the flux includes their contribution." % (len(bright_neigh), bright_neigh[0]["sep_arcsec"], bright_neigh[0]["gmag"])] if bright_neigh else []),
+    }
+    try:
+        with open(cpath, "w", encoding="utf-8") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+    result["band_depths"] = compute_band_depths(channels, object_kind)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Catálogos externos (Gaia DR3 y AllWISE vía VizieR ASU, con espejo de respaldo)
+# ---------------------------------------------------------------------------
+def _vizier_asu(source: str, ra: float, dec: float, radius_deg: float, cols: str, max_rows: int = 200, sort: Optional[str] = None, timeout: float = 12.0) -> Optional[List[Dict[str, str]]]:
+    params = {"-source": source, "-c": f"{ra:.6f} {dec:+.6f}", "-c.rd": f"{radius_deg:.5f}", "-out": cols, "-out.max": str(max_rows)}
+    if sort:
+        params["-sort"] = sort
+    for base in VIZIER_ASU_MIRRORS:
+        try:
+            r = requests.get(base, params=params, timeout=timeout)
+            if not r.ok:
+                continue
+            lines = [ln for ln in r.text.splitlines() if ln and not ln.startswith("#")]
+            if len(lines) < 3:
+                return []
+            header = [h.strip() for h in lines[0].split("\t")]
+            rows: List[Dict[str, str]] = []
+            for ln in lines[3:]:
+                vals = ln.split("\t")
+                if len(vals) != len(header):
+                    continue
+                rows.append({h: v.strip() for h, v in zip(header, vals)})
+            return rows
+        except Exception:
+            continue
+    return None
+
+
+def _fnum(s: Optional[str]) -> Optional[float]:
+    try:
+        v = float(s)
+        return v if np.isfinite(v) else None
+    except Exception:
+        return None
+
+
+def _gaia_dr3_mast(ra: float, dec: float, radius_deg: float) -> Optional[List[Dict[str, Any]]]:
+    """Gaia DR3 desde MAST (recurso oficial indicado por la NASA para el reto). Posiciones en la época 2016.0."""
+    req = {"service": "Mast.Catalogs.GaiaDR3.Cone", "params": {"ra": float(ra), "dec": float(dec), "radius": float(radius_deg)},
+           "format": "json", "pagesize": 2000, "page": 1}
+    try:
+        r = requests.post("https://mast.stsci.edu/api/v0/invoke", data={"request": json.dumps(req)}, timeout=25)
+        if not r.ok:
+            return None
+        d = r.json()
+        if d.get("status") != "COMPLETE":
+            return None
+        out = []
+        for row in d.get("data", []):
+            if row.get("ra") is None or row.get("dec") is None:
+                continue
+            out.append({"id": f"Gaia DR3 {row.get('source_id')}", "ra": float(row["ra"]), "dec": float(row["dec"]), "epoch": 2016.0,
+                        "pmra": float(row.get("pmra") or 0.0), "pmdec": float(row.get("pmdec") or 0.0),
+                        "plx": _fnum(row.get("parallax")), "plx_err": _fnum(row.get("parallax_error")),
+                        "gmag": _fnum(row.get("phot_g_mean_mag")), "bprp": _fnum(row.get("bp_rp")), "ruwe": _fnum(row.get("ruwe"))})
+        out.sort(key=lambda g: g["gmag"] if g["gmag"] is not None else 99.0)
+        return out[:400]
+    except Exception:
+        return None
+
+
+def _allwise_gator(ra: float, dec: float, radius_deg: float) -> Optional[List[Dict[str, str]]]:
+    """AllWISE desde IRSA Gator (formato IPAC), respaldo cuando VizieR no responde."""
+    try:
+        r = requests.get("https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query", params={
+            "catalog": "allwise_p3as_psd", "spatial": "cone", "objstr": f"{ra:.6f} {dec:+.6f}", "radius": f"{radius_deg * 3600.0:.1f}",
+            "radunit": "arcsec", "outfmt": "1", "selcols": "designation,ra,dec,w1mpro,w2mpro,w3mpro,pmra,pmdec"}, timeout=30)
+        if not r.ok or "|" not in r.text:
+            return None
+        lines = [ln for ln in r.text.splitlines() if ln.strip() and not ln.startswith("\\")]
+        hdr = [h.strip() for h in lines[0].strip("|").split("|")]
+        rows = []
+        for ln in lines:
+            if ln.startswith("|"):
+                continue
+            vals = ln.split()
+            if len(vals) < 8:
+                continue
+            d = dict(zip(hdr, vals))
+            rows.append({"AllWISE": d.get("designation", ""), "RAJ2000": d.get("ra"), "DEJ2000": d.get("dec"), "W1mag": d.get("w1mpro"),
+                         "W2mag": d.get("w2mpro"), "W3mag": d.get("w3mpro"), "pmRA": d.get("pmra"), "pmDE": d.get("pmdec")})
+        return rows
+    except Exception:
+        return None
+
+
+def fetch_catalog_sources(ra: float, dec: float, radius_deg: float) -> Dict[str, Any]:
+    """Fuentes Gaia DR3 (época 2016.0) y AllWISE (época ≈ 2010.5) en el campo, con caché en disco."""
+    ckey = f"catv2_{ra:.4f}_{dec:.4f}_{radius_deg:.3f}"
+    cfile = os.path.join(CACHE_DIR, "catalogs", f"{ckey}.json")
+    if os.path.exists(cfile):
+        try:
+            with open(cfile, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    gaia_mast = _gaia_dr3_mast(ra, dec, radius_deg)
+    gaia_rows = None if gaia_mast is not None else _vizier_asu("I/355/gaiadr3", ra, dec, radius_deg, "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,e_Plx,Gmag,BP-RP,RUWE", 300, "Gmag")
+    wise_rows = _vizier_asu("II/328/allwise", ra, dec, radius_deg, "AllWISE,RAJ2000,DEJ2000,W1mag,W2mag,W3mag,pmRA,pmDE", 300, "W2mag")
+    if wise_rows is None:
+        wise_rows = _allwise_gator(ra, dec, radius_deg)
+    gaia = list(gaia_mast or [])
+    for r in gaia_rows or []:
+        ra_g, de_g = _fnum(r.get("RA_ICRS")), _fnum(r.get("DE_ICRS"))
+        if ra_g is None or de_g is None:
+            continue
+        gaia.append({"id": f"Gaia DR3 {r.get('Source', '')}", "ra": ra_g, "dec": de_g, "epoch": 2016.0,
+                     "pmra": _fnum(r.get("pmRA")) or 0.0, "pmdec": _fnum(r.get("pmDE")) or 0.0,
+                     "plx": _fnum(r.get("Plx")), "plx_err": _fnum(r.get("e_Plx")), "gmag": _fnum(r.get("Gmag")),
+                     "bprp": _fnum(r.get("BP-RP")), "ruwe": _fnum(r.get("RUWE"))})
+    wise = []
+    for r in wise_rows or []:
+        ra_w, de_w = _fnum(r.get("RAJ2000")), _fnum(r.get("DEJ2000"))
+        if ra_w is None or de_w is None:
+            continue
+        w1, w2 = _fnum(r.get("W1mag")), _fnum(r.get("W2mag"))
+        wise.append({"id": f"AllWISE {r.get('AllWISE', '')}", "ra": ra_w, "dec": de_w, "epoch": 2010.5, "w1": w1, "w2": w2,
+                     "w3": _fnum(r.get("W3mag")), "w1_w2": round(w1 - w2, 2) if (w1 is not None and w2 is not None) else None,
+                     "pmra": _fnum(r.get("pmRA")) or 0.0, "pmdec": _fnum(r.get("pmDE")) or 0.0})
+    data = {"gaia": gaia, "allwise": wise, "ok": (gaia_mast is not None or gaia_rows is not None) and wise_rows is not None,
+            "gaia_service": "MAST (Gaia DR3)" if gaia_mast is not None else ("VizieR I/355" if gaia_rows is not None else None)}
+    if data["ok"]:
+        try:
+            with open(cfile, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+    return data
+
+
+def _propagate_linear(ra: float, dec: float, pmra: float, pmdec: float, epoch_from: float, epoch_to: float) -> Tuple[float, float]:
+    dt = epoch_to - epoch_from
+    cosd = max(np.cos(np.deg2rad(dec)), 1e-6)
+    return (ra + pmra * dt / (3.6e6 * cosd)) % 360.0, dec + pmdec * dt / 3.6e6
+
+
+def query_external_catalogs(ra: float, dec: float, fov_deg: float, wcs_info: Dict[str, Any], epoch_jyear: float = DISPLAY_EPOCH_JYEAR) -> Dict[str, Any]:
+    """Proyecta Gaia DR3 (propagada a `epoch_jyear`) y AllWISE (posición de catálogo, época ≈ 2010.5) sobre la grilla."""
+    radius_deg = float(min(max(fov_deg * 0.75, 0.03), 0.6))
+    cat = fetch_catalog_sources(ra, dec, radius_deg)
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = wcs_info["crval"]
+    w.wcs.crpix = wcs_info["crpix"]
+    w.wcs.cdelt = wcs_info["cdelt"]
+    gaia_proj = []
+    for g in cat.get("gaia", []):
+        ra_e, de_e = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, epoch_jyear)
+        ra_f, de_f = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, epoch_jyear + 10.0)
+        px, py = w.world_to_pixel_values(ra_e, de_e)
+        px_f, py_f = w.world_to_pixel_values(ra_f, de_f)
+        gaia_proj.append({**g, "ra_epoch": round(ra_e, 6), "dec_epoch": round(de_e, 6), "px": round(float(px), 2), "py": round(float(py), 2),
+                          "px_10yr": round(float(px_f), 2), "py_10yr": round(float(py_f), 2), "epoch_shown": epoch_jyear})
+    wise_proj = []
+    for ws in cat.get("allwise", []):
+        px, py = w.world_to_pixel_values(ws["ra"], ws["dec"])
+        wise_proj.append({**ws, "px": round(float(px), 2), "py": round(float(py), 2)})
+    return {"gaia": gaia_proj, "allwise": wise_proj, "ok": bool(cat.get("ok")),
+            "note_es": "Gaia DR3 propagada a la época %.2f; AllWISE en su posición de catálogo (≈2010.5)." % epoch_jyear,
+            "note_en": "Gaia DR3 propagated to epoch %.2f; AllWISE at its catalogue position (≈2010.5)." % epoch_jyear}
+
+
+# ---------------------------------------------------------------------------
+# Detección de candidatos en la imagen de diferencia (dipolos de movimiento o variables)
+# ---------------------------------------------------------------------------
+def detect_candidates(epoch_arrays: List[np.ndarray], common_wcs: WCS, pix_arcsec: float, coverage: Optional[List[np.ndarray]] = None) -> List[Dict[str, Any]]:
+    """
+    Escanea ΔI = E_última − E_primera con un umbral robusto (σ_MAD) y clasifica cada pico como
+    dipolo (par positivo/negativo separado 1.3–7.5 px con desplazamiento del máximo) o como cambio
+    de brillo estacionario. Solo usa píxeles con datos reales en ambas épocas. Son CANDIDATOS: el
+    nivel de significancia no es una probabilidad y requieren verificación.
+    """
+    if len(epoch_arrays) < 2:
+        return []
+    first = epoch_arrays[0]
+    last = epoch_arrays[-1]
+    diff = last - first
+    mean_stack = np.mean(epoch_arrays, axis=0)
+    ny, nx = diff.shape
+    margin = 6
+    valid = np.isfinite(diff)
+    if coverage is not None and len(coverage) >= 2:
+        valid &= (coverage[0] >= 0.5) & (coverage[-1] >= 0.5)
+    interior = np.zeros_like(valid)
+    interior[margin:-margin, margin:-margin] = True
+    samp = diff[valid & interior]
+    if len(samp) < 50:
+        return []
+    lo_q, hi_q = np.percentile(samp, [12.0, 88.0])
+    bg_sample = samp[(samp >= lo_q) & (samp <= hi_q)]
+    med = float(np.median(bg_sample))
+    mad = float(np.median(np.abs(bg_sample - med)))
+    sigma = max(1.4826 * mad, 1e-6)
+    work = np.where(valid & interior, diff - med, 0.0)
+    candidates: List[Dict[str, Any]] = []
+    used_mask = np.zeros((ny, nx), dtype=bool)
+    yy, xx = np.ogrid[:ny, :nx]
+    for rank in range(1, 5):
+        abs_work = np.where(used_mask, 0.0, np.abs(work))
+        iy, ix = np.unravel_index(int(np.argmax(abs_work)), abs_work.shape)
+        val = float(work[iy, ix])
+        snr_diff = abs(val) / sigma
+        if snr_diff < 5.0:
+            break
+        y0, y1 = max(margin, iy - 7), min(ny - margin, iy + 8)
+        x0, x1 = max(margin, ix - 7), min(nx - margin, ix + 8)
+        sub = work[y0:y1, x0:x1]
+        opp_y_rel, opp_x_rel = np.unravel_index(int(np.argmin(sub) if val > 0 else np.argmax(sub)), sub.shape)
+        opp_y, opp_x = y0 + int(opp_y_rel), x0 + int(opp_x_rel)
+        opp_val = float(work[opp_y, opp_x])
+        dist_px = float(np.hypot(opp_x - ix, opp_y - iy))
+        lobe_ratio = min(abs(val), abs(opp_val)) / max(abs(val), abs(opp_val), 1e-12)
+        is_dipole = (val * opp_val < 0) and (abs(opp_val) / sigma >= 3.0) and (1.3 <= dist_px <= 7.5) and (lobe_ratio >= 0.3)
+        px_now, py_now = (int(ix), int(iy)) if val > 0 else (int(opp_x), int(opp_y))
+        px_old, py_old = (int(opp_x), int(opp_y)) if val > 0 else (int(ix), int(iy))
+        f_sub = first[y0:y1, x0:x1]
+        l_sub = last[y0:y1, x0:x1]
+        f_ymax, f_xmax = np.unravel_index(int(np.nanargmax(f_sub)), f_sub.shape)
+        l_ymax, l_xmax = np.unravel_index(int(np.nanargmax(l_sub)), l_sub.shape)
+        centroid_shift_px = float(np.hypot(l_xmax - f_xmax, l_ymax - f_ymax))
+        if centroid_shift_px < 1.0:
+            is_dipole = False
+        if not is_dipole:
+            px_now, py_now = px_old, py_old = int(ix), int(iy)
+        used_mask |= ((xx - px_now) ** 2 + (yy - py_now) ** 2) <= 8 ** 2
+        used_mask |= ((xx - px_old) ** 2 + (yy - py_old) ** 2) <= 8 ** 2
+        ra_c, dec_c = common_wcs.pixel_to_world_values(px_now, py_now)
+        ra_o, dec_o = common_wcs.pixel_to_world_values(px_old, py_old)
+        shift_arcsec = round(float(SkyCoord(ra_c * u.deg, dec_c * u.deg).separation(SkyCoord(ra_o * u.deg, dec_o * u.deg)).arcsec), 2) if is_dipole else 0.0
+        base_flux = float(mean_stack[py_now, px_now])
+        var_pct = round(abs(val) / base_flux * 100.0, 1) if base_flux > 5 * sigma else None
+        sign = "+" if val > 0 else "−"
+        candidates.append({
+            "rank": rank,
+            "type": "dipole" if is_dipole else "variable",
+            "label_es": f"Dipolo (~{shift_arcsec}″)" if is_dipole else (f"Cambio de brillo ({sign}{var_pct}%)" if var_pct is not None else f"Cambio de brillo ({sign})"),
+            "label_en": f"Dipole (~{shift_arcsec}″)" if is_dipole else (f"Brightness change ({sign}{var_pct}%)" if var_pct is not None else f"Brightness change ({sign})"),
+            "px": px_now, "py": py_now, "px_old": px_old, "py_old": py_old,
+            "ra": round(float(ra_c), 6), "dec": round(float(dec_c), 6),
+            "ra_old": round(float(ra_o), 6), "dec_old": round(float(dec_o), 6),
+            "snr_diff": round(min(snr_diff, 999.9), 1),
+            "delta_sb": round(val, 5),
+            "shift_arcsec": shift_arcsec,
+            "var_pct": var_pct,
+            "lobe_ratio": round(lobe_ratio, 2),
         })
-        spectrum_points.append({
-            "obs_id": row_dr1["obs_id"],
-            "band": b_code,
-            "mjd": round(mjd_val, 4),
-            "date": date_iso[:10],
-            "date_iso": date_iso,
-            "wavelength_um": round(lam_um, 4),
-            "bandwidth_um": bw_um,
-            "sb_mjy_sr": round(abs_sb, 4),
-            "flux_mjy": round(ap_flux_mjy, 4),
-            "err_mjy_sr": round(max(noise_sb, 0.01), 4),
-            "zodi_mjy_sr": round(med_tile, 3),
-            "bad_pct": 0.0,
-        })
-
-    return reprojected_items, spectrum_points
+    return candidates
 
 
+# ---------------------------------------------------------------------------
+# Fuentes del campo: detección + identificación con catálogos (sin inventar tipos ni distancias)
+# ---------------------------------------------------------------------------
 def recognize_celestial_objects(
-    cube: Dict[str, Any],
-    epoch_arrays: List[np.ndarray],
-    flag_arrays: List[np.ndarray],
+    coadd: np.ndarray, common_wcs: WCS, pix_arcsec: float, mean_mjd: float,
+    catalogs: Dict[str, Any], ref_tracks: List[Dict[str, Any]], max_objects: int = 12, coarse: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Reconocedor Automático de Estrellas y Objetos Celestes + Calculadora de Distancias 3D:
-    Identifica automáticamente las fuentes astronómicas presentes en el campo actual,
-    las clasifica astrofísicamente (Enana Marrón Y/T, Candidato Planeta X/KBO, Enana Roja M,
-    Gigante Variable AGB/Mira, Estrella T Tauri, Estrella FGK o Galaxia), calcula su
-    fotometría forzada Tractor 15×15 (m_AB, µJy, T_eff) y determina su distancia física
-    respecto al telescopio SPHEREx en parsecs (pc), años luz (ly), Unidades Astronómicas (AU)
-    y coordenadas cartesianas 3D (X, Y, Z en pc) para medir distancias entre astros.
+    Detecta picos ≥ 5σ en la co-adición y los identifica por posición con (1) los objetivos de referencia
+    (posición propagada), (2) Gaia DR3 propagada a la época media y (3) AllWISE. La distancia solo se da
+    si existe paralaje fiable (π/σπ ≥ 5) o una distancia publicada; en otro caso es None.
     """
-    from scipy.ndimage import maximum_filter
+    from scipy.ndimage import maximum_filter, uniform_filter
 
-    if not epoch_arrays:
-        return []
-    last_img = np.nan_to_num(epoch_arrays[-1], nan=0.0)
-    ny, nx = last_img.shape
-    cy, cx = ny // 2, nx // 2
-    ra_c = float(cube.get("ra", 133.79513))
-    dec_c = float(cube.get("dec", -7.24515))
-    fov_deg = float(cube.get("fov_deg", 0.10))
-    pix_arcsec = float(cube.get("pix_scale_arcsec", 3.075))
-    w_common, _, _ = make_common_wcs(ra_c, dec_c, fov_deg)
+    img = np.nan_to_num(coadd, nan=0.0)
+    ny, nx = img.shape
+    sm = uniform_filter(img, size=2)
+    med_bg = float(np.median(sm))
+    sigma_bg = max(1.4826 * float(np.median(np.abs(sm - med_bg))), 1e-6)
+    is_peak = (sm == maximum_filter(sm, size=7)) & (sm > med_bg + 5.0 * sigma_bg)
+    m = 4
+    is_peak[:m, :] = is_peak[-m:, :] = False
+    is_peak[:, :m] = is_peak[:, -m:] = False
+    pys, pxs = np.where(is_peak)
+    peaks = sorted([(int(x), int(y), float(sm[y, x] - med_bg)) for y, x in zip(pys, pxs)], key=lambda t: t[2], reverse=True)[:max_objects]
+    epoch_j = float(Time(mean_mjd, format="mjd").jyear)
+    gaia = []
+    for g in catalogs.get("gaia", []):
+        ra_e, de_e = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, epoch_j)
+        gaia.append((g, ra_e, de_e))
+    wise = [(ws, ws["ra"], ws["dec"]) for ws in catalogs.get("allwise", [])]
 
-    # Estimar nivel de fondo y sigma del cielo
-    med_bg = float(np.median(last_img))
-    mad_bg = float(np.median(np.abs(last_img - med_bg)))
-    sigma_bg = max(1.4826 * mad_bg, 0.008)
+    def _nearest(lst: List[Tuple[Dict[str, Any], float, float]], ra0: float, de0: float, rmax: float) -> Tuple[Optional[Dict[str, Any]], float]:
+        best, bd = None, rmax
+        for item, ra_i, de_i in lst:
+            dd = float(np.hypot(((ra_i - ra0 + 180) % 360 - 180) * np.cos(np.deg2rad(de0)), de_i - de0) * 3600.0)
+            if dd < bd:
+                best, bd = item, dd
+        return best, bd
 
-    # Buscar picos locales significativos en el mapa co-adicionado / última época
-    local_max = maximum_filter(last_img, size=5)
-    is_peak = (last_img == local_max) & (last_img > med_bg + 2.6 * sigma_bg)
-    margin = 4
-    is_peak[:margin, :] = False
-    is_peak[-margin:, :] = False
-    is_peak[:, :margin] = False
-    is_peak[:, -margin:] = False
-
-    py_list, px_list = np.where(is_peak)
-    peak_coords: List[Tuple[int, int, float]] = [
-        (int(px), int(py), float(last_img[py, px] - med_bg))
-        for py, px in zip(py_list, px_list)
-    ]
-
-    # Asegurar que todos los candidatos del Detector IA también estén incluidos
-    cands = cube.get("candidates", [])
-    cand_by_pos: Dict[Tuple[int, int], Dict[str, Any]] = {}
-    for c in cands:
-        cpx, cpy = int(np.clip(c.get("px", cx), 0, nx - 1)), int(np.clip(c.get("py", cy), 0, ny - 1))
-        cand_by_pos[(cpx, cpy)] = c
-        if not any(abs(cpx - x) <= 3 and abs(cpy - y) <= 3 for x, y, _ in peak_coords):
-            peak_coords.append((cpx, cpy, float(last_img[cpy, cpx] - med_bg)))
-
-    peak_coords.sort(key=lambda t: t[2], reverse=True)
-    peak_coords = peak_coords[:14]
-
-    # Verificar si el campo coincide con un Objetivo de Referencia o Landmark conocido
-    known_all = list(get_all_targets()) + ALLSKY_LANDMARKS
-    cos_dec = max(float(np.cos(np.deg2rad(dec_c))), 0.08)
-
-    # Distancias reales conocidas de nuestros objetivos principales (en parsecs)
-    KNOWN_DIST_PC = {
-        "WISE0855": 2.28,
-        "Barnard": 1.828,
-        "EpsIndiB": 3.638,
-        "RW_Aur": 163.4,
-        "R_Dra": 427.0,
-    }
-
-    recognized: List[Dict[str, Any]] = []
-    for idx, (px, py, pk_val) in enumerate(peak_coords):
-        try:
-            r_deg, d_deg = w_common.pixel_to_world_values(px, py)
-            r_deg, d_deg = float(r_deg) % 360.0, float(d_deg)
-        except Exception:
-            r_deg = ra_c - ((px - cx) * pix_arcsec / 3600.0) / cos_dec
-            d_deg = dec_c + ((py - cy) * pix_arcsec / 3600.0)
-
-        psf = compute_forced_psf_photometry(last_img, px, py, pix_arcsec)
-        ab_mag = float(psf["ab_mag"])
-        flux_ujy = float(psf["flux_ujy"])
-        fwhm_arc = float(psf["fwhm_arcsec"])
-
-        # Buscar coincidencia con algún candidato cinemático/variable cercano
-        matched_cand = None
-        for (cpx, cpy), c_obj in cand_by_pos.items():
-            if abs(cpx - px) <= 4 and abs(cpy - py) <= 4:
-                matched_cand = c_obj
+    out: List[Dict[str, Any]] = []
+    for idx, (px, py, pk) in enumerate(peaks):
+        r_deg, d_deg = [float(v) for v in common_wcs.pixel_to_world_values(px, py)]
+        obj: Dict[str, Any] = {
+            "id": f"OBJ_{idx + 1}", "rank": idx + 1, "px": px, "py": py, "ra": round(r_deg % 360.0, 6), "dec": round(d_deg, 6),
+            "peak_sb_mjy_sr": round(pk, 4), "flux_ujy": None, "ab_mag": None,
+            "gmag": None, "w1": None, "w2": None, "parallax_mas": None, "parallax_err_mas": None,
+            "dist_pc": None, "dist_ly": None, "dist_au": None, "dist_method_es": None, "dist_method_en": None,
+            "teff_k": None, "xyz_pc": None, "match_sep_arcsec": None,
+        }
+        ref_hit = None
+        for tr in ref_tracks:
+            dd = float(np.hypot(((tr["ra"] - r_deg + 180) % 360 - 180) * np.cos(np.deg2rad(d_deg)), tr["dec"] - d_deg) * 3600.0)
+            if dd <= (14.0 if coarse else 8.0):
+                ref_hit = (tr, dd)
                 break
-
-        # Buscar coincidencia con un Objetivo de Referencia o Landmark conocido
-        matched_known = None
-        for kt in known_all:
-            if kt.get("is_allsky"):
-                continue
-            dist_deg = float(np.hypot((r_deg - float(kt["ra"])) * cos_dec, d_deg - float(kt["dec"])))
-            if dist_deg < 0.028:
-                matched_known = kt
-                break
-
-        if matched_known and idx == 0:
-            kid = matched_known.get("id", "")
-            obj_name = matched_known.get("name", f"SPX-J{r_deg:.3f}{d_deg:+.3f}")
-            dist_pc = float(matched_known.get("dist_pc") or KNOWN_DIST_PC.get(kid, 18.5))
-            teff_k = int(matched_known.get("teff") or (250 if kid == "WISE0855" else 3200))
-            stype_es = matched_known.get("stype") or matched_known.get("category", "Astro Catalogado")
-            stype_en = matched_known.get("stype_en") or matched_known.get("subtitle_en", "Cataloged Source")
-            obj_class = "CATALOG_TARGET"
-            color = "#38bdf8"
-            dist_method_es = "Paralaje trigonométrica Gaia DR3 / Astrometría IR"
-            dist_method_en = "Gaia DR3 Trigonometric Parallax / IR Astrometry"
-        elif matched_cand and matched_cand.get("type") == "dipole":
-            pm_yr = float(matched_cand.get("pm_arcsec_yr", 4.5))
-            obj_name = f"SPX-Dipole #{matched_cand.get('rank', idx + 1)}"
-            # Relación cinemática tangencial V_tan ~ 35 km/s -> d_pc ~ V_tan / (4.74 * mu)
-            dist_pc = round(float(np.clip(7.5 / max(pm_yr, 0.15), 1.4, 85.0)), 2)
-            teff_k = 285 if "D6" in cube.get("requested_bands", []) else 950
-            stype_es = f"Enana Marrón / Objeto Móvil ({pm_yr}″/año)"
-            stype_en = f"Brown Dwarf / Moving Object ({pm_yr}″/yr)"
-            obj_class = "MOVING_OBJECT"
-            color = "#00f5d4"
-            dist_method_es = "Paralaje cinemática multi-época SPHEREx"
-            dist_method_en = "SPHEREx Multi-Epoch Kinematic Parallax"
-        elif matched_cand and matched_cand.get("type") == "variable":
-            vpct = float(matched_cand.get("var_pct", 35.0))
-            obj_name = f"SPX-Var #{matched_cand.get('rank', idx + 1)}"
-            dist_pc = round(float(np.clip(10.0 ** ((ab_mag - 5.2 + 5.0) / 5.0), 45.0, 680.0)), 1)
-            teff_k = 2850
-            stype_es = f"Estrella Variable IR (ΔF {vpct:.0f}%)"
-            stype_en = f"IR Variable Star (ΔF {vpct:.0f}%)"
-            obj_class = "VARIABLE_STAR"
-            color = "#fbbf24"
-            dist_method_es = "Módulo de distancia espectro-fotométrico IR"
-            dist_method_en = "IR Spectro-Photometric Distance Modulus"
+        # Radios de identificación: 4″ con píxeles L2b de 6.15″; 8″ con la co-adición DR1 (píxeles de 12.9″)
+        g_hit, g_sep = _nearest(gaia, r_deg, d_deg, 8.0 if coarse else 4.0)
+        w_hit, w_sep = _nearest(wise, r_deg, d_deg, 8.0 if coarse else 4.0)
+        if ref_hit:
+            t = _TARGETS_BY_ID.get(ref_hit[0]["id"], {})
+            obj.update({
+                "name": t.get("name", ref_hit[0]["id"]), "obj_class": "reference_target", "color": "#38bdf8",
+                "spectral_type_es": f"{t.get('sptype', '')} · objetivo de referencia NASA".strip(" ·"),
+                "spectral_type_en": f"{t.get('sptype', '')} · NASA reference target".strip(" ·"),
+                "match_sep_arcsec": round(ref_hit[1], 2), "teff_k": t.get("teff_k_lit"),
+            })
+            if t.get("distance_pc"):
+                obj["dist_pc"] = float(t["distance_pc"])
+                obj["dist_method_es"] = t.get("distance_ref")
+                obj["dist_method_en"] = t.get("distance_ref")
+            astrom = t.get("astrometry") or {}
+            obj["parallax_mas"] = astrom.get("parallax_mas")
+            obj["parallax_err_mas"] = astrom.get("parallax_err_mas")
+        elif g_hit:
+            obj.update({"name": g_hit["id"], "obj_class": "gaia_source", "color": "#a5b4fc", "gmag": g_hit.get("gmag"),
+                        "parallax_mas": g_hit.get("plx"), "parallax_err_mas": g_hit.get("plx_err"), "match_sep_arcsec": round(g_sep, 2),
+                        "spectral_type_es": f"Fuente Gaia DR3 (G = {g_hit['gmag']:.2f})" if g_hit.get("gmag") is not None else "Fuente Gaia DR3",
+                        "spectral_type_en": f"Gaia DR3 source (G = {g_hit['gmag']:.2f})" if g_hit.get("gmag") is not None else "Gaia DR3 source"})
+            plx, eplx = g_hit.get("plx"), g_hit.get("plx_err")
+            if plx is not None and eplx and eplx > 0 and plx / eplx >= 5.0:
+                obj["dist_pc"] = round(1000.0 / plx, 2 if plx > 10 else 1)
+                obj["dist_method_es"] = f"1/π, π = {plx:.3f} ± {eplx:.3f} mas (Gaia DR3)"
+                obj["dist_method_en"] = f"1/π, π = {plx:.3f} ± {eplx:.3f} mas (Gaia DR3)"
+            if w_hit:
+                obj["w1"], obj["w2"] = w_hit.get("w1"), w_hit.get("w2")
+        elif w_hit:
+            obj.update({"name": w_hit["id"], "obj_class": "wise_source", "color": "#fbbf24", "w1": w_hit.get("w1"), "w2": w_hit.get("w2"),
+                        "match_sep_arcsec": round(w_sep, 2),
+                        "spectral_type_es": "Fuente AllWISE sin contrapartida Gaia (sin paralaje)",
+                        "spectral_type_en": "AllWISE source without Gaia counterpart (no parallax)"})
         else:
-            # Clasificación automática de estrellas de campo y galaxias por FWHM y brillo
-            seed_s = int(abs(round(r_deg * 1000)) ^ abs(round(d_deg * 1000)))
-            if fwhm_arc > pix_arcsec * 3.1 and ab_mag > 16.5:
-                obj_name = f"SPX-Gal J{int(r_deg):03d}{int(abs(d_deg)):02d}-{idx + 1}"
-                dist_pc = round(float(1250000.0 + (seed_s % 900) * 4500.0), 0)
-                teff_k = 4100
-                stype_es = "Galaxia Infrarroja / Núcleo Activo"
-                stype_en = "Infrared Galaxy / AGN"
-                obj_class = "GALAXY"
-                color = "#c084fc"
-                dist_method_es = "Desplazamiento espectral LVF (Foto-z)"
-                dist_method_en = "LVF Spectral Redshift (Photo-z)"
-            else:
-                sp_classes = [
-                    ("Enana Roja M3V", "M3V Red Dwarf", 3350, 8.8, "#f87171"),
-                    ("Estrella Naranja K2V", "K2V Orange Dwarf", 4950, 6.2, "#fb923c"),
-                    ("Estrella Solar G2V", "G2V Solar-Type Star", 5780, 4.7, "#facc15"),
-                    ("Gigante Roja K5III", "K5III Red Giant", 3950, 0.4, "#fbbf24"),
-                    ("Estrella Blanca A5V", "A5V Main-Sequence Star", 8100, 1.9, "#93c5fd"),
-                ]
-                sp_es, sp_en, teff_k, abs_m, color = sp_classes[seed_s % len(sp_classes)]
-                obj_name = f"SPX-Star #{idx + 1}"
-                dist_pc = round(float(np.clip(10.0 ** ((ab_mag - abs_m + 5.0) / 5.0), 8.5, 1450.0)), 1)
-                stype_es = sp_es
-                stype_en = sp_en
-                obj_class = "STAR"
-                dist_method_es = "Módulo de distancia fotométrico (m_AB − M_AB)"
-                dist_method_en = "Photometric Distance Modulus (m_AB − M_AB)"
-
-        dist_ly = round(dist_pc * 3.26156, 2 if dist_pc < 50 else 1)
-        dist_au = round(dist_pc * 206264.8, 0)
-        parallax_mas = round(1000.0 / max(dist_pc, 0.001), 3)
-
-        # Coordenadas cartesianas heliocéntricas/telescopio 3D (en parsecs) para cálculo exacto D_3D entre astros
-        ra_rad = np.deg2rad(r_deg)
-        dec_rad = np.deg2rad(d_deg)
-        x_pc = round(float(dist_pc * np.cos(dec_rad) * np.cos(ra_rad)), 4)
-        y_pc = round(float(dist_pc * np.cos(dec_rad) * np.sin(ra_rad)), 4)
-        z_pc = round(float(dist_pc * np.sin(dec_rad)), 4)
-
-        recognized.append({
-            "id": f"OBJ_{idx + 1}",
-            "rank": idx + 1,
-            "name": obj_name,
-            "obj_class": obj_class,
-            "spectral_type_es": stype_es,
-            "spectral_type_en": stype_en,
-            "color": color,
-            "px": px,
-            "py": py,
-            "ra": round(r_deg, 6),
-            "dec": round(d_deg, 6),
-            "flux_ujy": flux_ujy,
-            "ab_mag": ab_mag,
-            "fwhm_arcsec": fwhm_arc,
-            "teff_k": teff_k,
-            "parallax_mas": parallax_mas,
-            "dist_pc": dist_pc,
-            "dist_ly": dist_ly,
-            "dist_au": dist_au,
-            "dist_method_es": dist_method_es,
-            "dist_method_en": dist_method_en,
-            "xyz_pc": [x_pc, y_pc, z_pc],
-        })
-
-    return recognized
+            obj.update({"name": f"SPX J{r_deg:08.4f}{d_deg:+08.4f}", "obj_class": "unidentified", "color": "#94a3b8",
+                        "spectral_type_es": "Sin identificar" + ("" if catalogs.get("ok") else " (catálogos no disponibles)"),
+                        "spectral_type_en": "Unidentified" + ("" if catalogs.get("ok") else " (catalogues unavailable)")})
+        if obj["dist_pc"]:
+            dpc = float(obj["dist_pc"])
+            obj["dist_ly"] = round(dpc * 3.26156, 2 if dpc < 50 else 1)
+            obj["dist_au"] = round(dpc * 206264.806, 0)
+            ra_r, de_r = np.deg2rad(r_deg), np.deg2rad(d_deg)
+            obj["xyz_pc"] = [round(float(dpc * np.cos(de_r) * np.cos(ra_r)), 4), round(float(dpc * np.cos(de_r) * np.sin(ra_r)), 4), round(float(dpc * np.sin(de_r)), 4)]
+        out.append(obj)
+    return out
 
 
-def _enrich_cube_scientific_metrics(cube: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Enriquece cualquier cubo SPHEREx (nuevo o cargado de caché en disco) con:
-    - Fotometría forzada PSF 15x15 (Tractor), flujo en µJy y magnitud AB (ZP = 23.9001).
-    - Detector de Anomalías IA enriquecido (confianza %, velocidad angular "/yr, ángulo de posición PA,
-      estado del Escudo Anti-Artefactos y línea MPC de 80 columnas).
-    - Escudo Anti-Artefactos SPHEREx L2b (6 verificaciones físicas y de hardware H2RG).
-    - Telemetría matemática en vivo (curva de cuerpo negro + profundidades ópticas de hielos H2O, CH4, CO2, CO).
-    """
-    epochs = cube.get("epochs", [])
-    if not epochs:
-        return cube
+# ---------------------------------------------------------------------------
+# Construcción del cubo multi-época (pipeline principal)
+# ---------------------------------------------------------------------------
+_RELEASE_PRIORITY = {"dr1": 0, "qr3": 1, "qr2": 2, "qr1": 3}
 
-    ny, nx = cube.get("shape", [78, 78])
-    cy, cx = ny // 2, nx // 2
-    pix_arcsec = float(cube.get("pix_scale_arcsec", 3.075))
 
-    epoch_arrays: List[np.ndarray] = []
-    flag_arrays: List[np.ndarray] = []
-    for ep in epochs:
-        try:
-            arr = np.frombuffer(base64.b64decode(ep["data_b64"]), dtype=np.float32).reshape((ny, nx))
-            flg = np.frombuffer(base64.b64decode(ep["flags_b64"]), dtype=np.int32).reshape((ny, nx))
-        except Exception:
-            arr = np.zeros((ny, nx), dtype=np.float32)
-            flg = np.zeros((ny, nx), dtype=np.int32)
-        epoch_arrays.append(arr)
-        flag_arrays.append(flg)
+def _dedupe_releases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Una misma observación puede estar en varias versiones (QR2, DR1…): se conserva solo la mejor."""
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for r in rows:
+        k = (r["obs_id"], r["band"])
+        cur = best.get(k)
+        if cur is None or _RELEASE_PRIORITY.get(r.get("release", ""), 9) < _RELEASE_PRIORITY.get(cur.get("release", ""), 9):
+            best[k] = r
+    return sorted(best.values(), key=lambda r: r["t_min"])
 
-        flux_mjy = max(float(ep.get("flux_mjy", 0.01)), 0.0001)
-        flux_ujy = round(flux_mjy * 1000.0, 2)
-        ep["flux_ujy"] = flux_ujy
-        ep["ab_mag"] = round(23.9001 - 2.5 * float(np.log10(max(flux_ujy, 0.01))), 2)
 
-    dt_days = max(abs(float(epochs[-1]["mjd"]) - float(epochs[0]["mjd"])), 1.0) if len(epochs) > 1 else 30.0
-    dt_yr = max(dt_days / 365.25, 0.02)
+def _inpaint_for_display(img: np.ndarray, bad: np.ndarray) -> np.ndarray:
+    """Rellena píxeles enmascarados SOLO para visualización con la media de vecinos válidos (5×5)."""
+    from scipy.ndimage import uniform_filter
 
-    last_img = epoch_arrays[-1]
-    last_flg = flag_arrays[-1]
-    central_psf = compute_forced_psf_photometry(last_img, cx, cy, pix_arcsec)
+    valid = ~bad & np.isfinite(img)
+    num = uniform_filter(np.where(valid, img, 0.0).astype(np.float64), size=5)
+    den = uniform_filter(valid.astype(np.float64), size=5)
+    out = img.astype(np.float64).copy()
+    fill = ~valid
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out[fill] = np.where(den[fill] > 0.05, num[fill] / den[fill], np.nan)
+    return out.astype(np.float32)
 
-    # Enriquecer cada candidato del Detector de Anomalías IA
-    cands = cube.get("candidates", [])
-    mpc_lines: List[str] = []
-    for c in cands:
-        c_px = int(np.clip(c.get("px", cx), 0, nx - 1))
-        c_py = int(np.clip(c.get("py", cy), 0, ny - 1))
-        old_px = int(np.clip(c.get("px_old", c_px), 0, nx - 1))
-        old_py = int(np.clip(c.get("py_old", c_py), 0, ny - 1))
 
-        psf_c = compute_forced_psf_photometry(last_img, c_px, c_py, pix_arcsec)
-        c["flux_ujy"] = psf_c["flux_ujy"]
-        c["ab_mag"] = psf_c["ab_mag"]
-        c["fwhm_arcsec"] = psf_c["fwhm_arcsec"]
-        c["fit_ql"] = psf_c["fit_ql"]
-
-        dx = float(c_px - old_px)
-        dy = float(c_py - old_py)
-        is_dip = c.get("type") == "dipole"
-        if is_dip and (abs(dx) > 0.1 or abs(dy) > 0.1):
-            # En nuestra proyección TAN (Norte arriba, Este a la izquierda: dRA ~ -dx, dDec ~ +dy)
-            pa_deg = round(float(np.rad2deg(np.arctan2(-dx, dy)) % 360.0), 1)
-            pm_yr = round(float(c.get("shift_arcsec", 0.0)) / dt_yr, 2)
-        else:
-            pa_deg = 0.0
-            pm_yr = 0.0
-
-        c["pa_deg"] = pa_deg
-        c["pm_arcsec_yr"] = pm_yr
-
-        # Verificar bits de contaminación en un vecindario 3x3 alrededor del candidato
-        y0_f, y1_f = max(0, c_py - 1), min(ny, c_py + 2)
-        x0_f, x1_f = max(0, c_px - 1), min(nx, c_px + 2)
-        local_bits = int(np.bitwise_or.reduce(last_flg[y0_f:y1_f, x0_f:x1_f].ravel()))
-        has_bad_hw = (local_bits & BAD_MASK) != 0
-        has_transient = (local_bits & (1 << 0)) != 0
-        has_source_bit = (local_bits & (1 << 21)) != 0
-
-        snr_d = float(c.get("snr_diff", 3.5))
-        base_conf = 58.0 + min(snr_d * 4.2, 39.5)
-        if is_dip and pm_yr > 0.3:
-            base_conf = min(base_conf + 4.0, 99.4)
-        if has_bad_hw or has_transient:
-            base_conf = max(base_conf - 18.0, 35.0)
-        c["ai_confidence"] = round(base_conf, 1)
-
-        if has_bad_hw:
-            c["shield_status"] = "WARN_HW_FLAG"
-            c["shield_label_es"] = "⚠️ Alerta Flag Instrumental"
-            c["shield_label_en"] = "⚠️ Hardware Flag Warning"
-        elif has_transient:
-            c["shield_status"] = "SAA_CHECK"
-            c["shield_label_es"] = "🛡️ Filtrado SUR/SAA"
-            c["shield_label_en"] = "🛡️ SUR/SAA Filtered"
-        else:
-            c["shield_status"] = "CLEAN"
-            c["shield_label_es"] = "🛡️ Astrofísico Limpio"
-            c["shield_label_en"] = "🛡️ Clean Astrophysical"
-
-        if is_dip:
-            c["ai_class"] = "MOVING_DIPOLE"
-            c["ai_badge_es"] = f" Dipolo Móvil · {pm_yr}″/año (PA {pa_deg}°)"
-            c["ai_badge_en"] = f" Moving Dipole · {pm_yr}″/yr (PA {pa_deg}°)"
-            c["ai_reason_es"] = (
-                f"Desplazamiento astrométrico de ~{c.get('shift_arcsec', 0)}″ ({pm_yr}″/año hacia PA {pa_deg}°) "
-                f"con significancia {snr_d}σ, FWHM={psf_c['fwhm_arcsec']}″ y magnitud m_AB={psf_c['ab_mag']}."
-            )
-            c["ai_reason_en"] = (
-                f"Astrometric shift of ~{c.get('shift_arcsec', 0)}″ ({pm_yr}″/yr toward PA {pa_deg}°) "
-                f"at {snr_d}σ significance, FWHM={psf_c['fwhm_arcsec']}″ and m_AB={psf_c['ab_mag']}."
-            )
-        else:
-            c["ai_class"] = "IR_VARIABLE"
-            c["ai_badge_es"] = f" Variable IR ({c.get('var_pct', 0)}%) · m_AB {psf_c['ab_mag']}"
-            c["ai_badge_en"] = f" IR Variable ({c.get('var_pct', 0)}%) · m_AB {psf_c['ab_mag']}"
-            c["ai_reason_es"] = (
-                f"Centroide estacionario con modulación de flujo infrarrojo del {c.get('var_pct', 0)}% ({snr_d}σ), "
-                f"flujo puntual {psf_c['flux_ujy']} µJy (m_AB={psf_c['ab_mag']})"
-                + (" y fuente catalogada Bit 21 (MP_SOURCE)." if has_source_bit else ".")
-            )
-            c["ai_reason_en"] = (
-                f"Stationary centroid with {c.get('var_pct', 0)}% infrared flux modulation ({snr_d}σ), "
-                f"point flux {psf_c['flux_ujy']} µJy (m_AB={psf_c['ab_mag']})"
-                + (" and cataloged Bit 21 (MP_SOURCE)." if has_source_bit else ".")
-            )
-
-        desig = f"SPXcand{c.get('rank', 1)}"
-        c["mpc_line"] = format_mpc_80col(
-            desig,
-            float(epochs[-1]["mjd"]),
-            float(c.get("ra", cube["ra"])),
-            float(c.get("dec", cube["dec"])),
-            psf_c["ab_mag"],
-        )
-        if c.get("rank") == 1:
-            mpc_lines.append(c["mpc_line"])
-
-    # Generar reporte MPC multi-época completo para exportación directa
-    for idx_e, ep in enumerate(epochs):
-        mpc_lines.append(
-            format_mpc_80col(
-                f"SPXep{idx_e + 1:02d}",
-                float(ep["mjd"]),
-                float(cube["ra"]),
-                float(cube["dec"]),
-                float(ep.get("ab_mag", central_psf["ab_mag"])),
-            )
-        )
-    cube["mpc_report"] = mpc_lines
-
-    # Construir diagnósticos del Escudo Anti-Artefactos SPHEREx L2b (6 módulos)
-    tot_flags: Dict[str, int] = {}
-    for ep in epochs:
-        for fk, fv in ep.get("flag_counts", {}).items():
-            tot_flags[fk] = tot_flags.get(fk, 0) + int(fv)
-
-    active_bands = sorted({b for ep in epochs for b in ep.get("bands", [])})
-    has_d1 = "D1" in active_bands
-    mean_zodi_all = round(float(np.mean([ep.get("mean_zodi", 0.25) for ep in epochs])), 3)
-    transient_cnt = tot_flags.get("TRANSIENT", 0)
-    persist_cnt = tot_flags.get("PERSIST", 0) + tot_flags.get("CROSSTALK", 0)
-    streak_cnt = tot_flags.get("STREAK", 0) + tot_flags.get("SATELLITE_HALO", 0)
-    dichroic_cnt = tot_flags.get("DICHROIC", 0)
-    bloom_cnt = tot_flags.get("BLOOM", 0)
-
-    cube["artifact_shield"] = {
-        "overall_status": "PROTECTED",
-        "checks": [
-            {
-                "id": "blooming_b1",
-                "status": "GUARDED" if has_d1 else "PASS",
-                "title_es": "Charge Blooming Banda 1 (1648, 1752)",
-                "title_en": "Band 1 Charge Blooming (1648, 1752)",
-                "metric": f"{bloom_cnt} px" if has_d1 else "N/A (D2-D6)",
-                "desc_es": "Vigilancia geométrica CRPIX1A/2A en plano focal H2RG 2048×2048 alrededor de (1648, 1752).",
-                "desc_en": "CRPIX1A/2A focal-plane distance guard on 2048×2048 H2RG around defect (1648, 1752).",
-            },
-            {
-                "id": "saa_cosmic",
-                "status": "FILTERED" if transient_cnt > 0 else "CLEAN",
-                "title_es": "Filtro SAA y Rayos Cósmicos SUR (Bit 0)",
-                "title_en": "SAA & SUR Cosmic Ray Filter (Bit 0)",
-                "metric": f"{transient_cnt} impactos filtrados",
-                "desc_es": "Rechazo de impactos radiativos de la Anomalía del Atlántico Sur en rampa SUR a bordo.",
-                "desc_en": "Rejection of South Atlantic Anomaly radiation hits in onboard SUR ramp fitting.",
-            },
-            {
-                "id": "crosstalk_persist",
-                "status": "FILTERED" if persist_cnt > 0 else "CLEAN",
-                "title_es": "Persistencia H2RG y Crosstalk (Bits 17/20)",
-                "title_en": "H2RG Persistence & Crosstalk (Bits 17/20)",
-                "metric": f"{persist_cnt} px mitigados",
-                "desc_es": "Control de carga atrapada en diodos HgCdTe y diafonía de 32 canales ASIC SIDECAR.",
-                "desc_en": "Trapped charge decay control in HgCdTe diodes & 32-channel SIDECAR ASIC crosstalk.",
-            },
-            {
-                "id": "zodi_airglow",
-                "status": "SUBTRACTED",
-                "title_es": "Sustracción ZODI + Airglow He I (1.083 µm)",
-                "title_en": "ZODI Subtraction + He I Airglow (1.083 µm)",
-                "metric": f"−{mean_zodi_all} MJy/sr",
-                "desc_es": "Sustracción física exposición por exposición de dispersión solar y emisión térmica zodiacal.",
-                "desc_en": "Per-exposure subtraction of scattered solar light and thermal interplanetary dust emission.",
-            },
-            {
-                "id": "leo_streaks",
-                "status": "CLEAN",
-                "title_es": "Trazas Satelitales LEO y Halos (Bits 25/28)",
-                "title_en": "LEO Satellite Streaks & Halos (Bits 25/28)",
-                "metric": f"{streak_cnt} trazas (Mediana)",
-                "desc_es": "Supresión de trazas orbitales rápidas mediante apilado por mediana temporal multi-exposición.",
-                "desc_en": "Suppression of fast orbital streaks via multi-exposure temporal median co-addition.",
-            },
-            {
-                "id": "dichroic_cal",
-                "status": "CALIBRATED",
-                "title_es": "Borde Dicroico (2.42 µm) y WCS-WAVE LVF",
-                "title_en": "Dichroic Edge (2.42 µm) & WCS-WAVE LVF",
-                "metric": f"{dichroic_cnt} px enmascarados",
-                "desc_es": "Interpolación bilineal exacta λ(x,y) con preservación de fuentes catalogadas (Bit 21 MP_SOURCE).",
-                "desc_en": "Exact bilinear λ(x,y) interpolation preserving cataloged sources (Bit 21 MP_SOURCE).",
-            },
-        ],
-    }
-
-    # Calcular telemetría matemática en vivo, temperatura efectiva y profundidades ópticas de hielos
-    spec = cube.get("spectrum", [])
-    if spec:
-        lams = np.array([float(s["wavelength_um"]) for s in spec], dtype=np.float64)
-        flxs = np.array([max(float(s["sb_mjy_sr"]), 1e-3) for s in spec], dtype=np.float64)
-        peak_idx = int(np.argmax(flxs))
-        lam_peak = float(lams[peak_idx])
-        # Ley de desplazamiento de Wien aproximada acotada al régimen astrofísico (220 K a 4800 K)
-        t_eff_k = round(float(np.clip(2897.8 / max(lam_peak, 0.65), 220.0, 4800.0)), 0)
-    else:
-        lam_peak = 4.65
-        t_eff_k = 260.0
-
-    # Evaluar profundidades ópticas aparentes tau = -ln(F_obs / F_cont) en bandas moleculares clave
-    def _eval_band_tau(lam_center: float, half_w: float = 0.18) -> float:
-        if not spec:
-            return 0.15
-        in_band = [max(float(s["sb_mjy_sr"]), 0.01) for s in spec if abs(float(s["wavelength_um"]) - lam_center) <= half_w]
-        out_band = [
-            max(float(s["sb_mjy_sr"]), 0.01)
-            for s in spec
-            if half_w < abs(float(s["wavelength_um"]) - lam_center) <= half_w * 3.2
-        ]
-        if not in_band or not out_band:
-            return round(0.18 if t_eff_k > 1200 else 0.85, 2)
-        f_in = float(np.median(in_band))
-        f_cont = max(float(np.percentile(out_band, 75)), f_in * 1.05, 0.02)
-        return round(float(np.clip(-np.log(max(f_in / f_cont, 0.05)), 0.02, 3.4)), 2)
-
-    tau_h2o = _eval_band_tau(3.05, 0.20)
-    tau_ch4 = _eval_band_tau(3.32, 0.18)
-    tau_co2 = _eval_band_tau(4.27, 0.14)
-    tau_co = _eval_band_tau(4.67, 0.15)
-
-    # Generar curva teórica suavizada (Continuo + bandas de absorción de hielos) para graficar en #spectrumCanvas
-    lam_grid = np.linspace(0.75, 5.00, 86)
-    c2_hc = 14387.77  # µm * K
-    bb_raw = (lam_grid ** -3) / (np.expm1(np.clip(c2_hc / (lam_grid * max(t_eff_k, 200.0)), 0.5, 60.0)))
-    if np.max(bb_raw) > 0:
-        bb_norm = bb_raw / np.max(bb_raw)
-    else:
-        bb_norm = np.ones_like(lam_grid)
-    scale_sb = max([float(s["sb_mjy_sr"]) for s in spec], default=1.0)
-    abs_profile = np.exp(
-        -0.35 * tau_h2o * np.exp(-((lam_grid - 3.05) / 0.16) ** 2)
-        - 0.35 * tau_ch4 * np.exp(-((lam_grid - 3.32) / 0.12) ** 2)
-        - 0.35 * tau_co2 * np.exp(-((lam_grid - 4.27) / 0.09) ** 2)
-        - 0.25 * tau_co * np.exp(-((lam_grid - 4.67) / 0.10) ** 2)
-    )
-    bb_curve = [
-        {"wavelength_um": round(float(l), 3), "sb_model": round(float(v), 4)}
-        for l, v in zip(lam_grid, bb_norm * abs_profile * max(scale_sb * 0.92, 0.1))
-    ]
-
-    cube["math_telemetry"] = {
-        "forced_psf": central_psf,
-        "t_eff_k": int(t_eff_k),
-        "lam_peak_um": round(lam_peak, 3),
-        "ice_tau": {
-            "H2O_3.05um": tau_h2o,
-            "CH4_3.32um": tau_ch4,
-            "CO2_4.27um": tau_co2,
-            "CO_4.67um": tau_co,
-        },
-        "blackbody_curve": bb_curve,
-        "dois": IRSA_DOIS,
-        "equations": [
-            {
-                "id": "eq_zodi",
-                "title_es": "1. Sustracción ZODI y Enmascaramiento L2b",
-                "title_en": "1. ZODI Subtraction & L2b Bitmasking",
-                "formula": "I_clean(x,y) = [IMAGE(x,y) - ZODI(x,y)] · M_flags(x,y)",
-                "live_value": f"<ZODI> = {mean_zodi_all} MJy/sr | S/N = {epochs[-1]['snr']}",
-            },
-            {
-                "id": "eq_tractor",
-                "title_es": "2. Fotometría Forzada Lineal (Tractor 15×15)",
-                "title_en": "2. Linear Forced Photometry (15×15 Tractor)",
-                "formula": "θ = (A^T W A)^(-1) A^T W I  →  FWHM = 2.355·σ_PSF",
-                "live_value": f"F = {central_psf['flux_ujy']} µJy | FWHM = {central_psf['fwhm_arcsec']}″ ({central_psf['fit_ql']})",
-            },
-            {
-                "id": "eq_abmag",
-                "title_es": "3. Conversión a Magnitud Aparente AB",
-                "title_en": "3. Apparent AB Magnitude Conversion",
-                "formula": "m_AB = 23.9001 - 2.5 · log10(F_µJy)",
-                "live_value": f"m_AB = {central_psf['ab_mag']} mag (Ω_pix = {SOLID_ANGLE_SR:.2e} sr)",
-            },
-            {
-                "id": "eq_lvf",
-                "title_es": "4. Espectroscopía LVF Bilineal (WCS-WAVE)",
-                "title_en": "4. Bilinear LVF Spectroscopy (WCS-WAVE)",
-                "formula": "λ(x,y) = Σ w_ij(t_x, t_y) · V_WAVE(i,j)",
-                "live_value": f"{len(spec)} canales | λ_max = {lam_peak:.2f} µm (T_eff ≈ {int(t_eff_k)} K)",
-            },
-            {
-                "id": "eq_tau",
-                "title_es": "5. Profundidad Óptica de Hielos Biogénicos",
-                "title_en": "5. Biogenic Ice Optical Depth τ(λ)",
-                "formula": "τ(λ) = -ln[ F_obs(λ) / F_cont(λ) ]",
-                "live_value": f"τ(H₂O)={tau_h2o} · τ(CH₄)={tau_ch4} · τ(CO₂)={tau_co2}",
-            },
-            {
-                "id": "eq_dipole",
-                "title_es": "6. Cinemática Diferencial y Significancia",
-                "title_en": "6. Differential Kinematics & Significance",
-                "formula": "ΔI = E_n - E_1,  σ_MAD = 1.4826·med|ΔI - med(ΔI)|",
-                "live_value": (
-                    f"#1: {cands[0]['snr_diff']}σ ({cands[0].get('pm_arcsec_yr', 0)}″/yr)"
-                    if cands
-                    else f"σ_sky = {cube.get('stats', {}).get('sky_sigma', 0.01)} MJy/sr"
-                ),
-            },
-        ],
-    }
-    cube["recognized_objects"] = recognize_celestial_objects(cube, epoch_arrays, flag_arrays)
-    return cube
+def _reference_targets_in_field(ra: float, dec: float, size_deg: float) -> List[Dict[str, Any]]:
+    out = []
+    half = 0.75 * size_deg
+    for t in CHALLENGE_TARGETS:
+        if not t.get("astrometry"):
+            continue
+        dd = float(np.hypot(((t["ra"] - ra + 180) % 360 - 180) * np.cos(np.deg2rad(dec)), t["dec"] - dec))
+        if dd <= half:
+            out.append(t)
+    return out
 
 
 def build_sky_cube_and_spectrum(
@@ -2220,40 +2688,42 @@ def build_sky_cube_and_spectrum(
     release: str = "all",
     gap_days: float = 45.0,
     force_reproject: bool = False,
+    target_id: Optional[str] = None,
+    user_astrometry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Pipeline completo para la aplicación web:
-    1. Consulta caché ultrarrápida de cubos completos en RAM (<1ms) y Disco (<20ms).
-    2. Busca todas las exposiciones en IRSA TAP.
-    3. Agrupa en épocas y selecciona hasta `max_per_epoch` exposiciones balanceadas por banda.
-    4. Descarga recortes en paralelo (16 hilos S3 Range / caché / IBE).
-    5. Reproyecta en paralelo cada exposición a la grilla WCS común y extrae fotometría + longitud de onda LVF.
-    6. Devuelve épocas apiladas, mapas de flags, imagen de diferencia, espectro LVF, curva de luz y telemetría IA/Tractor.
+    1. Busca exposiciones L2b en IRSA TAP y elimina duplicados entre versiones.
+    2. Agrupa en épocas (≤ 8) y elige hasta `max_per_epoch` exposiciones por época repartidas por banda.
+    3. Descarga recortes nativos (S3 HTTP Range / IBE) con ePSF y metadatos.
+    4. Para el objetivo (posición propagada a la fecha de CADA exposición) mide fotometría PSF forzada.
+    5. Construye imágenes de época (mediana) para el blink, con mapa de cobertura real.
+    6. Detecta candidatos en la diferencia, identifica fuentes con catálogos y resume la calidad de datos.
+    Si IRSA no responde o no hay exposiciones, devuelve UNA imagen estática del cubo DR1 y lo indica.
     """
     t0 = time.time()
-    norm_bands = sorted({b.upper().replace("SPHEREX-", "") for b in (bands or ["D1", "D2", "D3", "D4"])})
+    norm_bands = sorted({b.upper().replace("SPHEREX-", "") for b in (bands or ["D1", "D2", "D3", "D4"])}) or ["D6"]
+    astrom = user_astrometry or get_target_astrometry(target_id)
+    tgt_obj = _TARGETS_BY_ID.get(target_id) if target_id else None
+    if astrom:
+        # Un objetivo que no cae dentro del campo pedido se ignora (no se mide un objeto en otra zona del cielo)
+        ra_chk, dec_chk = propagate_astrometry(astrom, _jyear_to_mjd(DISPLAY_EPOCH_JYEAR))
+        sep_deg = float(SkyCoord(ra * u.deg, dec * u.deg).separation(SkyCoord(ra_chk * u.deg, dec_chk * u.deg)).deg)
+        if sep_deg > 0.75 * size_deg + 0.02:
+            astrom, tgt_obj, target_id, user_astrometry = None, None, None, None
+    astrom_key = json.dumps(astrom, sort_keys=True) if astrom else ""
     cube_hash = hashlib.md5(
-        f"cube_v3_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}".encode()
+        f"cube_v6_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}_{target_id}_{astrom_key}".encode()
     ).hexdigest()[:16]
     cube_cache_path = os.path.join(CACHE_DIR, "cubes", f"cube_{cube_hash}.json")
-
     if not force_reproject:
         if cube_hash in _CUBE_RESP_CACHE:
             cached = dict(_CUBE_RESP_CACHE[cube_hash])
-            if (
-                "artifact_shield" not in cached
-                or "math_telemetry" not in cached
-                or "recognized_objects" not in cached
-            ):
-                cached = _enrich_cube_scientific_metrics(cached)
-                _CUBE_RESP_CACHE[cube_hash] = cached
             cached["elapsed_sec"] = round(time.time() - t0, 3)
             return cached
         if os.path.exists(cube_cache_path):
             try:
                 with open(cube_cache_path, "r", encoding="utf-8") as f:
                     cached = json.load(f)
-                cached = _enrich_cube_scientific_metrics(cached)
                 _CUBE_RESP_CACHE[cube_hash] = cached
                 out_c = dict(cached)
                 out_c["elapsed_sec"] = round(time.time() - t0, 3)
@@ -2263,858 +2733,974 @@ def build_sky_cube_and_spectrum(
 
     common_wcs, shape, pix_arcsec = make_common_wcs(ra, dec, size_deg, oversample=2.0)
     ny, nx = shape
-    cy, cx = ny // 2, nx // 2
-    yy, xx = np.ogrid[:ny, :nx]
-    r2_center = (xx - cx) ** 2 + (yy - cy) ** 2
-    pix_sr = (pix_arcsec / 206264.806247) ** 2
+    notes: List[Dict[str, str]] = []
 
     all_rows = query_spherex_exposures(ra, dec, bands=norm_bands, release=release)
-    if not all_rows:
-        # Si el filtro estricto de banda/release no halló filas, probar con todas las bandas disponibles en esa coordenada
-        all_rows = query_spherex_exposures(ra, dec, bands=None, release="all")
+    tap_ok = bool(_TAP_STATUS.get("ok"))
+    all_rows = _dedupe_releases(all_rows) if all_rows else []
+    all_cov = query_spherex_exposures(ra, dec, bands=None, release="all") if tap_ok else []
+    all_cov = _dedupe_releases(all_cov) if all_cov else []
 
-    valid_cuts: List[Dict[str, Any]] = []
+    selected_rows: List[Dict[str, Any]] = []
     if all_rows:
         raw_groups = group_exposures_into_epochs(all_rows, gap_days=gap_days)
         if len(raw_groups) > MAX_EPOCHS:
             keep_idx = sorted(set(np.linspace(0, len(raw_groups) - 1, MAX_EPOCHS).round().astype(int).tolist()))
             raw_groups = [raw_groups[i] for i in keep_idx]
-
-        selected_rows: List[Dict[str, Any]] = []
         for ep_id, grp in enumerate(raw_groups):
             for r in _select_band_balanced(grp, max_per_epoch):
                 selected_rows.append({**r, "epoch_id": ep_id})
-
+    valid_cuts: List[Dict[str, Any]] = []
+    if selected_rows:
         with ThreadPoolExecutor(max_workers=16) as ex:
             fetched = list(ex.map(lambda r: _safe_fetch(r, ra, dec, size_deg), selected_rows))
         valid_cuts = [c for c in fetched if c is not None]
 
-    from scipy.ndimage import maximum_filter
+    def _target_radec(mjd: float) -> Tuple[float, float]:
+        if astrom:
+            return propagate_astrometry(astrom, mjd)
+        return ra, dec
 
-    def _reproject_one(cut: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
-        row = cut["row"]
-        img = cut["img"].copy()
+    refs_in_field = _reference_targets_in_field(ra, dec, size_deg)
+    cat_radius = float(min(max(size_deg * 0.75, 0.03), 0.6))
+    catalogs = fetch_catalog_sources(ra, dec, cat_radius) if valid_cuts else {"gaia": [], "allwise": [], "ok": False}
+
+    def _neighbors_at(mjd: float, ra_t: float, dec_t: float) -> List[Tuple[float, float]]:
+        """Fuentes Gaia a < 20″ del objetivo (propagadas a la fecha), excluida la propia fuente (< 1.5″)."""
+        jy = float(Time(mjd, format="mjd").jyear)
+        out_n = []
+        cosd = np.cos(np.deg2rad(dec_t))
+        for g in catalogs.get("gaia", []):
+            if g.get("gmag") is not None and g["gmag"] > 20.5:
+                continue
+            if abs(g["dec"] - dec_t) > 0.02:
+                continue
+            ra_e, de_e = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, jy)
+            sep = float(np.hypot(((ra_e - ra_t + 180) % 360 - 180) * cosd, de_e - dec_t) * 3600.0)
+            if 1.5 < sep <= 20.0:
+                out_n.append((ra_e, de_e))
+        return out_n
+
+    # ---------------- Fotometría del objetivo por exposición + reproyección para visualización
+    def _process(cut: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        mjd = float(cut["meta"].get("mjd_avg") or cut["row"]["t_min"])
+        ra_t, dec_t = _target_radec(mjd)
+        phot = forced_photometry_cut(cut, ra_t, dec_t, fit_position=True, neighbors=_neighbors_at(mjd, ra_t, dec_t))
         flags = cut["flags"]
-
-        bad_mask = (flags & BAD_MASK) != 0
-        bad_frac = float(np.mean(bad_mask))
-        img_masked = img.copy()
-        img_masked[bad_mask] = np.nan
-
-        nan_mask = ~np.isfinite(img_masked)
-        if np.any(nan_mask) and not np.all(nan_mask):
-            finite_vals = img_masked[~nan_mask]
-            p98 = float(np.percentile(finite_vals, 98))
-            local_max = maximum_filter(np.where(nan_mask, -1e9, img_masked), size=7)
-            img_masked[nan_mask] = np.where(local_max[nan_mask] > -1e8, local_max[nan_mask], p98)
-
+        bad = ((flags & DISPLAY_REJECT_MASK) != 0) | ~np.isfinite(cut["img"])
+        disp = _inpaint_for_display(cut["img"], bad)
         try:
-            rp_img, _ = reproject_interp((img_masked, cut["wcs"]), common_wcs, shape_out=shape)
-            rp_flg_f, _ = reproject_interp(
-                (flags.astype(np.float32), cut["wcs"]), common_wcs, shape_out=shape, order=0
-            )
-            rp_flg = np.nan_to_num(rp_flg_f, nan=0.0).astype(np.int32)
+            rp_img, fp = reproject_interp((disp, cut["wcs"]), common_wcs, shape_out=shape, order="bilinear")
+            rp_valid, _ = reproject_interp(((~bad).astype(np.float32), cut["wcs"]), common_wcs, shape_out=shape, order="nearest-neighbor")
+            rp_flg_f, _ = reproject_interp((flags.astype(np.float64), cut["wcs"]), common_wcs, shape_out=shape, order="nearest-neighbor")
         except Exception:
             return None
-
-        bg_med = float(np.nanmedian(rp_img)) if np.any(np.isfinite(rp_img)) else 0.0
-        rp_norm = rp_img - bg_med
-
-        ap_mask = (r2_center <= 2.5 ** 2) & np.isfinite(rp_norm)
-        if not np.any(ap_mask):
-            ap_mask = (r2_center <= 6.5 ** 2) & np.isfinite(rp_norm)
-        ann_mask = (r2_center >= 6.5 ** 2) & (r2_center <= 10.5 ** 2) & np.isfinite(rp_norm)
-        local_bg = float(np.nanmedian(rp_norm[ann_mask])) if np.any(ann_mask) else 0.0
-
-        if np.any(ap_mask):
-            peak_sb = float(np.nanmax(rp_norm[ap_mask]) - local_bg)
-            mean_sb = float(np.nanmean(rp_norm[ap_mask]) - local_bg)
-            ap_flux_mjy = float(np.nansum(rp_norm[ap_mask] - local_bg) * pix_sr * 1e9)
-        else:
-            peak_sb = float("nan")
-            mean_sb = float("nan")
-            ap_flux_mjy = float("nan")
-
-        noise_sb = float(np.nanstd(rp_norm[ann_mask])) if np.sum(ann_mask) > 5 else 0.05
-
-        item = {
-            "row": row,
-            "rp_img": rp_norm.astype(np.float32),
-            "rp_flg": rp_flg,
-            "zodi": cut["zodi"],
-            "bad_frac": round(bad_frac * 100.0, 2),
-            "wavelength_um": round(cut["wavelength_um"], 4),
-            "bandwidth_um": round(cut["bandwidth_um"], 4),
-            "peak_sb": peak_sb,
-            "mean_sb": mean_sb,
-            "ap_flux_mjy": ap_flux_mjy,
-            "noise_sb": noise_sb,
-            "source": cut["source"],
+        rp_img = np.where(fp > 0, rp_img, np.nan)
+        cov = np.nan_to_num(rp_valid, nan=0.0)
+        rp_flg = np.nan_to_num(rp_flg_f, nan=0.0).astype(np.int64)
+        bg = float(np.nanmedian(rp_img)) if np.any(np.isfinite(rp_img)) else 0.0
+        return {
+            "cut": cut, "row": cut["row"], "mjd": mjd, "rp_img": (rp_img - bg).astype(np.float32), "cov": cov.astype(np.float32),
+            "rp_flg": rp_flg, "phot": phot, "bad_frac": float(np.mean(bad)) * 100.0, "zodi": cut["zodi"],
         }
-        spec_pt = None
-        if np.isfinite(peak_sb) and peak_sb > -50:
-            spec_pt = {
-                "obs_id": row["obs_id"],
-                "band": row["band"],
-                "mjd": round(row["t_min"], 5),
-                "date_iso": row["date_iso"],
-                "wavelength_um": round(cut["wavelength_um"], 4),
-                "bandwidth_um": round(cut["bandwidth_um"], 4),
-                "sb_mjy_sr": round(peak_sb, 4),
-                "flux_mjy": round(ap_flux_mjy, 4) if np.isfinite(ap_flux_mjy) else 0.0,
-                "err_mjy_sr": round(max(noise_sb, 0.01), 4),
-                "zodi_mjy_sr": round(cut["zodi"], 3),
-                "bad_pct": round(bad_frac * 100.0, 1),
-            }
-        return item, spec_pt
 
-    reprojected_items: List[Dict[str, Any]] = []
-    spectrum_points: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     if valid_cuts:
         with ThreadPoolExecutor(max_workers=8) as rex:
-            rep_results = list(rex.map(_reproject_one, valid_cuts))
-        for res in rep_results:
-            if res is not None:
-                it, s_pt = res
-                reprojected_items.append(it)
-                if s_pt is not None:
-                    spectrum_points.append(s_pt)
+            items = [it for it in rex.map(_process, valid_cuts) if it is not None]
 
-    # Si el usuario navegó libremente hacia cualquier coordenada del cielo 360° fuera de los recortes L2b locales,
-    # extraer directamente del Cubo FITS All-Sky Oficial SPHEREx DR1 (Npix{ipix}_cube.fits en AWS S3 / IRSA IBE, DOI: 10.26131/IRSA679).
-    if not reprojected_items:
-        reprojected_items, spectrum_points = fetch_official_dr1_allsky_fits_cube(
-            ra, dec, norm_bands, size_deg, common_wcs, shape, pix_arcsec
-        )
-    elif not spectrum_points:
-        _, spectrum_points = fetch_official_dr1_allsky_fits_cube(
-            ra, dec, norm_bands, size_deg, common_wcs, shape, pix_arcsec
-        )
+    data_mode = "l2b" if items else "none"
+    epochs_out: List[Dict[str, Any]] = []
+    epoch_arrays: List[np.ndarray] = []
+    coverage_arrays: List[np.ndarray] = []
+    photometry: List[Dict[str, Any]] = []
+    target_track: List[Dict[str, Any]] = []
 
-    # Guardar cubo reproyectado en memoria LRU para extracción espectral en cualquier píxel (px, py)
-    memo_key = f"{ra:.4f}_{dec:.4f}_{size_deg:.3f}_{','.join(sorted(bands))}"
+    if items:
+        by_ep: Dict[int, List[Dict[str, Any]]] = {}
+        for it in items:
+            by_ep.setdefault(int(it["row"].get("epoch_id", 0)), []).append(it)
+        epoch_groups = [sorted(by_ep[k], key=lambda x: x["mjd"]) for k in sorted(by_ep)]
+        with np.errstate(all="ignore"):
+            global_coadd = np.nanmedian(np.array([it["rp_img"] for it in items]), axis=0).astype(np.float32)
+        for idx_ep, grp in enumerate(epoch_groups):
+            stack = np.array([g["rp_img"] for g in grp], dtype=np.float32)
+            cov = np.mean(np.array([g["cov"] for g in grp]), axis=0).astype(np.float32)
+            with np.errstate(all="ignore"):
+                ep_med = np.nanmedian(stack, axis=0).astype(np.float32)
+            nan_m = ~np.isfinite(ep_med)
+            ep_img = np.where(nan_m, np.where(np.isfinite(global_coadd), global_coadd, 0.0), ep_med).astype(np.float32)
+            cov = np.where(nan_m, 0.0, cov).astype(np.float32)
+            flg_or = np.bitwise_or.reduce([g["rp_flg"] for g in grp]).astype(np.int64)
+            mjds = [g["mjd"] for g in grp]
+            mjd_mean = float(np.mean(mjds))
+            ra_t, dec_t = _target_radec(mjd_mean)
+            tx, ty = [float(v) for v in common_wcs.world_to_pixel_values(ra_t, dec_t)]
+            target_track.append({"epoch_index": idx_ep, "mjd": round(mjd_mean, 5), "ra": round(ra_t, 6), "dec": round(dec_t, 6), "px": round(tx, 2), "py": round(ty, 2)})
+            yy, xx = np.ogrid[:ny, :nx]
+            r2 = (xx - tx) ** 2 + (yy - ty) ** 2
+            ap_m = r2 <= 2.5 ** 2
+            ann_m = (r2 >= 6.0 ** 2) & (r2 <= 10.0 ** 2) & (cov >= 0.5)
+            if np.any(ap_m) and np.sum(ann_m) > 10:
+                bg_ep = float(np.median(ep_img[ann_m]))
+                peak_ep = float(np.max(ep_img[ap_m]) - bg_ep)
+                rms_ep = float(1.4826 * np.median(np.abs(ep_img[ann_m] - bg_ep)))
+            else:
+                peak_ep, rms_ep = float("nan"), float("nan")
+            flag_counts = {}
+            for fdef in FLAG_DEFINITIONS:
+                cnt = int(np.sum((flg_or & (1 << fdef["bit"])) != 0))
+                if cnt > 0:
+                    flag_counts[fdef["name"]] = cnt
+            ep_phot = [g["phot"] for g in grp]
+            photometry.extend({**p, "epoch_index": idx_ep} for p in ep_phot)
+            lams = [p["wavelength_um"] for p in ep_phot if p.get("wavelength_um")]
+            n_det = sum(1 for p in ep_phot if p["quality"] in ("good", "warning"))
+            det_snr = [p["snr"] for p in ep_phot if p["quality"] in ("good", "warning") and p.get("snr")]
+            epoch_arrays.append(ep_img)
+            coverage_arrays.append(cov)
+            epochs_out.append({
+                "index": idx_ep,
+                "mjd": round(mjd_mean, 4),
+                "date": Time(mjd_mean, format="mjd").iso[:10],
+                "mjd_min": round(min(mjds), 4),
+                "mjd_max": round(max(mjds), 4),
+                "n_exp": len(grp),
+                "bands": sorted({g["row"]["band"] for g in grp}),
+                "lam_min_um": round(min(lams), 3) if lams else None,
+                "lam_max_um": round(max(lams), 3) if lams else None,
+                "peak_sb_mjy_sr": round(peak_ep, 4) if np.isfinite(peak_ep) else None,
+                "rms_mjy_sr": round(rms_ep, 5) if np.isfinite(rms_ep) else None,
+                "snr": round(peak_ep / rms_ep, 2) if (np.isfinite(peak_ep) and np.isfinite(rms_ep) and rms_ep > 0) else None,
+                "n_target_detections": n_det,
+                "target_snr_median": round(float(np.median(det_snr)), 1) if det_snr else None,
+                "coverage_frac": round(float(np.mean(cov >= 0.5)), 3),
+                "mean_zodi": round(float(np.mean([g["zodi"] for g in grp])), 4),
+                "flag_counts": flag_counts,
+                "data_b64": base64.b64encode(ep_img.astype(np.float32).tobytes()).decode("ascii"),
+                "flags_b64": base64.b64encode(flg_or.astype(np.int32).tobytes()).decode("ascii"),
+                "cov_b64": base64.b64encode(np.clip(cov * 255.0, 0, 255).astype(np.uint8).tobytes()).decode("ascii"),
+                "exposures": [
+                    {
+                        "obs_id": g["row"]["obs_id"], "band": g["row"]["band"], "release": g["row"].get("release"),
+                        "mjd": round(g["mjd"], 6), "date_iso": Time(g["mjd"], format="mjd").isot[:19],
+                        "wavelength_um": g["phot"].get("wavelength_um"), "bandwidth_um": g["phot"].get("bandwidth_um"),
+                        "psf_fwhm_arcsec": g["phot"].get("psf_fwhm_arcsec"), "zodi": round(g["zodi"], 4),
+                        "bad_pct": round(g["bad_frac"], 2), "source": g["cut"]["source"],
+                        "flux_ujy": g["phot"].get("flux_ujy"), "err_ujy": g["phot"].get("err_ujy"), "snr": g["phot"].get("snr"),
+                        "quality": g["phot"].get("quality"), "lvf_edge": g["phot"].get("lvf_edge"),
+                    }
+                    for g in grp
+                ],
+            })
+
+    # ---------------- Sin datos multi-época: imagen estática del cubo DR1
+    if not epochs_out:
+        try:
+            dr1_img, dr1_info = build_dr1_static_image(ra, dec, norm_bands, common_wcs, shape)
+        except Exception:
+            dr1_img, dr1_info = None, {}
+        if dr1_img is not None:
+            data_mode = "dr1_static"
+            cov = np.isfinite(dr1_img).astype(np.float32)
+            bg = float(np.nanmedian(dr1_img))
+            ep_img = np.where(np.isfinite(dr1_img), dr1_img - bg, 0.0).astype(np.float32)
+            mjd_mid = 0.5 * (DR1_MJD_RANGE[0] + DR1_MJD_RANGE[1])
+            ra_t, dec_t = _target_radec(mjd_mid)
+            tx, ty = [float(v) for v in common_wcs.world_to_pixel_values(ra_t, dec_t)]
+            target_track.append({"epoch_index": 0, "mjd": round(mjd_mid, 5), "ra": round(ra_t, 6), "dec": round(dec_t, 6), "px": round(tx, 2), "py": round(ty, 2)})
+            epoch_arrays.append(ep_img)
+            coverage_arrays.append(cov)
+            epochs_out.append({
+                "index": 0, "mjd": round(mjd_mid, 4), "date": "DR1 2025-04-24 → 2026-05-14",
+                "mjd_min": DR1_MJD_RANGE[0], "mjd_max": DR1_MJD_RANGE[1], "n_exp": 0, "bands": norm_bands,
+                "lam_min_um": round(min(dr1_info.get("wavelengths_um", [0])), 3), "lam_max_um": round(max(dr1_info.get("wavelengths_um", [0])), 3),
+                "peak_sb_mjy_sr": None, "rms_mjy_sr": None, "snr": None, "n_target_detections": 0,
+                "coverage_frac": round(float(np.mean(cov)), 3), "mean_zodi": 0.0, "flag_counts": {},
+                "data_b64": base64.b64encode(ep_img.tobytes()).decode("ascii"),
+                "flags_b64": base64.b64encode(np.zeros(shape, dtype=np.int32).tobytes()).decode("ascii"),
+                "cov_b64": base64.b64encode((cov * 255).astype(np.uint8).tobytes()).decode("ascii"),
+                "exposures": [], "is_static_dr1": True,
+                "dr1_channels": dr1_info.get("channels", []), "dr1_tiles": dr1_info.get("tiles", []),
+            })
+            notes.append({"level": "warn",
+                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA TAP no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales.",
+                          "en": "No L2b exposures available" + (" (IRSA TAP is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve."})
+        else:
+            return {"error": ("IRSA TAP no responde y no se pudo leer el cubo DR1." if not tap_ok else "No hay datos SPHEREx en esta posición."),
+                    "tap_status": dict(_TAP_STATUS)}
+
+    # ---------------- Estadística global de visualización
+    all_vals = np.concatenate([a[c >= 0.5].ravel() for a, c in zip(epoch_arrays, coverage_arrays)]) if epoch_arrays else np.zeros(1)
+    if all_vals.size < 50:
+        all_vals = np.concatenate([a.ravel() for a in epoch_arrays])
+    p01, p05, p50, p95, p995 = [float(x) for x in np.percentile(all_vals, [1.0, 5.0, 50.0, 95.0, 99.5])]
+    sky_clip = all_vals[(all_vals >= p05) & (all_vals <= np.percentile(all_vals, 85.0))]
+    sky_med = float(np.median(sky_clip)) if sky_clip.size else p50
+    sky_sigma = max(1.4826 * float(np.median(np.abs(sky_clip - sky_med))) if sky_clip.size else 0.01, 1e-6)
+
+    candidates = detect_candidates(epoch_arrays, common_wcs, pix_arcsec, coverage_arrays) if data_mode == "l2b" else []
+    mean_mjd = float(np.mean([e["mjd"] for e in epochs_out]))
+    if not catalogs.get("gaia") and not catalogs.get("allwise"):
+        catalogs = fetch_catalog_sources(ra, dec, cat_radius)
+    ref_tracks = []
+    for t in refs_in_field:
+        ra_r, de_r = propagate_astrometry(t["astrometry"], mean_mjd)
+        ref_tracks.append({"id": t["id"], "ra": ra_r, "dec": de_r})
+    with np.errstate(all="ignore"):
+        coadd = np.nanmean(np.array(epoch_arrays), axis=0)
+    recognized = recognize_celestial_objects(coadd, common_wcs, pix_arcsec, mean_mjd, catalogs, ref_tracks, coarse=(data_mode == "dr1_static"))
+    _annotate_candidates(candidates, catalogs, refs_in_field, epochs_out, common_wcs, pix_arcsec)
+    _verify_candidates_with_psf(candidates, items, epochs_out, catalogs)
+    _order = {"confirmed_motion": 0, "confirmed_variability": 1, "unverified": 2, "not_confirmed": 3}
+    candidates.sort(key=lambda c: (_order.get(c.get("verification", "unverified"), 2), -c["snr_diff"]))
+    for i, c in enumerate(candidates, start=1):
+        c["rank"] = i
+
+    # ---------------- Objetivo, movimiento esperado y resumen fotométrico
+    target_info = None
+    if astrom:
+        t_meta = tgt_obj or {}
+        motion = None
+        if len(target_track) >= 2:
+            a0, a1 = target_track[0], target_track[-1]
+            sep = float(SkyCoord(a0["ra"] * u.deg, a0["dec"] * u.deg).separation(SkyCoord(a1["ra"] * u.deg, a1["dec"] * u.deg)).arcsec)
+            motion = {"arcsec": round(sep, 2), "native_px": round(sep / PIX_SCALE_NATIVE, 2), "days": round(a1["mjd"] - a0["mjd"], 1)}
+        target_info = {
+            "measured_motion": _measured_target_motion(photometry, astrom),
+            "id": target_id, "name": t_meta.get("name") or (user_astrometry or {}).get("name") or "Objetivo",
+            "astrometry": astrom, "distance_pc": t_meta.get("distance_pc"), "distance_ref": t_meta.get("distance_ref"),
+            "sptype": t_meta.get("sptype"), "teff_k_lit": t_meta.get("teff_k_lit"), "teff_ref": t_meta.get("teff_ref"),
+            "object_kind": t_meta.get("object_kind", "generic"), "saturates": bool(t_meta.get("saturates")),
+            "prompt_epoch_note": t_meta.get("prompt_epoch_note"), "prompt_epoch_note_en": t_meta.get("prompt_epoch_note_en"),
+            "expected_motion": motion,
+        }
+    good_phot = [p for p in photometry if p["quality"] in ("good", "warning")]
+    sat_phot = [p for p in photometry if p["quality"] == "saturated"]
+    if photometry and len(sat_phot) >= max(1, len(photometry) // 2):
+        notes.append({"level": "warn", "es": f"El objetivo aparece saturado en {len(sat_phot)} de {len(photometry)} exposiciones: su flujo no es fiable (la posición sí).",
+                      "en": f"The target appears saturated in {len(sat_phot)} of {len(photometry)} exposures: its flux is not reliable (its position is)."})
+    if not tap_ok and data_mode != "l2b":
+        notes.append({"level": "warn", "es": "IRSA (TAP y SIA) no respondió: " + str(_TAP_STATUS.get("error") or "sin detalle"), "en": "IRSA (TAP and SIA) did not respond: " + str(_TAP_STATUS.get("error") or "no detail")})
+    elif tap_ok and _TAP_STATUS.get("via") == "SIA":
+        notes.append({"level": "info", "es": "Exposiciones obtenidas con el servicio SIA de IRSA (TAP no respondió).", "en": "Exposures retrieved with the IRSA SIA service (TAP did not respond)."})
+
+    light_curve = build_light_curve(photometry)
+    quality = _build_data_quality(items, epochs_out, photometry, all_rows, tap_ok, data_mode)
+    mpc = _build_mpc_report(candidates, items, epochs_out, target_info)
+
+    band_summary = {}
+    for d_key, d_info in DETECTOR_INFO.items():
+        band_summary[d_key] = {**d_info, "count": (sum(1 for r in all_cov if r["band"] == d_key) if tap_ok else None)}
+
+    result_payload = {
+        "ra": ra, "dec": dec, "fov_deg": size_deg, "shape": [ny, nx], "pix_scale_arcsec": round(pix_arcsec, 4),
+        "wcs": {"crval": [ra, dec], "crpix": [nx / 2.0 + 0.5, ny / 2.0 + 0.5], "cdelt": [-pix_arcsec / 3600.0, pix_arcsec / 3600.0]},
+        "stats": {"p01": p01, "p05": p05, "p50": p50, "p95": p95, "p995": p995, "sky_med": round(sky_med, 6), "sky_sigma": round(sky_sigma, 6)},
+        "data_mode": data_mode,
+        "data_source": {"l2b": "SPHEREx L2b (IRSA / AWS S3)", "dr1_static": "SPHEREx DR1 All-Sky Cube (co-adición estática)"}.get(data_mode, "—"),
+        "notes": notes,
+        "tap_status": {"ok": tap_ok, "error": _TAP_STATUS.get("error")},
+        "requested_bands": norm_bands, "release": release,
+        "total_matching_irsa": len(all_rows), "total_all_bands_irsa": len(all_cov) if tap_ok else None,
+        "used_exposures": len(items),
+        "epochs": epochs_out,
+        "target": target_info,
+        "target_track": target_track,
+        "reference_targets_in_field": [{"id": t["id"], "name": t["name"]} for t in refs_in_field],
+        "photometry": photometry,
+        "spectrum": sorted([p for p in photometry if p.get("wavelength_um")], key=lambda s: s["wavelength_um"]),
+        "light_curve": light_curve,
+        "band_summary": band_summary,
+        "flag_definitions": FLAG_DEFINITIONS,
+        "masks": {"display_reject": list(DISPLAY_REJECT_NAMES), "photometry": list(PHOT_MASK_NAMES)},
+        "candidates": candidates,
+        "recognized_objects": recognized,
+        "catalogs_ok": bool(catalogs.get("ok")),
+        "data_quality": quality,
+        "mpc_report": mpc["lines"],
+        "mpc_info": mpc,
+        "photometry_summary": {"n": len(photometry), "n_detected": len(good_phot), "n_saturated": len(sat_phot),
+                               "median_snr": round(float(np.median([p["snr"] for p in good_phot])), 2) if good_phot else None},
+        "dois": IRSA_DOIS,
+    }
+    result_payload["math_telemetry"] = _build_equations(result_payload)
+    result_payload["elapsed_sec"] = round(time.time() - t0, 2)
+    result_payload["ai_analysis_es"] = generate_ai_preliminary_analysis(result_payload, lang="es")
+    result_payload["ai_analysis_en"] = generate_ai_preliminary_analysis(result_payload, lang="en")
+
+    memo_key = f"{ra:.4f}_{dec:.4f}_{size_deg:.3f}_{','.join(norm_bands)}"
     _CUBE_MEMO[memo_key] = {
-        "items": reprojected_items,
-        "shape": shape,
-        "pix_arcsec": pix_arcsec,
-        "wcs": common_wcs,
+        "rows": [it["row"] for it in items], "fetch_args": (ra, dec, size_deg), "shape": shape, "pix_arcsec": pix_arcsec,
+        "wcs": common_wcs, "target_track": target_track, "astrometry": astrom, "target_id": target_id,
     }
     if memo_key in _CUBE_MEMO_ORDER:
         _CUBE_MEMO_ORDER.remove(memo_key)
     _CUBE_MEMO_ORDER.append(memo_key)
-    while len(_CUBE_MEMO_ORDER) > 6:
-        old_k = _CUBE_MEMO_ORDER.pop(0)
-        _CUBE_MEMO.pop(old_k, None)
+    while len(_CUBE_MEMO_ORDER) > 8:
+        _CUBE_MEMO.pop(_CUBE_MEMO_ORDER.pop(0), None)
 
-    # Agrupar exposiciones reproyectadas respetando el epoch_id balanceado por banda
-    by_ep_id: Dict[int, List[Dict[str, Any]]] = {}
-    for it in reprojected_items:
-        eid = int(it["row"].get("epoch_id", 0))
-        by_ep_id.setdefault(eid, []).append(it)
-    epoch_groups = [
-        sorted(by_ep_id[k], key=lambda x: x["row"]["t_min"])
-        for k in sorted(by_ep_id.keys())
-        if by_ep_id[k]
-    ]
-
-    epochs_out: List[Dict[str, Any]] = []
-    epoch_arrays: List[np.ndarray] = []
-
-    # Co-adición profunda multi-época para rellenar sin costuras cualquier esquina fuera del borde del detector
-    all_stack = np.array([it["rp_img"] for it in reprojected_items], dtype=np.float32)
-    with np.errstate(all="ignore"):
-        global_coadd = np.nanmedian(all_stack, axis=0).astype(np.float32)
-    finite_global = global_coadd[np.isfinite(global_coadd)]
-    bg_fill_med = float(np.median(finite_global)) if len(finite_global) else 0.0
-    bg_fill_mad = float(np.median(np.abs(finite_global - bg_fill_med))) if len(finite_global) else 0.015
-
-    # Si al arrastrar el cielo una parte del lienzo salió de la huella del recorte L2b cacheado,
-    # rellenar los bordes con el Cubo FITS All-Sky Oficial SPHEREx DR1 (Npix{ipix}_cube.fits) de NASA/IPAC IRSA.
-    dr1_ep_cache: Optional[List[np.ndarray]] = None
-    if np.any(~np.isfinite(global_coadd)):
+    if data_mode == "l2b":
+        _CUBE_RESP_CACHE[cube_hash] = result_payload
         try:
-            dr1_items, dr1_spec = fetch_official_dr1_allsky_fits_cube(
-                ra, dec, norm_bands, size_deg, common_wcs, shape, pix_arcsec
-            )
-            if not spectrum_points:
-                spectrum_points = dr1_spec
-            dr1_by_ep: Dict[int, List[np.ndarray]] = {}
-            for d_it in dr1_items:
-                dr1_by_ep.setdefault(int(d_it["row"].get("epoch_id", 0)), []).append(d_it["rp_img"])
-            dr1_ep_cache = []
-            for d_k in sorted(dr1_by_ep.keys()):
-                d_arr = np.mean(dr1_by_ep[d_k], axis=0).astype(np.float32)
-                d_med = float(np.median(d_arr))
-                d_mad = max(float(np.median(np.abs(d_arr - d_med))), 0.008)
-                scale_ratio = float(np.clip(max(bg_fill_mad, 0.012) / d_mad, 0.45, 2.5))
-                d_calibrated = (bg_fill_med + (d_arr - d_med) * scale_ratio).astype(np.float32)
-                dr1_ep_cache.append(d_calibrated)
+            with open(cube_cache_path, "w", encoding="utf-8") as f:
+                json.dump(result_payload, f)
         except Exception:
-            dr1_ep_cache = None
-
-    for idx_ep, grp in enumerate(epoch_groups):
-        stack = np.array([g["rp_img"] for g in grp], dtype=np.float32)
-        with np.errstate(all="ignore"):
-            ep_med = np.nanmedian(stack, axis=0).astype(np.float32)
-        nan_mask = ~np.isfinite(ep_med)
-        if np.any(nan_mask):
-            if dr1_ep_cache:
-                dr1_fill = dr1_ep_cache[idx_ep % len(dr1_ep_cache)]
-            else:
-                dr1_fill = np.full_like(ep_med, bg_fill_med)
-            fallback = np.where(np.isfinite(global_coadd), global_coadd, dr1_fill).astype(np.float32)
-            ep_clean = np.where(nan_mask, fallback, ep_med).astype(np.float32)
-        else:
-            ep_clean = ep_med.astype(np.float32)
-
-        # Unión OR de los flags de las exposiciones de la época
-        flg_or = np.bitwise_or.reduce([g["rp_flg"] for g in grp]).astype(np.int32)
-
-        mjds = [g["row"]["t_min"] for g in grp]
-        mjd_mean = float(np.mean(mjds))
-        date_str = Time(mjd_mean, format="mjd").iso[:10]
-        bands_in_ep = sorted({g["row"]["band"] for g in grp})
-
-        # Flujo de apertura en la imagen apilada de la época
-        yy, xx = np.ogrid[:ny, :nx]
-        r2 = (xx - cx) ** 2 + (yy - cy) ** 2
-        ap_m = r2 <= 2.5 ** 2
-        ann_m = (r2 >= 5.0 ** 2) & (r2 <= 9.0 ** 2)
-        bg_ep = float(np.median(ep_clean[ann_m]))
-        peak_ep = float(np.max(ep_clean[ap_m]) - bg_ep)
-        rms_ep = float(np.std(ep_clean[ann_m]))
-        pix_sr = (pix_arcsec / 206264.806247) ** 2
-        flux_ep_mjy = float(np.sum(ep_clean[ap_m] - bg_ep) * pix_sr * 1e9)
-
-        # Desglose de conteo de flags en esta época
-        flag_counts = {}
-        for fdef in FLAG_DEFINITIONS:
-            cnt = int(np.sum((flg_or & (1 << fdef["bit"])) != 0))
-            if cnt > 0:
-                flag_counts[fdef["name"]] = cnt
-
-        epoch_arrays.append(ep_clean)
-        epochs_out.append({
-            "index": idx_ep,
-            "mjd": round(mjd_mean, 4),
-            "date": date_str,
-            "mjd_min": round(min(mjds), 4),
-            "mjd_max": round(max(mjds), 4),
-            "n_exp": len(grp),
-            "bands": bands_in_ep,
-            "peak_sb_mjy_sr": round(peak_ep, 4),
-            "flux_mjy": round(flux_ep_mjy, 4),
-            "rms_mjy_sr": round(rms_ep, 4),
-            "snr": round(peak_ep / max(rms_ep, 1e-4), 2),
-            "mean_zodi": round(float(np.mean([g["zodi"] for g in grp])), 3),
-            "flag_counts": flag_counts,
-            "data_b64": base64.b64encode(ep_clean.tobytes()).decode("ascii"),
-            "flags_b64": base64.b64encode(flg_or.tobytes()).decode("ascii"),
-            "exposures": [
-                {
-                    "obs_id": g["row"]["obs_id"],
-                    "band": g["row"]["band"],
-                    "release": g["row"]["release"],
-                    "mjd": round(g["row"]["t_min"], 5),
-                    "date_iso": g["row"]["date_iso"],
-                    "wavelength_um": g["wavelength_um"],
-                    "bandwidth_um": g["bandwidth_um"],
-                    "zodi": round(g["zodi"], 2),
-                    "bad_pct": g["bad_frac"],
-                    "peak_sb": round(g["peak_sb"], 3) if np.isfinite(g["peak_sb"]) else None,
-                    "source": g["source"],
-                }
-                for g in grp
-            ],
-        })
-
-    # Estadísticas globales y ZScale robusto de cielo para renderizado HDR sin aplastar fuentes débiles
-    all_vals = np.concatenate([a.ravel() for a in epoch_arrays])
-    nonzero_vals = all_vals[np.abs(all_vals) > 1e-7]
-    if len(nonzero_vals) < 50:
-        nonzero_vals = all_vals
-    p01, p05, p50, p95, p995 = [float(x) for x in np.percentile(nonzero_vals, [1.0, 5.0, 50.0, 95.0, 99.5])]
-    sky_clip = nonzero_vals[(nonzero_vals >= p05) & (nonzero_vals <= np.percentile(nonzero_vals, 85.0))]
-    sky_med = float(np.median(sky_clip)) if len(sky_clip) else p50
-    sky_mad = float(np.median(np.abs(sky_clip - sky_med))) if len(sky_clip) else 0.02
-    sky_sigma = max(1.4826 * sky_mad, 0.008)
-
-    # Detectar automáticamente candidatos a objetos en movimiento (dipolos) o fuentes variables
-    candidates = detect_candidates(epoch_arrays, common_wcs, pix_arcsec)
-
-    # Cobertura total por detector en IRSA para informar en la interfaz
-    all_cov = query_spherex_exposures(ra, dec, bands=None, release="all")
-    band_summary = {}
-    for d_key, d_info in DETECTOR_INFO.items():
-        cnt = sum(1 for r in all_cov if r["band"] == d_key)
-        band_summary[d_key] = {**d_info, "count": cnt if cnt > 0 else 24}
-
-    elapsed = round(time.time() - t0, 2)
-    result_payload = {
-        "ra": ra,
-        "dec": dec,
-        "fov_deg": size_deg,
-        "shape": [ny, nx],
-        "pix_scale_arcsec": round(pix_arcsec, 4),
-        "wcs": {
-            "crval": [ra, dec],
-            "crpix": [nx / 2.0 + 0.5, ny / 2.0 + 0.5],
-            "cdelt": [-pix_arcsec / 3600.0, pix_arcsec / 3600.0],
-        },
-        "stats": {
-            "p01": p01,
-            "p05": p05,
-            "p50": p50,
-            "p95": p95,
-            "p995": p995,
-            "sky_med": round(sky_med, 5),
-            "sky_sigma": round(sky_sigma, 5),
-        },
-        "total_matching_irsa": len(all_rows),
-        "total_all_bands_irsa": len(all_cov),
-        "used_exposures": len(reprojected_items),
-        "elapsed_sec": elapsed,
-        "epochs": epochs_out,
-        "spectrum": sorted(spectrum_points, key=lambda s: s["wavelength_um"]),
-        "band_summary": band_summary,
-        "flag_definitions": FLAG_DEFINITIONS,
-        "candidates": candidates,
-    }
-    result_payload = _enrich_cube_scientific_metrics(result_payload)
-    result_payload["ai_analysis_es"] = generate_ai_preliminary_analysis(result_payload, lang="es")
-    result_payload["ai_analysis_en"] = generate_ai_preliminary_analysis(result_payload, lang="en")
-    _CUBE_RESP_CACHE[cube_hash] = result_payload
-    try:
-        with open(cube_cache_path, "w", encoding="utf-8") as f:
-            json.dump(result_payload, f)
-    except Exception:
-        pass
+            pass
     return result_payload
 
 
-def prewarm_reference_targets_async() -> None:
-    """Pre-calcula en segundo plano los cubos de los Objetivos de Referencia para respuesta en <0.02s."""
-    import threading
+SATCORE_SYS_ARCSEC = 0.7  # sistemático por eje y por visita del centroide del núcleo saturado (dispersión entre 8 visitas de R Dra)
 
-    def _worker():
-        for mpe in (5, 8):
-            for tgt in CHALLENGE_TARGETS:
-                try:
-                    build_sky_cube_and_spectrum(
-                        ra=float(tgt["ra"]),
-                        dec=float(tgt["dec"]),
-                        bands=list(tgt.get("recommended_bands", ["D1", "D2", "D3", "D4"])),
-                        size_deg=float(tgt.get("recommended_fov", 0.10)),
-                        max_per_epoch=mpe,
-                        release="all",
-                        gap_days=45.0,
-                    )
-                except Exception:
-                    pass
+
+def _measured_target_motion(photometry: List[Dict[str, Any]], astrom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Desplazamiento MEDIDO del objetivo entre la primera y la última visita (grupos separados > 30 d) a partir de las
+    posiciones medidas (ePSF o núcleo saturado), comparado con el predicho por la astrometría de catálogo entre las
+    mismas fechas. Error de cada visita = error estándar de sus exposiciones y, para el núcleo saturado, un sistemático
+    de SATCORE_SYS_ARCSEC por eje (la forma de la mancha saturada cambia con la orientación de la nave). Con ≥3 visitas
+    se ajusta un movimiento lineal ponderado a todas ellas; con 2, se restan sus medias.
+    """
+    pts = sorted([p for p in photometry if p.get("ra_meas") is not None and p.get("mjd")], key=lambda p: p["mjd"])
+    if len(pts) < 4:
+        return None
+    visits: List[List[Dict[str, Any]]] = [[pts[0]]]
+    for p in pts[1:]:
+        if p["mjd"] - visits[-1][-1]["mjd"] > 30.0:
+            visits.append([p])
+        else:
+            visits[-1].append(p)
+    ra_ref, dec_ref = pts[0]["ra_meas"], pts[0]["dec_meas"]
+    cosd = float(np.cos(np.deg2rad(dec_ref)))
+
+    def _off(p: Dict[str, Any]) -> Tuple[float, float]:
+        return (((p["ra_meas"] - ra_ref + 180.0) % 360.0 - 180.0) * cosd * 3600.0, (p["dec_meas"] - dec_ref) * 3600.0)
+
+    # Dispersión por exposición combinada (para visitas con una sola exposición)
+    res_x: List[float] = []
+    res_y: List[float] = []
+    for v in visits:
+        if len(v) >= 2:
+            o = np.array([_off(p) for p in v])
+            res_x += list(o[:, 0] - o[:, 0].mean())
+            res_y += list(o[:, 1] - o[:, 1].mean())
+    n_multi = sum(1 for v in visits if len(v) >= 2)
+    dof = len(res_x) - n_multi
+    pooled = (float(np.sqrt(np.sum(np.square(res_x)) / dof)), float(np.sqrt(np.sum(np.square(res_y)) / dof))) if dof > 0 else None
+
+    vstats = []
+    for v in visits:
+        o = np.array([_off(p) for p in v])
+        n = len(v)
+        if n >= 2:
+            ex, ey = float(np.std(o[:, 0], ddof=1) / np.sqrt(n)), float(np.std(o[:, 1], ddof=1) / np.sqrt(n))
+        elif pooled:
+            ex, ey = pooled
+        else:
+            continue
+        sysf = SATCORE_SYS_ARCSEC if any(p.get("astrometry_method") == "saturated_core" for p in v) else 0.0
+        vstats.append({"t": float(np.mean([p["mjd"] for p in v])), "x": float(o[:, 0].mean()), "y": float(o[:, 1].mean()),
+                       "ex": float(np.hypot(ex, sysf)), "ey": float(np.hypot(ey, sysf)), "n": n})
+    if len(vstats) < 2 or vstats[-1]["t"] - vstats[0]["t"] < 30.0:
+        return None
+    t0, t1 = vstats[0]["t"], vstats[-1]["t"]
+    chi2_red = None
+    if len(vstats) == 2:
+        a, b = vstats
+        dra, dde = b["x"] - a["x"], b["y"] - a["y"]
+        era, ede = float(np.hypot(a["ex"], b["ex"])), float(np.hypot(a["ey"], b["ey"]))
+    else:
+        tt = np.array([v["t"] for v in vstats]) - t0
+        span = t1 - t0
+        fits = []
+        chi = 0.0
+        for key, ekey in (("x", "ex"), ("y", "ey")):
+            yv = np.array([v[key] for v in vstats])
+            wv = 1.0 / np.array([v[ekey] for v in vstats]) ** 2
+            A = np.stack([np.ones_like(tt), tt], axis=1)
+            cov = np.linalg.inv(A.T @ (A * wv[:, None]))
+            coef = cov @ (A.T @ (yv * wv))
+            chi += float(np.sum((yv - A @ coef) ** 2 * wv))
+            fits.append((coef[1] * span, float(np.sqrt(cov[1, 1])) * span))
+        (dra, era), (dde, ede) = fits
+        chi2_red = round(chi / max(2 * (len(vstats) - 2), 1), 2)
+    sep = float(np.hypot(dra, dde))
+    err = float(np.sqrt((dra / sep) ** 2 * era ** 2 + (dde / sep) ** 2 * ede ** 2)) if sep > 0 else float(np.hypot(era, ede))
+    pr0, pd0 = propagate_astrometry(astrom, t0)
+    pr1, pd1 = propagate_astrometry(astrom, t1)
+    p_dra = ((pr1 - pr0 + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(0.5 * (pd0 + pd1))) * 3600.0
+    p_dde = (pd1 - pd0) * 3600.0
+    # Acuerdo con la predicción: diferencia vectorial en unidades de σ
+    diff_sigma = float(np.hypot((dra - p_dra) / max(era, 1e-3), (dde - p_dde) / max(ede, 1e-3)))
+    methods = sorted({p.get("astrometry_method", "epsf") for p in pts})
+    return {
+        "arcsec": round(sep, 2), "err_arcsec": round(err, 2),
+        "pa_deg": round(float(np.degrees(np.arctan2(dra, dde)) % 360.0), 1),
+        "dra_arcsec": round(float(dra), 2), "ddec_arcsec": round(float(dde), 2),
+        "err_dra_arcsec": round(float(era), 2), "err_ddec_arcsec": round(float(ede), 2),
+        "predicted_arcsec": round(float(np.hypot(p_dra, p_dde)), 2),
+        "predicted_pa_deg": round(float(np.degrees(np.arctan2(p_dra, p_dde)) % 360.0), 1),
+        "diff_sigma": round(diff_sigma, 1), "chi2_red": chi2_red,
+        "days": round(t1 - t0, 1), "n_visits": len(vstats), "n_first": vstats[0]["n"], "n_last": vstats[-1]["n"], "methods": methods,
+        "sys_floor_arcsec": SATCORE_SYS_ARCSEC if "saturated_core" in methods else 0.0,
+        "date_first": Time(t0, format="mjd").isot[:10], "date_last": Time(t1, format="mjd").isot[:10],
+    }
+
+
+def build_light_curve(photometry: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Curva de luz honesta: SPHEREx mide cada exposición a una λ distinta (filtro LVF), así que los puntos
+    se agrupan por canal DR1 (misma λ). La variabilidad solo se evalúa dentro de un mismo canal.
+    """
+    usable = [p for p in photometry if p.get("wavelength_um") and p.get("flux_ujy") is not None and p["quality"] in ("good", "warning") and not p.get("lvf_edge")]
+    by_ch: Dict[int, List[Dict[str, Any]]] = {}
+    for p in usable:
+        ch = dr1_channel_for_wavelength(p["wavelength_um"])
+        if ch is not None:
+            by_ch.setdefault(ch, []).append(p)
+    tbl = dr1_channel_table()
+    series = []
+    best = None
+    for ch, pts in sorted(by_ch.items()):
+        pts = sorted(pts, key=lambda q: q["mjd"])
+        entry = {"ch": ch, "wavelength_um": tbl[ch]["wavelength_um"], "band": f"D{tbl[ch]['detector']}",
+                 "points": [{"mjd": q["mjd"], "flux_ujy": q["flux_ujy"], "err_ujy": q["err_ujy"], "epoch_index": q.get("epoch_index"), "obs_id": q["obs_id"]} for q in pts]}
+        if len({q.get("epoch_index") for q in pts}) >= 2:
+            f = np.array([q["flux_ujy"] for q in pts])
+            e = np.array([q["err_ujy"] for q in pts])
+            wm = float(np.sum(f / e ** 2) / np.sum(1 / e ** 2))
+            chi2 = float(np.sum(((f - wm) / e) ** 2) / max(len(f) - 1, 1))
+            i_max, i_min = int(np.argmax(f)), int(np.argmin(f))
+            dsig = float((f[i_max] - f[i_min]) / np.hypot(e[i_max], e[i_min]))
+            entry.update({"chi2_red_const": round(chi2, 2), "max_change_sigma": round(dsig, 2),
+                          "max_ratio": round(float(f[i_max] / f[i_min]), 3) if f[i_min] > 0 else None})
+            if best is None or dsig > best["max_change_sigma"]:
+                best = {"ch": ch, "wavelength_um": entry["wavelength_um"], "max_change_sigma": round(dsig, 2), "max_ratio": entry.get("max_ratio")}
+        series.append(entry)
+    return {"series": series, "strongest_change": best, "n_points": len(usable),
+            "note_es": "Cada serie agrupa mediciones a la misma λ (canal DR1). No compares puntos de colores distintos como si fueran variabilidad.",
+            "note_en": "Each series groups measurements at the same λ (DR1 channel). Do not compare points of different colours as if they were variability."}
+
+
+def _annotate_candidates(cands: List[Dict[str, Any]], catalogs: Dict[str, Any], refs: List[Dict[str, Any]], epochs: List[Dict[str, Any]], common_wcs: WCS, pix_arcsec: float) -> None:
+    """Compara cada candidato con Gaia DR3 y con el movimiento predicho de los objetivos de referencia."""
+    if not cands or len(epochs) < 2:
+        return
+    mjd0, mjd1 = epochs[0]["mjd"], epochs[-1]["mjd"]
+    dt_yr = max((mjd1 - mjd0) / 365.25, 1e-3)
+    j0 = float(Time(mjd0, format="mjd").jyear)
+    j1 = float(Time(mjd1, format="mjd").jyear)
+    for c in cands:
+        c["notes_es"], c["notes_en"] = [], []
+        if c["type"] == "dipole":
+            c["pm_arcsec_yr"] = round(c["shift_arcsec"] / dt_yr, 2)
+            dx = c["px"] - c["px_old"]
+            dy = c["py"] - c["py_old"]
+            c["pa_deg"] = round(float(np.rad2deg(np.arctan2(-dx, dy)) % 360.0), 1)  # Norte arriba, Este a la izquierda
+            if c["shift_arcsec"] < PIX_SCALE_NATIVE:
+                c["notes_es"].append("Desplazamiento menor que 1 píxel nativo (6.15″): la medida es aproximada.")
+                c["notes_en"].append("Shift smaller than 1 native pixel (6.15″): the measurement is approximate.")
+        else:
+            c["pm_arcsec_yr"] = None
+            c["pa_deg"] = None
+        match = None
+        for t in refs:
+            ra0, de0 = propagate_astrometry(t["astrometry"], mjd0)
+            ra1, de1 = propagate_astrometry(t["astrometry"], mjd1)
+            d_now = SkyCoord(c["ra"] * u.deg, c["dec"] * u.deg).separation(SkyCoord(ra1 * u.deg, de1 * u.deg)).arcsec
+            if d_now <= 9.0:
+                pred = float(SkyCoord(ra0 * u.deg, de0 * u.deg).separation(SkyCoord(ra1 * u.deg, de1 * u.deg)).arcsec)
+                match = {"kind": "reference_target", "id": t["id"], "name": t["name"], "sep_arcsec": round(float(d_now), 2), "predicted_shift_arcsec": round(pred, 2)}
+                if c["type"] == "dipole":
+                    ok = abs(c["shift_arcsec"] - pred) <= max(0.5 * pred, 0.5 * PIX_SCALE_NATIVE)
+                    c["consistent_with_catalog_motion"] = bool(ok)
+                    c["notes_es"].append(f"Coincide con {t['name']}: desplazamiento predicho {pred:.1f}″, medido {c['shift_arcsec']:.1f}″ ({'consistente' if ok else 'no consistente'}).")
+                    c["notes_en"].append(f"Matches {t['name']}: predicted shift {pred:.1f}″, measured {c['shift_arcsec']:.1f}″ ({'consistent' if ok else 'not consistent'}).")
+                else:
+                    c["notes_es"].append(f"Coincide con {t['name']} (movimiento predicho entre épocas: {pred:.1f}″).")
+                    c["notes_en"].append(f"Matches {t['name']} (predicted motion between epochs: {pred:.1f}″).")
+                break
+        if match is None:
+            for g in catalogs.get("gaia", []):
+                ra_e, de_e = _propagate_linear(g["ra"], g["dec"], g["pmra"], g["pmdec"], 2016.0, j1)
+                d = float(np.hypot(((ra_e - c["ra"] + 180) % 360 - 180) * np.cos(np.deg2rad(c["dec"])), de_e - c["dec"]) * 3600.0)
+                if d <= 6.0:
+                    pm_tot = float(np.hypot(g["pmra"], g["pmdec"])) / 1000.0
+                    match = {"kind": "gaia", "id": g["id"], "sep_arcsec": round(d, 2), "gmag": g.get("gmag"), "pm_total_arcsec_yr": round(pm_tot, 3)}
+                    pred = pm_tot * (j1 - j0)
+                    c["notes_es"].append(f"Coincide con {g['id']} (G={g.get('gmag')}); su movimiento propio predice {pred:.2f}″ entre épocas.")
+                    c["notes_en"].append(f"Matches {g['id']} (G={g.get('gmag')}); its proper motion predicts {pred:.2f}″ between epochs.")
+                    if c["type"] == "dipole" and pred < 0.5 * PIX_SCALE_NATIVE:
+                        c["notes_es"].append("Una estrella con movimiento tan pequeño no produce un dipolo real: probablemente es un residuo (PSF o λ distinta entre épocas).")
+                        c["notes_en"].append("A star with such small motion cannot produce a real dipole: this is probably a residual (different PSF or λ between epochs).")
+                        c["likely_artifact"] = True
+                    break
+        c["catalog_match"] = match
+        if c["type"] == "variable":
+            c["notes_es"].append("Las épocas pueden tener λ distintas dentro de la banda: confirma la variabilidad en la curva de luz por canal.")
+            c["notes_en"].append("Epochs may have different λ within the band: confirm variability in the per-channel light curve.")
+
+
+def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[str, Any]], epochs: List[Dict[str, Any]], catalogs: Dict[str, Any]) -> None:
+    """
+    La imagen de diferencia solo PROPONE ubicaciones: con píxeles de 6.15″ (PSF submuestreada) el pico de una estrella
+    cambia mucho con la fase subpíxel y con la λ. Cada candidato se verifica midiendo, exposición por exposición,
+    centroide y flujo con la ePSF oficial:
+      - movimiento: desplazamiento de centroides entre la primera y la última época ≥ 3σ y ≥ 0.3 píxeles nativos;
+      - variabilidad: cambio de flujo ≥ 5σ entre mediciones a la MISMA λ (mismo canal DR1) en épocas distintas, en
+        al menos 2 pares independientes con el mismo signo, sin mediciones saturadas ni en el borde del detector/LVF.
+    """
+    if not cands or len(epochs) < 2:
+        for c in cands:
+            c["verification"] = "unverified"
+        return
+    first_ids = {e["obs_id"] for e in epochs[0]["exposures"]}
+    last_ids = {e["obs_id"] for e in epochs[-1]["exposures"]}
+    by_id = {it["row"]["obs_id"]: it for it in items}
+    for c in cands[:4]:
+        meas_first, meas_last = [], []
+        for oid in first_ids:
+            it = by_id.get(oid)
+            if it:
+                m = fit_source_position(it["cut"], c["ra_old"], c["dec_old"])
+                if m and m["snr"] >= 5:
+                    meas_first.append(m)
+        for oid in last_ids:
+            it = by_id.get(oid)
+            if it:
+                m = fit_source_position(it["cut"], c["ra"], c["dec"])
+                if m and m["snr"] >= 5:
+                    meas_last.append(m)
+        # Las mediciones con OVERFLOW/NONLINEAR/BLOOM no sirven para verificar: alrededor de una estrella saturada el
+        # ajuste cae en el núcleo o en el blooming, cuya forma cambia con la orientación de la nave entre visitas y
+        # produce "movimientos" de varios segundos de arco que no son reales (validado con RW Aur y R Dra).
+        n_sat = sum(1 for m in meas_first + meas_last if m["saturated"])
+        meas_first = [m for m in meas_first if not m["saturated"]]
+        meas_last = [m for m in meas_last if not m["saturated"]]
+        c["n_psf_saturated"] = n_sat
+        if n_sat and (not meas_first or not meas_last):
+            is_ref = (c.get("catalog_match") or {}).get("kind") == "reference_target"
+            if is_ref:
+                c["verification"] = "unverified"
+                c["label_es"] = "Estrella saturada: su movimiento se mide con el núcleo saturado"
+                c["label_en"] = "Saturated star: its motion is measured from the saturated core"
+            else:
+                c["verification"] = "not_confirmed"
+                c["likely_artifact"] = True
+                c["label_es"] = "Artefacto de estrella saturada (OVERFLOW/BLOOM)"
+                c["label_en"] = "Saturated-star artifact (OVERFLOW/BLOOM)"
+            c["notes_es"] = c.get("notes_es", []) + [f"{n_sat} mediciones caen en píxeles saturados o con blooming: no se usan para verificar movimiento ni variabilidad."]
+            c["notes_en"] = c.get("notes_en", []) + [f"{n_sat} measurements fall on saturated or bloomed pixels: they are not used to verify motion or variability."]
+            continue
+        c["n_psf_first"], c["n_psf_last"] = len(meas_first), len(meas_last)
+        if not meas_first or not meas_last:
+            c["verification"] = "unverified"
+            c["notes_es"] = c.get("notes_es", []) + ["No hay S/N ≥ 5 en las exposiciones individuales para verificar con la ePSF."]
+            c["notes_en"] = c.get("notes_en", []) + ["No S/N ≥ 5 in individual exposures to verify with the ePSF."]
+            continue
+
+        def _mean_pos(ms: List[Dict[str, Any]]) -> Tuple[float, float, float]:
+            wts = np.array([1.0 / m["pos_err_arcsec"] ** 2 for m in ms])
+            ra_m = float(np.sum([m["ra"] for m in ms] * wts) / wts.sum())
+            de_m = float(np.sum([m["dec"] for m in ms] * wts) / wts.sum())
+            return ra_m, de_m, float(1.0 / np.sqrt(wts.sum()))
+
+        r0, d0, e0 = _mean_pos(meas_first)
+        r1, d1, e1 = _mean_pos(meas_last)
+        shift = float(SkyCoord(r0 * u.deg, d0 * u.deg).separation(SkyCoord(r1 * u.deg, d1 * u.deg)).arcsec)
+        s_err = float(np.hypot(e0, e1))
+        c["psf_shift_arcsec"] = round(shift, 2)
+        c["psf_shift_err_arcsec"] = round(s_err, 2)
+        moving = shift >= max(3.0 * s_err, 0.3 * PIX_SCALE_NATIVE)
+        flux_change = None
+        pairs = []
+        for a in meas_first:
+            ca = dr1_channel_for_wavelength(a["wavelength_um"])
+            if a.get("lvf_edge") or a["saturated"]:
+                continue
+            for b in meas_last:
+                if b.get("lvf_edge") or b["saturated"]:
+                    continue
+                if ca is not None and ca == dr1_channel_for_wavelength(b["wavelength_um"]):
+                    sig = abs(b["flux_ujy"] - a["flux_ujy"]) / float(np.hypot(a["err_ujy"], b["err_ujy"]))
+                    pairs.append((sig, a, b))
+                    if flux_change is None or sig > flux_change["sigma"]:
+                        flux_change = {"sigma": round(sig, 1), "ratio": round(b["flux_ujy"] / a["flux_ujy"], 3) if a["flux_ujy"] > 0 else None, "wavelength_um": round(a["wavelength_um"], 3)}
+        # Pares independientes (sin repetir exposición) con cambio ≥ 5σ y el mismo signo: una sola medición anómala
+        # (rayo cósmico, borde del filtro) no basta para afirmar variabilidad.
+        used_a, used_b, n_up, n_down = set(), set(), 0, 0
+        for sig, a, b in sorted(pairs, key=lambda q: -q[0]):
+            if sig < 5 or id(a) in used_a or id(b) in used_b:
+                continue
+            used_a.add(id(a)); used_b.add(id(b))
+            if b["flux_ujy"] > a["flux_ujy"]:
+                n_up += 1
+            else:
+                n_down += 1
+        if flux_change is not None:
+            flux_change["n_pairs_5sigma"] = max(n_up, n_down)
+            flux_change["consistent"] = (n_up == 0 or n_down == 0)
+        c["psf_flux_change"] = flux_change
+        if moving:
+            c["verification"] = "confirmed_motion"
+            c["type"] = "dipole"
+            dt_yr = max((meas_last[0]["mjd"] - meas_first[0]["mjd"]) / 365.25, 1e-3)
+            c["pm_arcsec_yr"] = round(shift / dt_yr, 2)
+            c["label_es"] = f"Movimiento confirmado ({shift:.1f}″ ± {s_err:.1f}″)"
+            c["label_en"] = f"Confirmed motion ({shift:.1f}″ ± {s_err:.1f}″)"
+        elif flux_change and flux_change["sigma"] >= 5 and flux_change.get("n_pairs_5sigma", 0) >= 2 and flux_change.get("consistent"):
+            c["verification"] = "confirmed_variability"
+            c["type"] = "variable"
+            c["label_es"] = f"Variabilidad confirmada a {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ, {flux_change['n_pairs_5sigma']} pares)"
+            c["label_en"] = f"Confirmed variability at {flux_change['wavelength_um']} µm (×{flux_change['ratio']}, {flux_change['sigma']}σ, {flux_change['n_pairs_5sigma']} pairs)"
+        elif flux_change and flux_change["sigma"] >= 5:
+            c["verification"] = "unverified"
+            c["label_es"] = f"Posible variabilidad a {flux_change['wavelength_um']} µm ({flux_change['sigma']}σ en un solo par)"
+            c["label_en"] = f"Possible variability at {flux_change['wavelength_um']} µm ({flux_change['sigma']}σ in a single pair)"
+            c["notes_es"] = c.get("notes_es", []) + ["Un solo par de mediciones a igual λ supera 5σ: hace falta otra medición independiente para confirmarlo."]
+            c["notes_en"] = c.get("notes_en", []) + ["Only one same-λ pair exceeds 5σ: another independent measurement is needed to confirm it."]
+        else:
+            c["verification"] = "not_confirmed"
+            c["likely_artifact"] = True
+            c["label_es"] = "No confirmado (residuo de PSF/λ)"
+            c["label_en"] = "Not confirmed (PSF/λ residual)"
+            reason_es = f"La ePSF no muestra desplazamiento (medido {shift:.2f}″ ± {s_err:.2f}″)" + (
+                f" ni cambio de flujo a igual λ ({flux_change['sigma']}σ)." if flux_change else " y no hay mediciones a la misma λ en ambas épocas para evaluar variabilidad.")
+            reason_en = f"The ePSF shows no shift (measured {shift:.2f}″ ± {s_err:.2f}″)" + (
+                f" and no same-λ flux change ({flux_change['sigma']}σ)." if flux_change else " and there are no same-λ measurements in both epochs to assess variability.")
+            c["notes_es"] = c.get("notes_es", []) + [reason_es]
+            c["notes_en"] = c.get("notes_en", []) + [reason_en]
+    for c in cands[4:]:
+        c["verification"] = "unverified"
+
+
+def _build_data_quality(items: List[Dict[str, Any]], epochs: List[Dict[str, Any]], photometry: List[Dict[str, Any]], rows: List[Dict[str, Any]], tap_ok: bool, data_mode: str) -> Dict[str, Any]:
+    tot: Dict[str, int] = {}
+    for ep in epochs:
+        for k, v in ep.get("flag_counts", {}).items():
+            tot[k] = tot.get(k, 0) + int(v)
+    n_epsf = sum(1 for it in items if it["cut"].get("psf") is not None)
+    he_hits = sum(1 for p in photometry if p.get("wavelength_um") and p.get("bandwidth_um") and abs(p["wavelength_um"] - 1.083) <= p["bandwidth_um"])
+    sat = sum(1 for p in photometry if p["quality"] == "saturated")
+    zodi = [it["zodi"] for it in items]
+    via = {"TAP": "TAP", "SIA": "SIA", "caché": "caché local de una consulta TAP/SIA"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    via_en = {"TAP": "TAP", "SIA": "SIA", "caché": "local cache of a TAP/SIA query"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    checks = [
+        {"id": "source", "status": data_mode.upper(), "title_es": "Origen de los datos", "title_en": "Data origin",
+         "metric": f"{len(items)} exp L2b" if data_mode == "l2b" else "DR1 estático",
+         "metric_en": f"{len(items)} L2b exp" if data_mode == "l2b" else "Static DR1",
+         "desc_es": (f"IRSA ({via}): {len(rows)} exposiciones encontradas en las bandas pedidas.") if tap_ok else "IRSA (TAP y SIA) no respondió.",
+         "desc_en": (f"IRSA ({via_en}): {len(rows)} exposures found in the requested bands.") if tap_ok else "IRSA (TAP and SIA) did not respond."},
+        {"id": "zodi", "status": "SUBTRACTED" if zodi else "N/A", "title_es": "Luz zodiacal (extensión ZODI)", "title_en": "Zodiacal light (ZODI layer)",
+         "metric": f"{np.mean(zodi):.3f} MJy/sr" if zodi else "—",
+         "desc_es": "Modelo oficial restado píxel a píxel en cada exposición. La línea atmosférica de He I (1.083 µm) y la auroral NO se modelan.",
+         "desc_en": "Official model subtracted pixel by pixel in each exposure. The atmospheric He I (1.083 µm) and auroral lines are NOT modelled."},
+        {"id": "masked", "status": "MASKED", "title_es": "Píxeles rechazados (lista oficial del cubo DR1)", "title_en": "Rejected pixels (official DR1 cube list)",
+         "metric": f"{np.mean([it['bad_frac'] for it in items]):.2f} %" if items else "—",
+         "desc_es": "Se rechazan " + ", ".join(DISPLAY_REJECT_NAMES) + ". SOURCE, OVERFLOW y OUTLIER se conservan.",
+         "desc_en": "Rejected: " + ", ".join(DISPLAY_REJECT_NAMES) + ". SOURCE, OVERFLOW and OUTLIER are kept."},
+        {"id": "epsf", "status": "OFFICIAL" if items and n_epsf == len(items) else ("PARTIAL" if n_epsf else "GAUSSIAN"), "title_es": "PSF para fotometría", "title_en": "PSF used for photometry",
+         "metric": f"{n_epsf}/{len(items)} ePSF oficial" if items else "—",
+         "metric_en": f"{n_epsf}/{len(items)} official ePSF" if items else "—",
+         "desc_es": "ePSF oficial de la zona del detector (5× sobremuestreada). Si no está disponible se usa una gaussiana con el PSF_FWHM de la cabecera.",
+         "desc_en": "Official ePSF of the detector zone (5× oversampled). If unavailable, a Gaussian with the header PSF_FWHM is used."},
+        {"id": "saturation", "status": "WARN" if sat else "OK", "title_es": "Saturación del objetivo", "title_en": "Target saturation",
+         "metric": f"{sat}/{len(photometry)} exp" if photometry else "—",
+         "desc_es": "Exposiciones con OVERFLOW/NONLINEAR/BLOOM o núcleo sin datos en r ≤ 1.2 px: su flujo no es fiable.",
+         "desc_en": "Exposures with OVERFLOW/NONLINEAR/BLOOM or a core without data within r ≤ 1.2 px: their flux is not reliable."},
+        {"id": "streaks", "status": "INFO", "title_es": "Satélites y artefactos", "title_en": "Satellites and artifacts",
+         "metric": f"STREAK {tot.get('STREAK', 0)} · SAT_HALO {tot.get('SATELLITE_HALO', 0)} · BLOOM {tot.get('BLOOM', 0)} · SNOWBALL {tot.get('SNOWBALL', 0)} px",
+         "desc_es": "Recuento de píxeles marcados por el pipeline oficial en la grilla común (unión de cada época).",
+         "desc_en": "Count of pixels flagged by the official pipeline on the common grid (union per epoch)."},
+        {"id": "dichroic", "status": "INFO", "title_es": "Borde dicroico y He I", "title_en": "Dichroic edge and He I",
+         "metric": f"DICHROIC {tot.get('DICHROIC', 0)} px · He I {he_hits} exp",
+         "desc_es": "Los canales 50–51 del cubo DR1 están vacíos. Las mediciones cerca de 1.083 µm pueden estar contaminadas por He I atmosférico.",
+         "desc_en": "DR1 cube channels 50–51 are blank. Measurements near 1.083 µm may be contaminated by atmospheric He I."},
+    ]
+    return {"checks": checks, "flag_totals": tot}
+
+
+def _build_mpc_report(cands: List[Dict[str, Any]], items: List[Dict[str, Any]], epochs: List[Dict[str, Any]], target_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Solo genera registros MPC para candidatos dipolares SIN contrapartida estelar (Gaia u objetivo de referencia),
+    con astrometría medida en cada exposición (S/N ≥ 5) y la posición geocéntrica de SPHEREx de la cabecera FITS.
+    """
+    base = {"lines": [], "eligible": False, "obs_code": MPC_OBS_CODE_SPHEREX,
+            "disclaimer_es": "El MPC solo acepta astrometría de objetos del Sistema Solar y exige verificación y un observador registrado. Estos registros son un borrador técnico.",
+            "disclaimer_en": "The MPC only accepts astrometry of Solar System objects and requires verification and a registered observer. These records are a technical draft."}
+    if target_info and target_info.get("object_kind") in ("brown_dwarf", "star", "variable"):
+        base["reason_es"] = "El objetivo es una estrella o enana marrón: el MPC no registra astrometría estelar."
+        base["reason_en"] = "The target is a star or brown dwarf: the MPC does not record stellar astrometry."
+        return base
+    elig = [c for c in cands if c.get("verification") == "confirmed_motion" and not c.get("catalog_match")]
+    if not elig:
+        base["reason_es"] = "No hay candidatos en movimiento sin contrapartida estelar conocida."
+        base["reason_en"] = "There are no moving candidates without a known stellar counterpart."
+        return base
+    c = elig[0]
+    lines: List[str] = []
+    first_ids = {e["obs_id"] for e in epochs[0]["exposures"]}
+    last_ids = {e["obs_id"] for e in epochs[-1]["exposures"]}
+    for it in items:
+        oid = it["row"]["obs_id"]
+        if oid in first_ids:
+            ra_g, de_g = c["ra_old"], c["dec_old"]
+        elif oid in last_ids:
+            ra_g, de_g = c["ra"], c["dec"]
+        else:
+            continue
+        ph = forced_photometry_cut(it["cut"], ra_g, de_g, fit_position=True)
+        sc = spacecraft_position_mid(it["cut"]["meta"])
+        if ph.get("snr") and ph["snr"] >= 5 and ph.get("ra_meas") is not None and sc is not None:
+            lines.extend(format_mpc_satellite_obs(f"SPX{c['rank']:04d}", float(it["cut"]["meta"]["mjd_avg"]), ph["ra_meas"], ph["dec_meas"], sc))
+    base.update({"lines": lines, "eligible": bool(lines), "candidate_rank": c["rank"]})
+    if not lines:
+        base["reason_es"] = "El candidato no alcanza S/N ≥ 5 en las exposiciones individuales."
+        base["reason_en"] = "The candidate does not reach S/N ≥ 5 in individual exposures."
+    return base
+
+
+def _build_equations(cube: Dict[str, Any]) -> Dict[str, Any]:
+    """Ecuaciones implementadas con su valor en vivo (ES/EN), calculado solo con datos del cubo actual."""
+    ps = cube.get("photometry_summary", {})
+    good = [p for p in cube.get("photometry", []) if p["quality"] in ("good", "warning")]
+    best = max(good, key=lambda p: p["snr"]) if good else None
+    eps = cube.get("epochs", [])
+    zodi = np.mean([e["mean_zodi"] for e in eps]) if eps else 0.0
+    cands = cube.get("candidates", [])
+    tgt = cube.get("target") or {}
+    mot = tgt.get("expected_motion")
+    meas = tgt.get("measured_motion")
+    if best:
+        psf_es = f"F = {best['flux_ujy']:.1f} ± {best['err_ujy']:.1f} µJy (S/N {best['snr']:.1f}, λ = {best['wavelength_um']} µm)"
+        psf_en = psf_es
+    else:
+        psf_es, psf_en = "Sin detecciones con S/N ≥ 3", "No detections with S/N ≥ 3"
+    if best and best.get("ab_mag"):
+        ab_es = ab_en = f"m_AB = {best['ab_mag']} ± {best['ab_mag_err']} · Ω_pix = {best.get('pix_solid_angle_sr', SOLID_ANGLE_SR):.3e} sr"
+    else:
+        ab_es, ab_en = f"Ω_pix nominal = {SOLID_ANGLE_SR:.3e} sr", f"Nominal Ω_pix = {SOLID_ANGLE_SR:.3e} sr"
+    lvf_es = f"{ps.get('n', 0)} mediciones · {ps.get('n_detected', 0)} detecciones · {ps.get('n_saturated', 0)} saturadas"
+    lvf_en = f"{ps.get('n', 0)} measurements · {ps.get('n_detected', 0)} detections · {ps.get('n_saturated', 0)} saturated"
+    if mot:
+        pm_es = f"Predicho entre la 1.ª y la última época: {mot['arcsec']}″ = {mot['native_px']} px nativos"
+        pm_en = f"Predicted between the first and last epoch: {mot['arcsec']}″ = {mot['native_px']} native px"
+        if meas:
+            pm_es += (f" · Medido por SPHEREx ({meas['n_visits']} visitas): {meas['arcsec']} ± {meas['err_arcsec']}″ (AP {meas['pa_deg']}°) frente a "
+                      f"{meas['predicted_arcsec']}″ (AP {meas['predicted_pa_deg']}°) en {meas['days']} d; diferencia {meas['diff_sigma']}σ")
+            pm_en += (f" · Measured by SPHEREx ({meas['n_visits']} visits): {meas['arcsec']} ± {meas['err_arcsec']}″ (PA {meas['pa_deg']}°) vs "
+                      f"{meas['predicted_arcsec']}″ (PA {meas['predicted_pa_deg']}°) in {meas['days']} d; difference {meas['diff_sigma']}σ")
+    else:
+        pm_es, pm_en = "Sin movimiento propio asociado", "No associated proper motion"
+    if cands:
+        dip_es = f"#1: {cands[0]['snr_diff']}σ ({cands[0]['label_es']})"
+        dip_en = f"#1: {cands[0]['snr_diff']}σ ({cands[0].get('label_en', cands[0]['label_es'])})"
+    else:
+        sig = cube.get("stats", {}).get("sky_sigma", 0)
+        dip_es, dip_en = f"σ_cielo = {sig:.4f} MJy/sr", f"σ_sky = {sig:.4f} MJy/sr"
+    eqs = [
+        {"id": "eq_zodi", "title_es": "1. Resta de luz zodiacal y máscara oficial", "title_en": "1. Zodiacal-light subtraction and official mask",
+         "formula": "I(x,y) = IMAGE − ZODI ;  píxel rechazado si FLAGS ∧ M_oficial ≠ 0",
+         "formula_en": "I(x,y) = IMAGE − ZODI ;  pixel rejected if FLAGS ∧ M_official ≠ 0",
+         "live_value": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr", "live_value_en": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr"},
+        {"id": "eq_psf", "title_es": "2. Fotometría PSF forzada (método del pipeline SPHEREx)", "title_en": "2. Forced PSF photometry (SPHEREx pipeline method)",
+         "formula": "d_j = F·P_eff(x_j − x⋆) + B ;  θ = (AᵀWA)⁻¹AᵀWd ,  W = 1/VARIANCE",
+         "formula_en": "d_j = F·P_eff(x_j − x⋆) + B ;  θ = (AᵀWA)⁻¹AᵀWd ,  W = 1/VARIANCE",
+         "live_value": psf_es, "live_value_en": psf_en},
+        {"id": "eq_abmag", "title_es": "3. Flujo y magnitud AB", "title_en": "3. Flux and AB magnitude",
+         "formula": "F_µJy = F·Ω_pix·10¹² ;  σ² = σ_stat² + (0.03F)² ;  m_AB = 23.9 − 2.5·log₁₀ F_µJy",
+         "formula_en": "F_µJy = F·Ω_pix·10¹² ;  σ² = σ_stat² + (0.03F)² ;  m_AB = 23.9 − 2.5·log₁₀ F_µJy",
+         "live_value": ab_es, "live_value_en": ab_en},
+        {"id": "eq_lvf", "title_es": "4. Longitud de onda en la posición de la fuente (WCS-WAVE)", "title_en": "4. Wavelength at the source position (WCS-WAVE)",
+         "formula": "λ(x,y) = Σ w_ij(t_x,t_y)·V(i,j)  (tabla oficial, error ≤ 5 % del ancho de banda)",
+         "formula_en": "λ(x,y) = Σ w_ij(t_x,t_y)·V(i,j)  (official table, error ≤ 5 % of the bandwidth)",
+         "live_value": lvf_es, "live_value_en": lvf_en},
+        {"id": "eq_pm", "title_es": "5. Propagación de la posición (movimiento propio)", "title_en": "5. Position propagation (proper motion)",
+         "formula": "(α, δ)(t) = apply_space_motion(α₀, δ₀, μ_α*, μ_δ, ϖ, v_r; t₀ → t)",
+         "formula_en": "(α, δ)(t) = apply_space_motion(α₀, δ₀, μ_α*, μ_δ, ϖ, v_r; t₀ → t)",
+         "live_value": pm_es, "live_value_en": pm_en},
+        {"id": "eq_dipole", "title_es": "6. Imagen de diferencia y significancia", "title_en": "6. Difference image and significance",
+         "formula": "ΔI = E_n − E_1 ;  σ_MAD = 1.4826·med|ΔI − med ΔI| ;  umbral 5σ",
+         "formula_en": "ΔI = E_n − E_1 ;  σ_MAD = 1.4826·med|ΔI − med ΔI| ;  5σ threshold",
+         "live_value": dip_es, "live_value_en": dip_en},
+    ]
+    return {"equations": eqs, "dois": IRSA_DOIS}
+
+
+def prewarm_reference_targets_async() -> None:
+    """Precalcula en segundo plano los cubos y espectros DR1 de los objetivos de referencia."""
+
+    def _worker() -> None:
+        for tgt in CHALLENGE_TARGETS:
+            if not tgt.get("astrometry"):
+                continue
+            try:
+                build_sky_cube_and_spectrum(
+                    ra=float(tgt["ra"]), dec=float(tgt["dec"]),
+                    bands=list(tgt.get("recommended_bands", ["D1", "D2", "D3", "D4"])),
+                    size_deg=float(tgt.get("recommended_fov", 0.10)), max_per_epoch=5, release="all", gap_days=45.0,
+                    target_id=tgt["id"],
+                )
+            except Exception:
+                pass
+            try:
+                ra_d, de_d = propagate_astrometry(tgt["astrometry"], 0.5 * (DR1_MJD_RANGE[0] + DR1_MJD_RANGE[1]))
+                dr1_point_spectrum(ra_d, de_d, tgt.get("object_kind", "generic"))
+            except Exception:
+                pass
 
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def extract_point_spectrum(
-    ra: float,
-    dec: float,
-    bands: List[str],
-    size_deg: float,
-    px: int,
-    py: int,
-) -> Dict[str, Any]:
+def extract_point_spectrum(ra: float, dec: float, bands: List[str], size_deg: float, px: int, py: int) -> Dict[str, Any]:
     """
-    Extrae al vuelo el espectro infrarrojo LVF (0.75-5.0 µm) y fotometría forzada PSF 15x15
-    en CUALQUIER píxel (px, py) en el que el usuario haga clic sobre el lienzo.
+    Fotometría PSF forzada por exposición en el píxel (px, py) donde hizo clic el usuario. Si el clic cae
+    sobre la posición predicha de un objetivo de referencia, se usa su astrometría (con movimiento propio).
     """
     norm_b = sorted({b.upper().replace("SPHEREX-", "") for b in (bands or ["D1", "D2", "D3", "D4"])})
     memo_key = f"{ra:.4f}_{dec:.4f}_{size_deg:.3f}_{','.join(norm_b)}"
     memo = _CUBE_MEMO.get(memo_key)
     if not memo:
-        # Buscar coincidencia por coordenadas cercanas
-        for k, v in _CUBE_MEMO.items():
-            if k.startswith(f"{ra:.4f}_{dec:.4f}_"):
-                memo = v
-                break
-    if not memo:
         try:
-            build_sky_cube_and_spectrum(
-                ra, dec, norm_b, size_deg=size_deg, max_per_epoch=5, gap_days=45.0, force_reproject=True
-            )
+            build_sky_cube_and_spectrum(ra, dec, norm_b, size_deg=size_deg, max_per_epoch=5, gap_days=45.0)
             memo = _CUBE_MEMO.get(memo_key)
         except Exception:
-            pass
-    if not memo:
-        return {"spectrum": [], "px": px, "py": py}
-
+            memo = None
+    if not memo or not memo.get("rows"):
+        return {"spectrum": [], "px": px, "py": py, "error": "Sin exposiciones L2b en memoria para este campo."}
     ny, nx = memo["shape"]
-    pix_arcsec = memo["pix_arcsec"]
     wcs: WCS = memo["wcs"]
     px_c = int(np.clip(px, 0, nx - 1))
     py_c = int(np.clip(py, 0, ny - 1))
-    ra_pt, dec_pt = wcs.pixel_to_world_values(px_c, py_c)
-
-    yy, xx = np.ogrid[:ny, :nx]
-    r2 = (xx - px_c) ** 2 + (yy - py_c) ** 2
-    pix_sr = (pix_arcsec / 206264.806247) ** 2
-
+    ra_pt, dec_pt = [float(v) for v in wcs.pixel_to_world_values(px_c, py_c)]
+    astrom = None
+    for tr in memo.get("target_track", []):
+        if np.hypot(tr["px"] - px_c, tr["py"] - py_c) <= 3.0 and memo.get("astrometry"):
+            astrom = memo["astrometry"]
+            break
+    fra, fdec, fsize = memo["fetch_args"]
     pts: List[Dict[str, Any]] = []
-    imgs_for_psf: List[np.ndarray] = []
-    for item in memo["items"]:
-        rp_norm = item["rp_img"]
-        imgs_for_psf.append(rp_norm)
-        row = item["row"]
-        ap_mask = (r2 <= 2.5 ** 2) & np.isfinite(rp_norm)
-        if not np.any(ap_mask):
-            ap_mask = (r2 <= 5.5 ** 2) & np.isfinite(rp_norm)
-        ann_mask = (r2 >= 5.5 ** 2) & (r2 <= 9.5 ** 2) & np.isfinite(rp_norm)
-        local_bg = float(np.nanmedian(rp_norm[ann_mask])) if np.any(ann_mask) else 0.0
-        if np.any(ap_mask):
-            peak_sb = float(np.nanmax(rp_norm[ap_mask]) - local_bg)
-            ap_flux_mjy = float(np.nansum(rp_norm[ap_mask] - local_bg) * pix_sr * 1e9)
-            noise_sb = float(np.nanstd(rp_norm[ann_mask])) if np.sum(ann_mask) > 5 else 0.05
-            if np.isfinite(peak_sb) and peak_sb > -50:
-                pts.append({
-                    "obs_id": row["obs_id"],
-                    "band": row["band"],
-                    "mjd": round(row["t_min"], 5),
-                    "date_iso": row["date_iso"],
-                    "wavelength_um": item["wavelength_um"],
-                    "bandwidth_um": item["bandwidth_um"],
-                    "sb_mjy_sr": round(peak_sb, 4),
-                    "flux_mjy": round(ap_flux_mjy, 4) if np.isfinite(ap_flux_mjy) else 0.0,
-                    "err_mjy_sr": round(max(noise_sb, 0.01), 4),
-                })
-
-    with np.errstate(all="ignore"):
-        med_img = (
-            np.nanmedian(np.array(imgs_for_psf, dtype=np.float32), axis=0)
-            if imgs_for_psf
-            else np.zeros((ny, nx), dtype=np.float32)
-        )
-    forced_psf = compute_forced_psf_photometry(np.nan_to_num(med_img, nan=0.0), px_c, py_c, pix_arcsec)
-
+    for row in memo["rows"]:
+        cut = _safe_fetch(row, fra, fdec, fsize)
+        if cut is None:
+            continue
+        mjd = float(cut["meta"].get("mjd_avg") or row["t_min"])
+        r_t, d_t = propagate_astrometry(astrom, mjd) if astrom else (ra_pt, dec_pt)
+        pts.append(forced_photometry_cut(cut, r_t, d_t, fit_position=True))
+    pts = [p for p in pts if p.get("wavelength_um")]
+    good = [p for p in pts if p["quality"] in ("good", "warning")]
+    best = max(good, key=lambda p: p["snr"]) if good else None
     return {
-        "px": px_c,
-        "py": py_c,
-        "ra": round(float(ra_pt), 5),
-        "dec": round(float(dec_pt), 5),
-        "forced_psf": forced_psf,
-        "flux_ujy": forced_psf["flux_ujy"],
-        "ab_mag": forced_psf["ab_mag"],
-        "fwhm_arcsec": forced_psf["fwhm_arcsec"],
-        "fit_ql": forced_psf["fit_ql"],
+        "px": px_c, "py": py_c, "ra": round(ra_pt, 6), "dec": round(dec_pt, 6),
+        "uses_target_astrometry": bool(astrom),
         "spectrum": sorted(pts, key=lambda s: s["wavelength_um"]),
+        "light_curve": build_light_curve(pts),
+        "best": best,
+        "flux_ujy": best["flux_ujy"] if best else None,
+        "ab_mag": best["ab_mag"] if best else None,
+        "fwhm_arcsec": best.get("psf_fwhm_arcsec") if best else None,
+        "fit_ql": best["quality"] if best else None,
     }
 
 
-def query_external_catalogs(ra: float, dec: float, fov_deg: float, wcs_info: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Consulta Gaia DR3 (I/355/gaiadr3) y AllWISE (II/328/allwise) vía CDS VizieR TAP
-    para superponer fuentes externas y vectores de movimiento propio sobre el lienzo WCS.
-    """
-    radius_deg = min(max(fov_deg * 0.72, 0.03), 0.25)
-    ckey = f"cat_{ra:.4f}_{dec:.4f}_{radius_deg:.3f}"
-    cfile = os.path.join(CACHE_DIR, "catalogs", f"{ckey}.json")
-
-    raw_data: Optional[Dict[str, Any]] = None
-    if os.path.exists(cfile):
-        try:
-            with open(cfile, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-        except Exception:
-            raw_data = None
-
-    if raw_data is None:
-        gaia_list: List[Dict[str, Any]] = []
-        wise_list: List[Dict[str, Any]] = []
-
-        # 1. Gaia DR3 (timeout corto de 4s para no bloquear si VizieR está en mantenimiento)
-        try:
-            q_gaia = (
-                'SELECT TOP 80 Source, RA_ICRS, DE_ICRS, Gmag, "BP-RP" AS bprp, pmRA, pmDE, Plx '
-                'FROM "I/355/gaiadr3" '
-                f"WHERE 1=CONTAINS(POINT('ICRS', RA_ICRS, DE_ICRS), CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {radius_deg:.5f})) "
-                "ORDER BY Gmag ASC"
-            )
-            rg = requests.post(
-                VIZIER_TAP,
-                data={"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": q_gaia},
-                timeout=3.5,
-            )
-            if rg.ok and "RA_ICRS" in rg.text:
-                for row in csv.DictReader(io.StringIO(rg.text)):
-                    if not row.get("RA_ICRS") or not row.get("DE_ICRS"):
-                        continue
-                    gaia_list.append({
-                        "id": f"Gaia DR3 {row.get('Source', '')}",
-                        "ra": float(row["RA_ICRS"]),
-                        "dec": float(row["DE_ICRS"]),
-                        "gmag": float(row["Gmag"]) if row.get("Gmag") else None,
-                        "bprp": float(row["bprp"]) if row.get("bprp") else None,
-                        "pmra": float(row["pmRA"]) if row.get("pmRA") else 0.0,
-                        "pmdec": float(row["pmDE"]) if row.get("pmDE") else 0.0,
-                        "plx": float(row["Plx"]) if row.get("Plx") else None,
-                    })
-        except Exception:
-            pass
-
-        # 2. AllWISE (timeout corto de 3.5s)
-        try:
-            q_wise = (
-                'SELECT TOP 80 AllWISE, RAJ2000, DEJ2000, W1mag, W2mag, W3mag, pmRA, pmDE '
-                'FROM "II/328/allwise" '
-                f"WHERE 1=CONTAINS(POINT('ICRS', RAJ2000, DEJ2000), CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {radius_deg:.5f})) "
-                "ORDER BY W2mag ASC"
-            )
-            rw = requests.post(
-                VIZIER_TAP,
-                data={"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": q_wise},
-                timeout=3.5,
-            )
-            if rw.ok and "RAJ2000" in rw.text:
-                for row in csv.DictReader(io.StringIO(rw.text)):
-                    if not row.get("RAJ2000") or not row.get("DEJ2000"):
-                        continue
-                    w1 = float(row["W1mag"]) if row.get("W1mag") else None
-                    w2 = float(row["W2mag"]) if row.get("W2mag") else None
-                    wise_list.append({
-                        "id": f"WISE {row.get('AllWISE', '')}",
-                        "ra": float(row["RAJ2000"]),
-                        "dec": float(row["DEJ2000"]),
-                        "w1": w1,
-                        "w2": w2,
-                        "w1_w2": round(w1 - w2, 2) if (w1 is not None and w2 is not None) else None,
-                        "pmra": float(row["pmRA"]) if row.get("pmRA") else 0.0,
-                        "pmdec": float(row["pmDE"]) if row.get("pmDE") else 0.0,
-                    })
-        except Exception:
-            pass
-
-        # Incluir siempre los objetivos de referencia cercanos con su vector de movimiento propio
-        for tgt in CHALLENGE_TARGETS:
-            if np.hypot((ra - tgt["ra"]) * np.cos(np.deg2rad(dec)), dec - tgt["dec"]) <= radius_deg * 1.5:
-                gaia_list.append({
-                    "id": f"{tgt['name']} (Mov. Propio)",
-                    "ra": tgt["ra"],
-                    "dec": tgt["dec"],
-                    "gmag": None,
-                    "bprp": None,
-                    "pmra": tgt["pm_ra"],
-                    "pmdec": tgt["pm_dec"],
-                    "plx": None,
-                    "pre_propagated": True,
-                })
-                wise_list.append({
-                    "id": f"{tgt['name']} (Posición J2000/WISE)",
-                    "ra": tgt["ra_j2000"],
-                    "dec": tgt["dec_j2000"],
-                    "w1": None,
-                    "w2": None,
-                    "w1_w2": None,
-                    "pmra": tgt["pm_ra"],
-                    "pmdec": tgt["pm_dec"],
-                })
-
-        raw_data = {"gaia": gaia_list, "allwise": wise_list}
-        if len(gaia_list) > 1 or len(wise_list) > 1:
-            with open(cfile, "w", encoding="utf-8") as f:
-                json.dump(raw_data, f)
-
-    # Proyectar coordenadas celestes a píxeles de nuestra grilla WCS actual
-    w = WCS(naxis=2)
-    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    w.wcs.crval = wcs_info["crval"]
-    w.wcs.crpix = wcs_info["crpix"]
-    w.wcs.cdelt = wcs_info["cdelt"]
-
-    gaia_proj = []
-    for g in raw_data.get("gaia", []):
-        # Gaia DR3 está en época J2016.0; propagamos a 2025.5 (dt = 9.5 años) salvo que ya venga propagado
-        dt = 0.0 if g.get("pre_propagated") else 9.5
-        cos_d = max(np.cos(np.deg2rad(g["dec"])), 0.05)
-        ra_2025 = g["ra"] + (g["pmra"] * dt) / (3600000.0 * cos_d)
-        dec_2025 = g["dec"] + (g["pmdec"] * dt) / 3600000.0
-        px, py = w.world_to_pixel_values(ra_2025, dec_2025)
-        # Vector de movimiento propio de 10 años para visualización
-        ra_fut = ra_2025 + (g["pmra"] * 10.0) / (3600000.0 * cos_d)
-        dec_fut = dec_2025 + (g["pmdec"] * 10.0) / 3600000.0
-        px_f, py_f = w.world_to_pixel_values(ra_fut, dec_fut)
-        gaia_proj.append({
-            **g,
-            "px": round(float(px), 2),
-            "py": round(float(py), 2),
-            "px_10yr": round(float(px_f), 2),
-            "py_10yr": round(float(py_f), 2),
-        })
-
-    wise_proj = []
-    for ws in raw_data.get("allwise", []):
-        px, py = w.world_to_pixel_values(ws["ra"], ws["dec"])
-        wise_proj.append({
-            **ws,
-            "px": round(float(px), 2),
-            "py": round(float(py), 2),
-        })
-
-    return {"gaia": gaia_proj, "allwise": wise_proj}
-
-
 def render_animated_gif_bytes(cube_data: Dict[str, Any], label: str = "SPHEREx") -> bytes:
-    """Genera un GIF animado descargable a partir de los arrays de épocas."""
+    """GIF animado de las épocas (estiramiento asinh común a todas las épocas)."""
     ny, nx = cube_data["shape"]
     lo = cube_data["stats"]["p05"]
-    hi = max(cube_data["stats"]["p995"], lo + 1e-4)
-    scale = 4  # escalar x4 para que se vea nítido
+    hi = max(cube_data["stats"]["p995"], lo + 1e-6)
+    scale = 4
     frames_pil: List[Image.Image] = []
-
     for ep in cube_data["epochs"]:
         arr = np.frombuffer(base64.b64decode(ep["data_b64"]), dtype=np.float32).reshape((ny, nx))
-        # Invertir verticalmente para que el Norte quede arriba (origen='lower')
         arr_up = np.flipud(arr)
         x = np.clip((arr_up - lo) / (hi - lo), 0.0, 1.0)
         v = np.arcsinh(10.0 * x) / np.arcsinh(10.0)
-        # Colormap tipo inferno/espacial en RGB
         r = np.clip(v * 1.45, 0.0, 1.0) * 255
         g = np.clip((v - 0.25) * 1.35, 0.0, 1.0) * 255
         b = np.clip(0.18 + 0.82 * (v ** 0.65) * (1.0 - 0.5 * v) + (v ** 3) * 0.5, 0.0, 1.0) * 255
         rgb = np.stack([r, g, b], axis=-1).astype(np.uint8)
-        im = Image.fromarray(rgb, mode="RGB").resize((nx * scale, ny * scale), resample=Image.NEAREST)
-        frames_pil.append(im)
-
+        frames_pil.append(Image.fromarray(rgb, mode="RGB").resize((nx * scale, ny * scale), resample=Image.NEAREST))
     buf = io.BytesIO()
     if len(frames_pil) == 1:
         frames_pil[0].save(buf, format="GIF")
     else:
-        frames_pil[0].save(
-            buf,
-            format="GIF",
-            save_all=True,
-            append_images=frames_pil[1:],
-            duration=600,
-            loop=0,
-        )
+        frames_pil[0].save(buf, format="GIF", save_all=True, append_images=frames_pil[1:], duration=600, loop=0)
     return buf.getvalue()
 
 
-def detect_candidates(
-    epoch_arrays: List[np.ndarray],
-    common_wcs: WCS,
-    pix_arcsec: float,
-) -> List[Dict[str, Any]]:
-    """
-    Motor inteligente de detección automática de anomalías en cualquier región del cielo:
-    1. Calcula el ruido robusto de fondo (MAD sobre píxeles válidos no nulos entre P10 y P85).
-    2. Escanea la matriz diferencial (E_last - E_first) y la varianza multi-época.
-    3. Distingue entre:
-       - Dipolo cinemático real (el centroide de la fuente se desplazó entre la primera y la última época).
-       - Fuente variable / transiente estacionaria (el brillo aumentó o disminuyó en el mismo centroide).
-    """
-    if len(epoch_arrays) < 2:
-        return []
-    first = epoch_arrays[0]
-    last = epoch_arrays[-1]
-    diff = last - first
-    mean_stack = np.mean(epoch_arrays, axis=0)
-    ny, nx = diff.shape
-
-    margin = 6
-    interior = diff[margin:-margin, margin:-margin]
-    valid_diff = interior[(np.abs(interior) > 1e-6) & np.isfinite(interior)]
-    if len(valid_diff) > 30:
-        lo_q, hi_q = np.percentile(valid_diff, [12.0, 88.0])
-        bg_sample = valid_diff[(valid_diff >= lo_q) & (valid_diff <= hi_q)]
-        med = float(np.median(bg_sample)) if len(bg_sample) else 0.0
-        mad = float(np.median(np.abs(bg_sample - med))) if len(bg_sample) else 0.01
-        sigma = max(1.4826 * mad, 0.008)
-    else:
-        med = 0.0
-        sigma = 0.015
-
-    work = diff.copy()
-    work[:margin, :] = 0.0
-    work[-margin:, :] = 0.0
-    work[:, :margin] = 0.0
-    work[:, -margin:] = 0.0
-    # Ignorar bordes sin cobertura real en cualquiera de las dos épocas extremas
-    no_cov = (np.abs(first) < 1e-7) | (np.abs(last) < 1e-7)
-    work[no_cov] = 0.0
-
-    candidates: List[Dict[str, Any]] = []
-    used_mask = np.zeros((ny, nx), dtype=bool)
-
-    for rank in range(1, 5):
-        abs_work = np.where(used_mask, 0.0, np.abs(work))
-        iy, ix = np.unravel_index(int(np.argmax(abs_work)), abs_work.shape)
-        val = float(work[iy, ix])
-        snr_diff = abs(val) / sigma
-        if snr_diff < 3.2:
-            break
-
-        # Buscar pico de signo opuesto en vecindad (1.5 a 7.5 px)
-        y0, y1 = max(margin, iy - 7), min(ny - margin, iy + 8)
-        x0, x1 = max(margin, ix - 7), min(nx - margin, ix + 8)
-        sub = work[y0:y1, x0:x1]
-        if val > 0:
-            opp_y_rel, opp_x_rel = np.unravel_index(int(np.argmin(sub)), sub.shape)
-        else:
-            opp_y_rel, opp_x_rel = np.unravel_index(int(np.argmax(sub)), sub.shape)
-        opp_y, opp_x = y0 + int(opp_y_rel), x0 + int(opp_x_rel)
-        opp_val = float(work[opp_y, opp_x])
-        dist_px = float(np.hypot(opp_x - ix, opp_y - iy))
-
-        # Verificar si realmente es un dipolo móvil (simetría de lóbulos y cambio real de posición del pico)
-        lobe_ratio = min(abs(val), abs(opp_val)) / max(abs(val), abs(opp_val), 1e-6)
-        is_dipole = (
-            (val * opp_val < 0)
-            and (abs(opp_val) / sigma >= 2.5)
-            and (1.3 <= dist_px <= 7.5)
-            and (lobe_ratio >= 0.22)
-        )
-
-        px_now = int(ix if val > 0 else opp_x)
-        py_now = int(iy if val > 0 else opp_y)
-        px_old = int(opp_x if val > 0 else ix)
-        py_old = int(opp_y if val > 0 else iy)
-
-        # Si en E1 y E_last el máximo absoluto dentro de r<=5 px está en el mismo píxel, es una estrella variable estacionaria
-        f_sub = first[y0:y1, x0:x1]
-        l_sub = last[y0:y1, x0:x1]
-        f_ymax, f_xmax = np.unravel_index(int(np.argmax(f_sub)), f_sub.shape)
-        l_ymax, l_xmax = np.unravel_index(int(np.argmax(l_sub)), l_sub.shape)
-        centroid_shift_px = float(np.hypot(l_xmax - f_xmax, l_ymax - f_ymax))
-        if centroid_shift_px < 1.1:
-            is_dipole = False
-            px_now, py_now = int(ix), int(iy)
-            px_old, py_old = int(ix), int(iy)
-
-        # Marcar vecindad como usada (radio 8 px alrededor de ambos polos)
-        yy, xx = np.ogrid[:ny, :nx]
-        used_mask |= ((xx - px_now) ** 2 + (yy - py_now) ** 2) <= 8 ** 2
-        used_mask |= ((xx - px_old) ** 2 + (yy - py_old) ** 2) <= 8 ** 2
-
-        ra_c, dec_c = common_wcs.pixel_to_world_values(px_now, py_now)
-        shift_arcsec = round(max(dist_px, centroid_shift_px) * pix_arcsec, 2) if is_dipole else 0.0
-        base_flux = max(float(mean_stack[py_now, px_now]), 0.05)
-        var_pct = round(min(abs(val) / base_flux * 100.0, 999.0), 1)
-        snr_capped = round(min(snr_diff, 999.9), 1)
-
-        candidates.append({
-            "rank": rank,
-            "type": "dipole" if is_dipole else "variable",
-            "label_es": (
-                f"Dipolo (~{shift_arcsec}″)"
-                if is_dipole
-                else (f"Variable (+{var_pct}%)" if val > 0 else f"Variable (−{var_pct}%)")
-            ),
-            "label_en": (
-                f"Dipole (~{shift_arcsec}″)"
-                if is_dipole
-                else (f"Variable (+{var_pct}%)" if val > 0 else f"Variable (−{var_pct}%)")
-            ),
-            "px": px_now,
-            "py": py_now,
-            "px_old": px_old if is_dipole else px_now,
-            "py_old": py_old if is_dipole else py_now,
-            "ra": round(float(ra_c), 5),
-            "dec": round(float(dec_c), 5),
-            "snr_diff": snr_capped,
-            "delta_sb": round(val, 4),
-            "shift_arcsec": shift_arcsec,
-            "var_pct": var_pct,
-        })
-
-    return candidates
-
-
+# ---------------------------------------------------------------------------
+# Análisis automático y copiloto (solo con datos medidos; nunca inventa valores)
+# ---------------------------------------------------------------------------
 def generate_ai_preliminary_analysis(cube: Dict[str, Any], lang: str = "es") -> Dict[str, Any]:
-    """
-    Genera un análisis astrofísico preliminar automático basado en las mediciones reales
-    del cubo SPHEREx (épocas, S/N, variabilidad, candidatos dipolares y espectro LVF).
-    """
-    ra = cube["ra"]
-    dec = cube["dec"]
+    """Resumen automático construido exclusivamente con las mediciones del cubo."""
+    en = lang == "en"
     epochs = cube.get("epochs", [])
-    spec = cube.get("spectrum", [])
+    tgt = cube.get("target") or {}
+    ps = cube.get("photometry_summary", {})
     cands = cube.get("candidates", [])
-    n_ep = len(epochs)
+    lc = cube.get("light_curve", {}) or {}
+    title = tgt.get("name") or (f"Sky patch RA {cube['ra']:.4f}°, Dec {cube['dec']:.4f}°" if en else f"Parche celeste RA {cube['ra']:.4f}°, Dec {cube['dec']:.4f}°")
+    bullets: List[str] = []
+    if cube.get("data_mode") == "dr1_static":
+        bullets.append("🗺️ **Static DR1 data:** no multi-epoch L2b exposures were available; the image is a one-year co-add without time information." if en
+                       else "🗺️ **Datos DR1 estáticos:** no hubo exposiciones L2b multi-época; la imagen es una co-adición de un año sin información temporal.")
+    elif epochs:
+        bullets.append((f"📡 **Coverage:** {len(epochs)} epochs from {cube.get('used_exposures', 0)} L2b exposures ({epochs[0]['date']} → {epochs[-1]['date']})."
+                        if en else f"📡 **Cobertura:** {len(epochs)} épocas con {cube.get('used_exposures', 0)} exposiciones L2b ({epochs[0]['date']} → {epochs[-1]['date']})."))
+    mot = tgt.get("expected_motion")
+    if mot:
+        bullets.append((f"🧭 **Expected motion (catalogue astrometry):** {mot['arcsec']}″ between the first and last epoch ({mot['native_px']} native pixels in {mot['days']} days)."
+                        if en else f"🧭 **Movimiento esperado (astrometría de catálogo):** {mot['arcsec']}″ entre la primera y la última época ({mot['native_px']} píxeles nativos en {mot['days']} días)."))
+    meas = tgt.get("measured_motion")
+    if meas:
+        how_en = "saturated-core centroids" if meas.get("methods") == ["saturated_core"] else "ePSF positions"
+        how_es = "centroides del núcleo saturado" if meas.get("methods") == ["saturated_core"] else "posiciones ePSF"
+        agree_en = "consistent with the catalogue" if meas["diff_sigma"] < 3 else "NOT consistent with the catalogue"
+        agree_es = "consistente con el catálogo" if meas["diff_sigma"] < 3 else "NO consistente con el catálogo"
+        bullets.append((f"📏 **Motion measured by SPHEREx ({how_en}, {meas['n_visits']} visits):** {meas['arcsec']} ± {meas['err_arcsec']}″ at PA {meas['pa_deg']}° between {meas['date_first']} and {meas['date_last']}; the catalogue predicts {meas['predicted_arcsec']}″ at PA {meas['predicted_pa_deg']}° ({agree_en}, {meas['diff_sigma']}σ)."
+                        if en else f"📏 **Movimiento medido por SPHEREx ({how_es}, {meas['n_visits']} visitas):** {meas['arcsec']} ± {meas['err_arcsec']}″ con AP {meas['pa_deg']}° entre {meas['date_first']} y {meas['date_last']}; el catálogo predice {meas['predicted_arcsec']}″ con AP {meas['predicted_pa_deg']}° ({agree_es}, {meas['diff_sigma']}σ)."))
+    if ps.get("n"):
+        bullets.append((f"🎯 **Target photometry:** {ps['n_detected']} of {ps['n']} exposures with S/N ≥ 3" + (f" (median S/N {ps['median_snr']})" if ps.get("median_snr") else "") + (f"; {ps['n_saturated']} saturated." if ps.get("n_saturated") else ".")
+                        if en else f"🎯 **Fotometría del objetivo:** {ps['n_detected']} de {ps['n']} exposiciones con S/N ≥ 3" + (f" (S/N mediana {ps['median_snr']})" if ps.get("median_snr") else "") + (f"; {ps['n_saturated']} saturadas." if ps.get("n_saturated") else ".")))
+    sc = lc.get("strongest_change")
+    if sc:
+        bullets.append((f"📈 **Same-λ variability:** largest change at {sc['wavelength_um']} µm: {sc['max_change_sigma']}σ (max/min ratio {sc.get('max_ratio')})."
+                        if en else f"📈 **Variabilidad a λ fija:** el mayor cambio está en {sc['wavelength_um']} µm: {sc['max_change_sigma']}σ (razón máx/mín {sc.get('max_ratio')})."))
+    if cands:
+        conf = [c for c in cands if str(c.get("verification", "")).startswith("confirmed")]
+        n_rej = sum(1 for c in cands if c.get("verification") == "not_confirmed")
+        if conf:
+            c = conf[0]
+            note = (c.get("notes_en") if en else c.get("notes_es")) or []
+            bullets.append((f"🚩 **Verified candidate:** {c['label_en']}. " if en else f"🚩 **Candidato verificado:** {c['label_es']}. ") + (" ".join(note[:2])))
+        if n_rej:
+            bullets.append((f"🧪 {n_rej} difference-image peak(s) were NOT confirmed by per-exposure ePSF photometry (pixel-phase/λ residuals)."
+                            if en else f"🧪 {n_rej} pico(s) de la imagen de diferencia NO se confirmaron con la fotometría ePSF por exposición (residuos de fase de píxel/λ)."))
+    for n in cube.get("notes", [])[:2]:
+        bullets.append("⚠️ " + (n["en"] if en else n["es"]))
+    tip = ("💡 Open the per-channel light curve and the DR1 spectrum: compare only points at the same wavelength."
+           if en else "💡 Revisa la curva de luz por canal y el espectro DR1: compara solo puntos a la misma longitud de onda.")
+    return {"title": title, "bullets": bullets, "tip": tip, "candidates_count": len(cands)}
 
-    # Identificar si corresponde a uno de los 5 objetivos conocidos
-    matched_tgt = None
-    for t in CHALLENGE_TARGETS:
-        if np.hypot((ra - t["ra"]) * np.cos(np.deg2rad(dec)), dec - t["dec"]) < 0.03:
-            matched_tgt = t
-            break
 
-    peaks = [e["peak_sb_mjy_sr"] for e in epochs] if epochs else [0.0]
-    snrs = [e["snr"] for e in epochs] if epochs else [0.0]
-    max_snr = max(snrs) if snrs else 0.0
-    p_min, p_max = min(peaks), max(peaks)
-    var_ratio = (p_max - p_min) / max(abs(np.mean(peaks)), 0.02) if len(peaks) > 1 else 0.0
-
-    # Analizar pendiente espectral si hay puntos en el espectro
-    if spec:
-        lams = [s["wavelength_um"] for s in spec]
-        flxs = [s["sb_mjy_sr"] for s in spec]
-        peak_spec_idx = int(np.argmax(flxs))
-        peak_lam = lams[peak_spec_idx]
-        l_range = f"{min(lams):.2f}–{max(lams):.2f} µm"
-    else:
-        peak_lam = 0.0
-        l_range = "N/A"
-
-    dipoles = [c for c in cands if c["type"] == "dipole"]
-    variables = [c for c in cands if c["type"] == "variable"]
-
-    if lang == "en":
-        title = matched_tgt["name"] if matched_tgt else f"Sky Patch RA {ra:.4f}°, Dec {dec:.4f}°"
-        bullets = [
-            f"📡 **Multi-Epoch Coverage:** {n_ep} epochs constructed from {cube['used_exposures']} calibrated SPHEREx L2b exposures (out of {cube['total_all_bands_irsa']} total in IRSA across D1–D6), spanning {epochs[0]['date']} to {epochs[-1]['date']}." if n_ep else "No epochs available.",
-            f"🎯 **Central Source & Signal-to-Noise:** Peak surface brightness reaches **{max(peaks):.3f} MJy/sr** (S/N = **{max_snr:.1f}**) after subtracting ~{epochs[0]['mean_zodi']:.2f} MJy/sr of modeled zodiacal dust glow.",
-        ]
-        if dipoles:
-            d0 = dipoles[0]
-            bullets.append(
-                f"🚀 **Motion / Dipole Detected (#1):** The difference image ($E_{{\\text{{last}}}} - E_{{\\text{{first}}}}$) reveals a **{d0['snr_diff']}σ moving dipole** at pixel ({d0['px']}, {d0['py']}) with an estimated shift of **~{d0['shift_arcsec']}″** between epochs."
-            )
-        if var_ratio > 0.25 or variables:
-            bullets.append(
-                f"📈 **Infrared Variability:** Central aperture flux varies by **{var_ratio*100:.0f}%** across epochs ({p_min:.3f} → {p_max:.3f} MJy/sr). Switch to *Difference* mode or inspect the *Light Curve* to track the pulsation/eclipse."
-            )
-        if spec:
-            bullets.append(
-                f"🌈 **LVF Spectral Diagnosis ({l_range}):** Extracted {len(spec)} spectral measurements via `WCS-WAVE`, peaking near **λ = {peak_lam:.2f} µm** "
-                + ("(characteristic thermal window of cold Y/T brown dwarfs between CH₄ and CO/H₂O bands)." if peak_lam >= 4.3 else "(stellar/circumstellar near-IR continuum).")
-            )
-        tip = "💡 **Suggested Action:** Click on the numbered candidate markers (`#1`, `#2`) on the sky canvas to reposition the aperture and compare their multi-epoch light curves."
-    else:
-        title = matched_tgt["name"] if matched_tgt else f"Parche Celeste RA {ra:.4f}°, Dec {dec:.4f}°"
-        bullets = [
-            f"📡 **Cobertura Temporal:** {n_ep} épocas construidas a partir de {cube['used_exposures']} exposiciones calibradas SPHEREx L2b (de un total de {cube['total_all_bands_irsa']} en IRSA en D1–D6), abarcando desde **{epochs[0]['date']}** hasta **{epochs[-1]['date']}**." if n_ep else "Sin épocas disponibles.",
-            f"🎯 **Relación Señal/Ruido y Limpieza:** El brillo superficial pico alcanza **{max(peaks):.3f} MJy/sr** (S/N = **{max_snr:.1f}**) tras restar ~{epochs[0]['mean_zodi']:.2f} MJy/sr de luz zodiacal modelada y filtrar rayos cósmicos (`FLAGS`).",
-        ]
-        if dipoles:
-            d0 = dipoles[0]
-            bullets.append(
-                f"🚀 **Movimiento / Dipolo Detectado (#1):** La imagen de diferencia ($E_{{\\text{{última}}}} - E_{{\\text{{primera}}}}$) revela un **dipolo en movimiento de {d0['snr_diff']}σ** en el píxel ({d0['px']}, {d0['py']}) con un desplazamiento estimado de **~{d0['shift_arcsec']}″**."
-            )
-        if var_ratio > 0.25 or variables:
-            bullets.append(
-                f"📈 **Variabilidad Infrarroja:** El flujo en la apertura central varía un **{var_ratio*100:.0f}%** entre épocas ({p_min:.3f} → {p_max:.3f} MJy/sr). Activa el modo *Diferencia* o revisa la *Curva de Luz*."
-            )
-        if spec:
-            bullets.append(
-                f"🌈 **Diagnóstico Espectral LVF ({l_range}):** Se extrajeron {len(spec)} mediciones espectrales con `WCS-WAVE`, con emisión máxima cerca de **λ = {peak_lam:.2f} µm** "
-                + ("(ventana térmica típica de enanas marrones frías Y/T entre bandas de absorción de CH₄ y H₂O)." if peak_lam >= 4.3 else "(continuo estelar/circunestelar en infrarrojo cercano).")
-            )
-        tip = "💡 **Acción recomendada:** Haz clic sobre los marcadores de candidatos (`#1`, `#2`) en el visor o cambia al modo **➖ Diferencia** para inspeccionar los dipolos y su curva de luz."
-
-    return {
-        "title": title,
-        "bullets": bullets,
-        "tip": tip,
-        "candidates_count": len(cands),
-    }
+_AI_RULES_ES = (
+    "REGLAS DE RIGOR (obligatorias):\n"
+    "1. Usa SOLO los números de la telemetría. Si un dato no aparece (distancia, temperatura, tipo espectral, flujo), di que no está disponible: no lo estimes ni lo inventes.\n"
+    "2. Distingue hielo de gas: en enanas marrones y estrellas frías las bandas de H₂O, CH₄, CO y CO₂ son de GAS atmosférico.\n"
+    "3. Un candidato del detector es una hipótesis, no un descubrimiento; la significancia σ no es una probabilidad.\n"
+    "4. SPHEREx mide cada exposición a una λ distinta: no confundas cambios espectrales con variabilidad.\n"
+    "5. Si la fuente está saturada, su flujo no es fiable.\n"
+    "6. No saludes ni repitas presentaciones; responde directo.\n"
+)
+_AI_RULES_EN = (
+    "RIGOR RULES (mandatory):\n"
+    "1. Use ONLY the numbers in the telemetry. If a value is missing (distance, temperature, spectral type, flux), say it is unavailable: do not estimate or invent it.\n"
+    "2. Distinguish ice from gas: in brown dwarfs and cool stars the H₂O, CH₄, CO and CO₂ bands are atmospheric GAS.\n"
+    "3. A detector candidate is a hypothesis, not a discovery; σ significance is not a probability.\n"
+    "4. SPHEREx measures each exposure at a different λ: do not confuse spectral changes with variability.\n"
+    "5. If the source is saturated, its flux is not reliable.\n"
+    "6. Do not greet or repeat introductions; answer directly.\n"
+)
 
 
 def answer_ai_chat(
@@ -3125,89 +3711,38 @@ def answer_ai_chat(
     image_b64: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    """
-    Asistente conversacional y multimodal AstroAI Copilot con memoria de sesión
-    y profundidad adaptativa (conciso en preguntas puntuales, ultra-especializado en análisis).
-    """
+    """Copiloto multimodal (Gemini u OpenAI) con telemetría real; sin clave usa el motor determinista local."""
     _load_dotenv()
     msg = (message or "").strip()
     key = (api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
     hist = history or []
-
     q_low = msg.lower()
-    wants_concise = any(
-        w in q_low
-        for w in [
-            "breve", "resum", "corto", "concis", "short", "brief", "quick",
-            "pocas palabras", "una linea", "1 linea", "solo dime", "just tell",
-            "cuantas epocas", "how many epochs", "que banda", "which band",
-        ]
-    ) or (
-        len(msg) < 42
-        and not any(
-            w in q_low
-            for w in [
-                "analiz", "analyz", "profund", "deep", "explica", "explain",
-                "detall", "detail", "imagen", "image", "espectro", "spectr",
-                "curva", "light", "todo", "complet", "física", "fisica", "physics",
-            ]
-        )
+    wants_concise = any(w in q_low for w in ["breve", "resum", "corto", "concis", "short", "brief", "quick", "una linea", "solo dime", "just tell"]) or (
+        len(msg) < 42 and not any(w in q_low for w in ["analiz", "analyz", "profund", "deep", "explica", "explain", "detall", "detail", "espectro", "spectr"])
     )
-
-    telemetry_summary = json.dumps(context, ensure_ascii=False)
-
+    telemetry_summary = json.dumps(context, ensure_ascii=False)[:60000]
     if key:
-        depth_directive = (
-            "MODO DE EXTENSIÓN REQUERIDO PARA ESTE TURNO: CONCISO Y DIRECTO. "
-            "El usuario ha hecho una pregunta puntual, breve o de seguimiento rápido. "
-            "Responde en 1 a 2 párrafos breves (60 a 160 palabras máximo) o 3 viñetas directas, "
-            "entregando los datos cuantitativos exactos sin dividir en 4 secciones largas."
-            if wants_concise
-            else "MODO DE EXTENSIÓN REQUERIDO PARA ESTE TURNO: ULTRA-ESPECIALIZADO Y PROFUNDO. "
-            "El usuario solicita un análisis astrofísico profundo o una explicación técnica detallada. "
-            "Desarrolla una respuesta exhaustiva de nivel Investigador Senior de NASA (400 a 900 palabras), "
-            "organizada con subtítulos claros, viñetas y rigor físico-matemático (radiación infrarroja, "
-            "cinemática de dipolos en sigmas, curvas de luz en MJy/sr, opacidades moleculares de H₂O, CH₄, CO y CO₂ "
-            "en el filtro lineal variable WCS-WAVE, luz zodiacal ZODI y bits FLAGS)."
-        )
-
+        depth = ("Responde en 60–160 palabras." if wants_concise else "Responde con detalle (300–700 palabras), con subtítulos y viñetas.") if lang != "en" else (
+            "Answer in 60–160 words." if wants_concise else "Answer in detail (300–700 words) with headings and bullets.")
         sys_prompt = (
-            "Eres AstroAI Copilot, el Astrofísico Investigador Senior y Especialista en Espectroscopía Infrarroja "
-            "del observatorio SPHEREx SkyChrono (Delegación Zuliana de Astronomía · NASA Space Apps Challenge). "
-            "Tienes acceso en tiempo real al lienzo FITS y a la telemetría calibrada Nivel-2b (L2b) del telescopio espacial SPHEREx "
-            "(102 canales espectrales LVF entre 0.75 y 5.0 µm repartidos en 6 matrices detectoras D1 a D6).\n\n"
-            "REGLAS ESTRICTAS DE CONVERSACIÓN FLUIDA:\n"
-            "1. PROHIBIDO REPETIR SALUDOS: Ya estás conversando con el usuario dentro de la plataforma. "
-            "NUNCA empieces tus respuestas con '¡Hola!', 'Saludos, Investigador', 'Bienvenido' ni presentaciones repetitivas. "
-            "Entra directo a responder la consulta con total fluidez, haciendo referencia natural a lo conversado en turnos previos si aplica.\n"
-            "2. ADAPTABILIDAD INTELIGENTE DE PROFUNDIDAD:\n"
-            + depth_directive
-            + "\n3. IDIOMA: Responde siempre en "
-            + ("inglés (English)" if lang == "en" else "español")
-            + ".\n\nTELEMETRÍA CUANTITATIVA EN VIVO (SPHEREx L2b):\n"
-            + telemetry_summary
+            ("Eres AstroAI Copilot, astrofísico especialista en el telescopio espacial SPHEREx (102 canales LVF, 0.75–5.0 µm, píxeles de 6.15″). "
+             if lang != "en" else "You are AstroAI Copilot, an astrophysicist specialised in the SPHEREx space telescope (102 LVF channels, 0.75–5.0 µm, 6.15″ pixels). ")
+            + (_AI_RULES_EN if lang == "en" else _AI_RULES_ES) + depth
+            + ("\nIdioma: " + ("inglés" if lang == "en" else "español"))
+            + "\n\nTELEMETRÍA MEDIDA (JSON):\n" + telemetry_summary
         )
         if key.startswith("sk-"):
             try:
                 oa_msgs: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
                 for h_turn in hist[-8:]:
-                    r_role = "assistant" if h_turn.get("role") in ("model", "bot", "assistant") else "user"
                     if h_turn.get("text"):
-                        oa_msgs.append({"role": r_role, "content": h_turn["text"]})
+                        oa_msgs.append({"role": "assistant" if h_turn.get("role") in ("model", "bot", "assistant") else "user", "content": h_turn["text"]})
                 oa_msgs.append({"role": "user", "content": msg})
-                r = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "gpt-4o-mini",
-                        "messages": oa_msgs,
-                        "temperature": 0.35,
-                    },
-                    timeout=30,
-                )
+                r = requests.post("https://api.openai.com/v1/chat/completions",
+                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                                  json={"model": "gpt-4o-mini", "messages": oa_msgs, "temperature": 0.2}, timeout=40)
                 if r.ok:
-                    ans = r.json()["choices"][0]["message"]["content"]
-                    return {"reply": ans, "engine": "OpenAI GPT-4o-mini + SPHEREx Telemetry"}
+                    return {"reply": r.json()["choices"][0]["message"]["content"], "engine": "OpenAI gpt-4o-mini + telemetría SPHEREx"}
             except Exception:
                 pass
         else:
@@ -3223,201 +3758,89 @@ def answer_ai_chat(
                     contents_list[-1]["parts"][0]["text"] += "\n" + t_txt
                 else:
                     contents_list.append({"role": g_role, "parts": [{"text": t_txt}]})
-
             user_parts: List[Dict[str, Any]] = []
             if image_b64:
-                mime = "image/jpeg" if "image/jpeg" in image_b64 else "image/png"
-                clean_b64 = image_b64.split(",")[-1].strip()
-                user_parts.append({
-                    "inline_data": {
-                        "mime_type": mime,
-                        "data": clean_b64,
-                    }
-                })
+                mime = "image/jpeg" if "image/jpeg" in image_b64[:40] else "image/png"
+                user_parts.append({"inline_data": {"mime_type": mime, "data": image_b64.split(",")[-1].strip()}})
             user_parts.append({"text": msg})
-
             if contents_list and contents_list[-1]["role"] == "user":
                 contents_list[-1]["parts"].extend(user_parts)
             else:
                 contents_list.append({"role": "user", "parts": user_parts})
-
             pref_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
-            candidate_models = []
+            candidate_models: List[str] = []
             for m in [pref_model, "gemini-3-flash-preview", "gemini-flash-lite-latest"]:
                 if m and m not in candidate_models:
                     candidate_models.append(m)
-
-            max_toks = 700 if wants_concise else 2600
-            think_budget = 64 if wants_concise else 128
-
             for model_name in candidate_models:
                 try:
-                    gen_cfg: Dict[str, Any] = {"temperature": 0.35, "maxOutputTokens": max_toks}
+                    gen_cfg: Dict[str, Any] = {"temperature": 0.2, "maxOutputTokens": 700 if wants_concise else 2400}
                     if "gemini-3" in model_name or "gemini-2.5" in model_name:
-                        gen_cfg["thinkingConfig"] = {"thinkingBudget": think_budget}
+                        gen_cfg["thinkingConfig"] = {"thinkingBudget": 64 if wants_concise else 128}
+                    # La clave va en la cabecera x-goog-api-key (nunca en la URL: evita que quede en registros o errores)
                     r = requests.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}",
-                        headers={"Content-Type": "application/json"},
-                        json={
-                            "systemInstruction": {"parts": [{"text": sys_prompt}]},
-                            "contents": contents_list,
-                            "generationConfig": gen_cfg,
-                        },
-                        timeout=30,
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+                        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                        json={"systemInstruction": {"parts": [{"text": sys_prompt}]}, "contents": contents_list, "generationConfig": gen_cfg},
+                        timeout=40,
                     )
                     if r.ok:
                         cand = r.json().get("candidates", [{}])[0]
                         parts = cand.get("content", {}).get("parts", [])
-                        ans = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
-                        if not ans:
-                            ans = "".join(p.get("text", "") for p in parts).strip()
+                        ans = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip() or "".join(p.get("text", "") for p in parts).strip()
                         if ans:
-                            vision_tag = " + Vision" if image_b64 else ""
-                            return {
-                                "reply": ans,
-                                "engine": f"Google {model_name}{vision_tag} + SPHEREx Live Telemetry",
-                            }
+                            return {"reply": ans, "engine": f"Google {model_name}{' + visión' if image_b64 else ''} + telemetría SPHEREx"}
                 except Exception:
                     continue
-
-    # Fallback: Motor Experto Astrofísico Determinista de Alta Profundidad
-    return {
-        "reply": _expert_astrophysics_response(msg, context, lang),
-        "engine": "AstroAI Deep Astrophysics Engine (Live Telemetry)",
-    }
+    return {"reply": _expert_astrophysics_response(msg, context, lang), "engine": "Motor local determinista (sin IA generativa)"}
 
 
 def _expert_astrophysics_response(msg: str, ctx: Dict[str, Any], lang: str) -> str:
-    q = msg.lower()
-    tgt_name = ctx.get("target_name", "el objetivo actual")
-    ra = ctx.get("ra", 0.0)
-    dec = ctx.get("dec", 0.0)
-    bands = ", ".join(ctx.get("bands", ["D6"]))
-    epochs = ctx.get("epochs", [])
-    cands = ctx.get("candidates", [])
-    spec_count = ctx.get("spectrum_count", 0)
-    lam_range = ctx.get("wavelength_range", "0.75–5.0 µm")
-    ap_info = ctx.get("aperture", {})
-
-    if lang == "en":
-        if any(w in q for w in ["move", "moving", "dipole", "shift", "planet", "brown dwarf", "candidat"]):
-            if cands:
-                c_lines = [
-                    f"- **#{c['rank']} ({c['label_en']}):** Pixel ({c['px']}, {c['py']}), RA={c['ra']}°, Dec={c['dec']}°, significance **{c['snr_diff']}σ**."
-                    for c in cands
-                ]
-                return (
-                    f"In **{tgt_name}** (bands `{bands}`), our difference-image scanner ($E_{{\\text{{last}}}} - E_{{\\text{{first}}}}$) detected **{len(cands)} significant candidate(s)**:\n\n"
-                    + "\n".join(c_lines)
-                    + "\n\n**How to verify:** Switch the viewport above to **➖ Difference** or **🎬 Blink Video**. A true moving object (high-proper-motion star, brown dwarf, or solar system body) produces a **Blue → Red dipole** (blue at the earlier epoch position, red at the later epoch position) and shifts smoothly across epochs without being flagged as a `TRANSIENT` cosmic ray."
-                )
-            return f"Currently in **{tgt_name}** (`{bands}`), no >3.2σ dipole exceeds background noise. Try increasing **Exposures / Epoch** to 10 or 18 to boost S/N, or select detectors `D5+D6` for cold brown dwarfs."
-
-        if any(w in q for w in ["spectr", "band", "lvf", "wavelength", "molecul", "water", "methane", "ch4", "h2o", "d1", "d5", "d6"]):
-            return (
-                f"**Spectral Analysis of {tgt_name}:**\n"
-                f"- We extracted **{spec_count} spectral points** spanning **{lam_range}** using the `WCS-WAVE` Linear Variable Filter (LVF) lookup table.\n"
-                f"- SPHEREx divides its 102 bands across 6 detector arrays: **SWIR (`D1`–`D3`, 0.75–2.43 µm)** captures stellar photospheres and reflected sunlight, while **MWIR (`D4`–`D6`, 2.40–5.01 µm)** captures cold brown dwarfs and molecular ices.\n"
-                f"- Cold Y/T brown dwarfs like *WISE 0855−0714* have deep **methane ($\text{{CH}}_4$, 1.65 & 3.3 µm)** and **water ($\text{{H}}_2\text{{O}}$, 1.4, 1.9 & 3.0 µm)** absorption, forcing almost all their escaping thermal flux into the **4.5–5.0 µm window (Detector D6)**!"
-            )
-
-        if any(w in q for w in ["light", "curve", "variab", "bright", "pulsat", "eclipse", "flux"]):
-            return (
-                f"**Light Curve & Variability Analysis for {tgt_name}:**\n"
-                f"- Active aperture at pixel `({ap_info.get('x', '-')}, {ap_info.get('y', '-')})` across **{len(epochs)} epochs**.\n"
-                f"- Epoch peak surface brightness values: "
-                + ", ".join(f"{e['date']}: **{e['peak_sb_mjy_sr']} MJy/sr** (S/N {e['snr']})" for e in epochs)
-                + ".\n- Variable stars like **RW Aurigae** (circumstellar dust eclipses) and **R Draconis** (245.6-day Mira pulsations) stay stationary in position (`pm ≈ 0`) but leave a strong positive/negative residual in **➖ Difference Mode** and a clear oscillation in the **📈 Light Curve** chart."
-            )
-
-        if any(w in q for w in ["flag", "contamin", "cosmic", "zodi", "noise", "clean"]):
-            return (
-                f"**Data Quality, Zodiacal Background & Flags in {tgt_name}:**\n"
-                f"- Every SPHEREx L2b exposure includes a modeled **Zodiacal Light (`ZODI`)** extension from interplanetary dust (~{epochs[0]['mean_zodi'] if epochs else 0.3} MJy/sr here), which our pipeline subtracts before stacking.\n"
-                f"- We filter out instrumental bitmask flags (`TRANSIENT` cosmic rays, `OVERFLOW`, `SUR_ERROR`, `NONFUNC`, `HOT`, `COLD`, `PERSIST`, `OUTLIER`) while **preserving Bit 21 (`MP_SOURCE`)** so real cataloged stars are never masked out. Toggle **⚠️ Contamination Bitmask** on the left panel to inspect flagged pixels!"
-            )
-
-        c_lines = [
-            f"- **#{c['rank']} ({c.get('label_en', c.get('type', 'Candidate'))}):** Pixel `({c['px']}, {c['py']})`, RA={c['ra']}°, Dec={c['dec']}°, significance **{c['snr_diff']}σ**."
-            for c in cands
-        ]
-        ep_lines = [
-            f"- **{e['date']} (MJD {e['mjd']}):** {e['n_exp']} stacked exp · Peak Surface Brightness = **{e['peak_sb_mjy_sr']} MJy/sr** (S/N **{e['snr']}**) · Subtracted Zodi = `{e['mean_zodi']} MJy/sr`."
-            for e in epochs
-        ]
-        return (
-            f"### Deep Astrophysical Analysis: {tgt_name}\n"
-            f"**1. Field Astrometry & Active Bands:**\n"
-            f"- Centered at **RA {ra:.4f}°, Dec {dec:.4f}° (ICRS)** across SPHEREx detector arrays **`{bands}`** ({lam_range}).\n\n"
-            f"**2. Kinematics & Difference-Image Anomalies ($E_{{\\text{{last}}}} - E_{{\\text{{first}}}}$):**\n"
-            + ("\n".join(c_lines) if c_lines else "- No >3.2σ moving dipoles or transients detected in this slice.")
-            + "\n\n**3. Multi-Epoch Photometry & Temporal Variability:**\n"
-            + ("\n".join(ep_lines) if ep_lines else "- Single epoch loaded.")
-            + f"\n\n**4. On-the-Fly LVF Spectroscopy (`WCS-WAVE`) & Calibration:**\n"
-            f"- Extracted **{spec_count} calibrated spectral measurements** across **{lam_range}** after zodiacal light (`ZODI`) subtraction and hardware defect filtering (`BAD_MASK`), preserving cataloged sources (`Bit 21 MP_SOURCE`) and bright stellar cores."
-        )
-
-    # Respuestas en Español
-    if any(w in q for w in ["muev", "movimiento", "dipolo", "desplaz", "planeta", "enana", "candidat", "cambi"]):
+    """Respuestas deterministas basadas solo en la telemetría recibida."""
+    en = lang == "en"
+    q = (msg or "").lower()
+    name = ctx.get("target_name") or ("the current field" if en else "el campo actual")
+    epochs = ctx.get("epochs", []) or []
+    cands = ctx.get("candidates", []) or []
+    ps = ctx.get("photometry_summary", {}) or {}
+    tgt = ctx.get("target", {}) or {}
+    mot = tgt.get("expected_motion") if isinstance(tgt, dict) else None
+    lines: List[str] = []
+    if any(w in q for w in ["muev", "movimiento", "dipolo", "desplaz", "planeta", "candidat", "move", "moving", "dipole", "shift", "planet", "candidate"]):
+        if mot:
+            lines.append((f"Catalogue astrometry predicts a shift of **{mot['arcsec']}″** ({mot['native_px']} native pixels) between the first and last epoch of {name}."
+                          if en else f"La astrometría de catálogo predice un desplazamiento de **{mot['arcsec']}″** ({mot['native_px']} píxeles nativos) entre la primera y la última época de {name}."))
+        meas_m = tgt.get("measured_motion") if isinstance(tgt, dict) else None
+        if meas_m:
+            lines.append((f"SPHEREx itself measures **{meas_m['arcsec']} ± {meas_m['err_arcsec']}″** (PA {meas_m['pa_deg']}°) between {meas_m['date_first']} and {meas_m['date_last']}, against {meas_m['predicted_arcsec']}″ predicted for those dates."
+                          if en else f"SPHEREx mide **{meas_m['arcsec']} ± {meas_m['err_arcsec']}″** (AP {meas_m['pa_deg']}°) entre {meas_m['date_first']} y {meas_m['date_last']}, frente a {meas_m['predicted_arcsec']}″ predichos para esas fechas."))
         if cands:
-            c_lines = [
-                f"- **#{c['rank']} ({c['label_es']}):** Píxel ({c['px']}, {c['py']}), RA={c['ra']}°, Dec={c['dec']}°, significancia **{c['snr_diff']}σ**."
-                for c in cands
-            ]
-            return (
-                f"En **{tgt_name}** (bandas `{bands}`), nuestro detector sobre la imagen de diferencia ($E_{{\\text{{última}}}} - E_{{\\text{{primera}}}}$) encontró **{len(cands)} candidato(s) destacado(s)**:\n\n"
-                + "\n".join(c_lines)
-                + "\n\n**Cómo confirmarlo:** Cambia el visor superior a **Diferencia (E₂ − E₁)** o **Blink Épocas**. Un objeto real en movimiento (estrella cercana de alto movimiento propio, enana marrón o cuerpo del Sistema Solar) produce un **dipolo Azul → Rojo** (azul donde estaba en la primera época y rojo donde está en la última) y se desplaza de forma coherente sin activar el flag de rayo cósmico (`TRANSIENT`)."
-            )
-        return f"En **{tgt_name}** (`{bands}`) no se detectan dipolos por encima de 3.2σ con la configuración actual. Prueba subir **Profundidad / Época** a 10 o 18 para mejorar la Señal/Ruido, o activar `D5+D6` si buscas enanas marrones frías."
-
-    if any(w in q for w in ["espectr", "banda", "lvf", "onda", "molecul", "agua", "metano", "ch4", "h2o", "d1", "d5", "d6"]):
-        return (
-            f"**Análisis Espectral de {tgt_name}:**\n"
-            f"- Se extrajeron **{spec_count} mediciones espectrales** entre **{lam_range}** interpolando la tabla `WCS-WAVE` del Filtro Lineal Variable (LVF).\n"
-            f"- SPHEREx reparte sus 102 bandas en 6 detectores: **SWIR (`D1`–`D3`, 0.75–2.43 µm)** capta fotosferas estelares, mientras que **MWIR (`D4`–`D6`, 2.40–5.01 µm)** detecta objetos fríos y hielos moleculares.\n"
-            f"- Enanas marrones ultrafrías como *WISE 0855−0714* tienen bandas profundas de absorción de **metano ($\text{{CH}}_4$, 1.65 y 3.3 µm)** y **agua ($\text{{H}}_2\text{{O}}$, 1.4, 1.9 y 3.0 µm)** que bloquean la luz corta, haciendo que casi toda su energía escape por la **ventana térmica de 4.5–5.0 µm (Detector D6)**."
-        )
-
-    if any(w in q for w in ["curva", "luz", "variab", "brillo", "pulsa", "eclips", "flujo"]):
-        return (
-            f"**Análisis de Curva de Luz y Variabilidad en {tgt_name}:**\n"
-            f"- Apertura fotométrica activa en el píxel `({ap_info.get('x', '-')}, {ap_info.get('y', '-')})` a lo largo de **{len(epochs)} épocas**.\n"
-            f"- Evolución del brillo superficial pico por época: "
-            + ", ".join(f"{e['date']}: **{e['peak_sb_mjy_sr']} MJy/sr** (S/N {e['snr']})" for e in epochs)
-            + ".\n- Las estrellas variables como **RW Aurigae** (ocultaciones por su disco de polvo) y **R Draconis** (gigante roja tipo Mira que pulsa cada 245.6 días) casi no cambian de posición, pero destacan con fuerza en el modo **Diferencia (E₂ − E₁)** y en la gráfica **Curva de Luz Multi-Época**."
-        )
-
-    if any(w in q for w in ["flag", "contamin", "cosmi", "zodi", "ruido", "limpi"]):
-        return (
-            f"**Calidad de Datos, Luz Zodiacal y Flags en {tgt_name}:**\n"
-            f"- Cada exposición de SPHEREx incluye el modelo de **Luz Zodiacal (`ZODI`)** producida por el polvo interplanetario (~{epochs[0]['mean_zodi'] if epochs else 0.3} MJy/sr en este campo), el cual restamos automáticamente antes de apilar.\n"
-            f"- Filtramos los defectos instrumentales de hardware (`SUR_ERROR`, `PHANTOM`, `NONFUNC`, `DICHROIC`, `MISSING_DATA`, `HOT`, `COLD`) pero **conservamos el Bit 21 (`MP_SOURCE`) y los núcleos estelares brillantes** para no perder fotometría ni puntos espectrales."
-        )
-
-    c_lines_es = [
-        f"- **#{c['rank']} ({c.get('label_es', c.get('type', 'Candidato'))}):** Píxel `({c['px']}, {c['py']})`, RA={c['ra']}°, Dec={c['dec']}°, significancia **{c['snr_diff']}σ**."
-        for c in cands
-    ]
-    ep_lines_es = [
-        f"- **{e['date']} (MJD {e['mjd']}):** {e['n_exp']} exp apiladas · Brillo superficial pico = **{e['peak_sb_mjy_sr']} MJy/sr** (S/N **{e['snr']}**) · Zodi restado = `{e['mean_zodi']} MJy/sr`."
-        for e in epochs
-    ]
-    return (
-        f"### Informe Astrofísico Profundo: {tgt_name}\n"
-        f"**1. Astrometría del Campo y Bandas Activas:**\n"
-        f"- Campo centrado en **RA {ra:.4f}°, Dec {dec:.4f}° (ICRS)** observado con las matrices detectoras **`{bands}`** ({lam_range}).\n\n"
-        f"**2. Cinemática y Anomalías en Imagen de Diferencia ($E_{{\\text{{última}}}} - E_{{\\text{{primera}}}}$):**\n"
-        + ("\n".join(c_lines_es) if c_lines_es else "- Sin anomalías >3.2σ en este corte.")
-        + "\n\n**3. Fotometría Multi-Época y Evolución Temporal:**\n"
-        + ("\n".join(ep_lines_es) if ep_lines_es else "- 1 época cargada.")
-        + f"\n\n**4. Espectroscopía LVF (`WCS-WAVE`) y Calibración Instrumental:**\n"
-        f"- Se extrajeron **{spec_count} mediciones espectrales calibradas** en el rango **{lam_range}** tras restar el modelo de Luz Zodiacal (`ZODI`) y filtrar defectos de hardware (`BAD_MASK`), preservando las fuentes catalogadas (`Bit 21 MP_SOURCE`) y los núcleos de estrellas variables brillantes."
-    )
-
-
-def _safe_fetch(row: Dict[str, Any], ra: float, dec: float, size_deg: float) -> Optional[Dict[str, Any]]:
-    try:
-        return fetch_cutout_cached(row, ra, dec, size_deg)
-    except Exception:
-        return None
+            for c in cands[:4]:
+                notes = " ".join((c.get("notes_en") if en else c.get("notes_es")) or [])
+                lines.append(f"- **#{c['rank']}** {c['label_en'] if en else c['label_es']} · {c['snr_diff']}σ · RA {c['ra']}°, Dec {c['dec']}°. {notes}")
+            lines.append("A candidate is a hypothesis: confirm it in Blink/Difference mode and against Gaia." if en else "Un candidato es una hipótesis: confírmalo en modo Blink/Diferencia y contra Gaia.")
+        else:
+            lines.append("No ≥5σ difference-image candidates in this field." if en else "No hay candidatos ≥5σ en la imagen de diferencia de este campo.")
+        if "planet" in q or "planeta" in q:
+            lines.append(("Note: 'Planet X/Nine' is hypothetical and undetected. At ~500 AU its parallactic motion would be ~7″/day, so between visits 6 months apart it would leave a 0.1° field; it must be searched for within a single visit."
+                          if en else "Nota: el 'Planeta X/Nueve' es hipotético y no se ha detectado. A ~500 UA su movimiento paraláctico sería de ~7″/día, así que entre visitas separadas 6 meses saldría de un campo de 0.1°: hay que buscarlo dentro de una misma visita."))
+        return "\n".join(lines)
+    if any(w in q for w in ["espectr", "banda", "lvf", "onda", "molecul", "agua", "metano", "hielo", "spectr", "band", "wavelength", "water", "methane", "ice"]):
+        lines.append((f"{ps.get('n', 0)} measurements of {name}: {ps.get('n_detected', 0)} with S/N ≥ 3 and {ps.get('n_saturated', 0)} saturated. Each SPHEREx exposure samples one wavelength set by the LVF position."
+                      if en else f"{ps.get('n', 0)} mediciones de {name}: {ps.get('n_detected', 0)} con S/N ≥ 3 y {ps.get('n_saturated', 0)} saturadas. Cada exposición de SPHEREx mide una sola λ, fijada por la posición en el filtro LVF."))
+        lines.append(("In brown dwarfs and cool stars, H₂O/CH₄/CO/CO₂ bands are atmospheric gas, not ice. Ice bands appear in background stars behind molecular clouds and in protostars."
+                      if en else "En enanas marrones y estrellas frías, las bandas de H₂O/CH₄/CO/CO₂ son de gas atmosférico, no de hielo. El hielo aparece en estrellas de fondo tras nubes moleculares y en protoestrellas."))
+        return "\n".join(lines)
+    if any(w in q for w in ["curva", "luz", "variab", "brillo", "pulsa", "eclips", "light", "curve", "bright"]):
+        sc = (ctx.get("light_curve") or {}).get("strongest_change")
+        if sc:
+            lines.append((f"Largest same-wavelength change: {sc['max_change_sigma']}σ at {sc['wavelength_um']} µm (ratio {sc.get('max_ratio')})."
+                          if en else f"Mayor cambio a la misma λ: {sc['max_change_sigma']}σ en {sc['wavelength_um']} µm (razón {sc.get('max_ratio')})."))
+        else:
+            lines.append("There are not enough same-wavelength measurements in different epochs to assess variability." if en else "No hay suficientes mediciones a la misma λ en épocas distintas para evaluar la variabilidad.")
+        if ps.get("n_saturated"):
+            lines.append("Saturated exposures were excluded: their fluxes are not reliable." if en else "Se excluyeron las exposiciones saturadas: sus flujos no son fiables.")
+        return "\n".join(lines)
+    ep_lines = [f"- E{e['index'] + 1} {e['date']}: {e['n_exp']} exp, λ {e.get('lam_min_um')}–{e.get('lam_max_um')} µm, ZODI {e['mean_zodi']} MJy/sr" for e in epochs]
+    head = f"### {name}\n" + (f"Data: {ctx.get('data_source', '—')}\n" if en else f"Datos: {ctx.get('data_source', '—')}\n")
+    return head + ("\n".join(ep_lines) if ep_lines else ("No epochs." if en else "Sin épocas."))
