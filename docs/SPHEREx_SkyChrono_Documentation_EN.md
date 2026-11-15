@@ -54,6 +54,14 @@ The universe has no absolute "up". The viewer offers three standard planes: **Ga
 
 ## Chapter 2 · User Manual
 
+### 2.0 Interface (v5 · Stars Finders redesign)
+- **Header:** the **Stars Finders (Delegación Zuliana)** team logo on the left and the **NASA** logo (NASA Space Apps Challenge 2026) on the right; actions are grouped in a single capsule.
+- **Viewer first:** the canvas is always square (1:1), so the sky is never distorted, and it fits the screen height. Side panels stay in place and scroll internally.
+- **Simplification:** removed the viewer-bar "Ask the copilot" button (quick prompts cover it), the "IRSA release" selector (always DR1 + QR3, DR1 first), the A↔B ruler, the light curve and the AllWISE/aperture layers. Remaining layers: **Candidates, Gaia sources, FLAGS mask and WCS grid**.
+- **Labels:** field sources are drawn as rings; their name, type and distance appear only on hover (the reference target keeps its label).
+- **MPC report:** the button only appears when a candidate has confirmed motion and no stellar counterpart. Formulas are shown inside "Data quality" with their measured value.
+- **Navigation:** dragging or zooming requests 3 exposures per epoch so the neighbouring field arrives sooner; the selector (5–20) still applies to manual loads.
+
 ### 2.1 Header and reference targets
 - **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, official IRSA tools such as the Data Explorer and MOST, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
 - **📐 MPC Report:** draft in the official two-line satellite format (SPHEREx code **288**). It is only generated for candidates with confirmed motion and no stellar counterpart; otherwise the window explains why it is empty.

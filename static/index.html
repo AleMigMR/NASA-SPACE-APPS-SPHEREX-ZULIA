@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=29" />
+  <link rel="stylesheet" href="/static/styles.css?v=30" />
+  <link rel="stylesheet" href="/static/theme.css?v=30" />
   <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
 </head>
@@ -18,10 +19,7 @@
   <!-- CABECERA SUPERIOR -->
   <header class="topbar">
     <div class="brand-group">
-      <div class="logo-orb" aria-hidden="true">
-        <span class="orb-ring"></span>
-        <span class="orb-core"></span>
-      </div>
+      <img class="team-logo" src="/static/img/logo-stars-finders.jpg" alt="Stars Finders · Delegación Zuliana" width="46" height="46" />
       <div class="brand-titles">
         <div class="brand-row">
           <h1>SPHEREx <span class="accent-gradient">SkyChrono</span></h1>
@@ -44,7 +42,7 @@
       <button id="btnOpenDocs" class="btn btn-docs" type="button" title="Abrir Centro de Documentación (Manual de Usuario, Guía para Principiantes y Manual Técnico para Jueces NASA)">
         📚 <span id="i18nBtnDocs">Manuales y Docs</span>
       </button>
-      <button id="btnExportMpc" class="btn btn-ghost" type="button" title="Borrador astrométrico MPC en formato satélite (código 288), solo para candidatos con movimiento confirmado">
+      <button id="btnExportMpc" class="btn btn-ghost" type="button" hidden title="Borrador astrométrico MPC en formato satélite (código 288), solo para candidatos con movimiento confirmado">
         📐 <span id="i18nBtnMpc">Reporte MPC 80-Col</span>
       </button>
       <button id="btnShareUrl" class="btn btn-ghost" type="button" title="Copiar enlace directo a este objetivo, época y configuración">
@@ -56,6 +54,10 @@
       <button id="btnLangToggle" class="btn btn-lang" type="button" title="Cambiar idioma Español / English">
         🌐 <span id="langLabel">EN</span>
       </button>
+    </div>
+    <div class="topbar-identity" aria-label="NASA Space Apps Challenge 2026">
+      <small>NASA Space Apps<br />Challenge 2026</small>
+      <span class="agency-logo"><img src="/static/img/logo-nasa.jpg" alt="NASA" /></span>
     </div>
   </header>
 
@@ -143,14 +145,6 @@
               <option value="30">30 días (Mensual)</option>
               <option value="45" selected>45 días (Multi-Mes)</option>
               <option value="90">90 días (Semestral)</option>
-            </select>
-          </div>
-          <div>
-            <label class="field-label" for="selectRelease" id="i18nLabelRelease">Lanzamiento IRSA</label>
-            <select id="selectRelease" class="select-input">
-              <option value="all" selected id="optRelAll">DR1 + QR3 (recomendado)</option>
-              <option value="dr1" id="optRelQr2">Solo DR1 (año 1)</option>
-              <option value="qr3" id="optRelQr1">Solo QR3 (año 2)</option>
             </select>
           </div>
         </div>
@@ -248,28 +242,12 @@
 
         <div class="toggle-list">
           <label class="toggle-row">
-            <input type="checkbox" id="chkAiDetector" checked />
-            <span id="i18nChkAiDetector">🧠 Detector de candidatos (diferencia + verificación ePSF)</span>
-          </label>
-          <label class="toggle-row">
-            <input type="checkbox" id="chkStarRecognizer" checked />
-            <span id="i18nChkStarRecognizer">🔭 Reconocedor Automático de Astros y Distancias (pc/ly)</span>
-          </label>
-          <label class="toggle-row">
             <input type="checkbox" id="chkCandidates" checked />
             <span id="i18nChkCandidates">🎯 Candidatos en Movimiento / Variables</span>
           </label>
           <label class="toggle-row">
             <input type="checkbox" id="chkGaia" checked />
             <span id="i18nChkGaia">✦ Estrellas Gaia DR3 + Vectores Mov. Propio</span>
-          </label>
-          <label class="toggle-row">
-            <input type="checkbox" id="chkWise" checked />
-            <span id="i18nChkWise">◈ Fuentes Infrarrojas AllWISE (W1/W2)</span>
-          </label>
-          <label class="toggle-row">
-            <input type="checkbox" id="chkAperture" checked />
-            <span id="i18nChkAperture">⭕ Apertura Fotométrica + Anillo de Cielo</span>
           </label>
           <label class="toggle-row">
             <input type="checkbox" id="chkGrid" checked />
@@ -359,9 +337,6 @@
           <button type="button" id="btnToggleStarRecognizer" class="btn-star-recognizer active" title="Fuentes del campo identificadas con Gaia DR3 / AllWISE (la distancia solo aparece si hay paralaje fiable)">
             🔭 <span id="i18nBtnStarRecognizer">Fuentes: ON</span>
           </button>
-          <button type="button" id="btnScanWithGemini" class="btn-ai-gemini-scan" title="Enviar la telemetría medida y la imagen actual al copiloto (Gemini, o motor local sin clave)">
-            ✨ <span id="i18nBtnScanGemini">Consultar a Gemini</span>
-          </button>
           <div class="viewer-status">
             <span class="status-dot" id="statusDot"></span>
             <span id="statusText">Listo</span>
@@ -422,19 +397,6 @@
           <div id="allskyAladinDiv" class="allsky-aladin-box" hidden></div>
         </div>
 
-        <!-- HUD Flotante del Medidor de Distancias Cósmicas (Telescopio → Astro y Astro A ↔ Astro B) -->
-        <div id="distanceRulerHud" class="distance-ruler-hud" hidden>
-          <div class="ruler-hud-header">
-            <span>📏 <strong id="i18nRulerHudTitle">Telémetro Cósmico 3D (SPHEREx / Gaia)</strong></span>
-            <div style="display:flex; gap:4px;">
-              <button type="button" id="btnClearRuler" class="btn btn-xs btn-ghost" title="Reiniciar puntos A y B">↺</button>
-              <button type="button" id="btnCloseRuler" class="btn btn-xs btn-ghost" title="Cerrar medidor de distancias">✕</button>
-            </div>
-          </div>
-          <div id="distanceRulerBody" class="ruler-hud-body">
-            Haz clic en un primer cuerpo celeste (Punto A) para medir su distancia al telescopio SPHEREx, y en un segundo cuerpo (Punto B) para calcular la distancia angular y espacial 3D entre ambos.
-          </div>
-        </div>
 
         <!-- Controles flotantes de Zoom y Navegación Libre estilo IRSA -->
         <div class="canvas-zoom-controls">
@@ -548,7 +510,7 @@
           <div class="artifact-shield-grid" id="artifactShieldGrid">
             <!-- Tarjetas de calidad de datos generadas con los datos del cubo -->
           </div>
-          <div class="math-equations-header" id="i18nMathEqHeader">🧮 Motor Matemático en Vivo (Evaluación Cuantitativa sobre el Cubo Actual)</div>
+          <div class="math-equations-header" id="i18nMathEqHeader">🧮 Fórmulas aplicadas a esta calidad de datos (valor medido)</div>
           <div class="math-telemetry-grid" id="mathEquationsGrid">
             <!-- 6 ecuaciones evaluadas en tiempo real -->
           </div>
@@ -947,6 +909,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=29"></script>
+  <script src="/static/app.js?v=30"></script>
 </body>
 </html>

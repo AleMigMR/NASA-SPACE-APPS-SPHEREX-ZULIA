@@ -17,6 +17,8 @@
 
 ## 🌌 Resumen
 
+> **Equipo Stars Finders · Delegación Zuliana de Astronomía.** Interfaz v5: visor cuadrado sin deformación, paneles fijos, capas simplificadas y logos del equipo y de la NASA en la cabecera (detalle en la documentación, cap. 2.0).
+
 **SPHEREx SkyChrono** es una aplicación web de código abierto para explorar el cielo de SPHEREx en el tiempo y en longitud de onda. Busca las exposiciones de nivel 2 (L2b) que cubren cualquier punto del cielo y descarga solo los recortes necesarios desde AWS. Después alterna las visitas (*blink*) para ver qué se mueve o cambia de brillo, y mide cada fuente con el mismo método del pipeline oficial: fotometría PSF forzada con la ePSF oficial.
 
 **Principio de rigor:** todo número que muestra la app sale de un producto oficial (SPHEREx en IRSA/AWS, Gaia DR3, AllWISE, SIMBAD) o de un cálculo documentado. Cuando un dato no existe o no es fiable (saturación, baja S/N, sin paralaje), la app lo dice en lugar de inventarlo.
@@ -154,7 +156,6 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 │   └── test_copilot.py    # Copiloto con proveedores simulados: clave válida/inválida, sin cuota, modelo inexistente
 ├── tools/
 │   └── validate_targets.py  # Validación de los objetivos del reto con datos reales de SPHEREx
-└── poc/                   # Pruebas de concepto iniciales
 ```
 
 ---
