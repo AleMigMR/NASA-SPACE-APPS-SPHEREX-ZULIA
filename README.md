@@ -28,7 +28,7 @@
 | Módulo | Qué muestra | Método y fuente |
 | :--- | :--- | :--- |
 | **Visor 360°** | Mapa del cielo completo en planos galáctico, eclíptico e ICRS (Hammer-Aitoff 2:1, globo 3D, Aladin Lite) | PNG HiPS oficiales del cubo All-Sky DR1 (solo para visualizar) |
-| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita: Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP, con respaldo SIA; recortes por HTTP Range desde AWS S3 (respaldo IBE) |
+| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita (hasta 8 visitas repartidas en todo el período): Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP → SIA → lista oficial guardada (objetivos del reto); recortes por HTTP Range desde AWS S3 (respaldo IBE) |
 | **Pantalla completa** | Visor de imágenes a pantalla completa: botón **⛶**, tecla **F**, **Esc** para salir | Fullscreen API; la imagen se dibuja siempre con píxeles cuadrados |
 | **Objetivo con movimiento propio** | ✚ posición predicha del objetivo en cada exposición | `SkyCoord.apply_space_motion` con astrometría Gaia DR3 o de la literatura |
 | **Fotometría** | Flujo en µJy con error 1σ, S/N, magnitud AB o límite superior a 3σ | ePSF oficial, mínimos cuadrados con pesos 1/VARIANCE, *deblending* con Gaia, 3 % sistemático, máscara oficial |
@@ -145,6 +145,8 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 │   ├── index.html         # Interfaz bilingüe
 │   ├── app.js             # Visores, gráficos, pantalla completa y lógica de la UI
 │   └── styles.css         # Estilos
+├── data/
+│   └── spherex_exposure_index/  # Listas oficiales de exposiciones (IRSA SIA) de los 5 objetivos: respaldo si IRSA no responde
 ├── docs/
 │   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documentación completa (5 capítulos, ES)
 │   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
@@ -230,7 +232,7 @@ Para Render, [`render.yaml`](render.yaml) ya está configurado; añade `GEMINI_A
 
 - **Saturación:** Barnard, RW Aur y R Dra saturan SPHEREx. Su posición se mide, pero su flujo no es fiable.
 - **WISE 0855** es débil para SPHEREx y está mezclado con una estrella G = 16.3 a 8″: espera S/N bajo por exposición.
-- **IRSA:** si TAP y SIA no responden, la app muestra una sola imagen estática del cubo DR1, claramente señalada, y nunca simula épocas.
+- **IRSA:** IRSA solo hace falta para saber qué exposiciones cubren un punto; las imágenes se leen de AWS S3. Si TAP y SIA no responden, los cinco objetivos del reto usan su lista oficial guardada en `data/spherex_exposure_index/` y el blink sigue funcionando. En cualquier otro punto la app muestra una sola imagen estática del cubo DR1, claramente señalada, nunca simula épocas y reintenta IRSA automáticamente cada ~2 minutos.
 - **Planeta X / Nueve** es hipotético y no se ha detectado. A ~500 UA se movería ~7″ por día: hay que buscarlo dentro de una misma visita (días), no entre visitas separadas seis meses.
 - **Cubo DR1:** píxeles de 12.9″, sin información temporal. Sus PNG HiPS sirven solo para visualizar.
 
@@ -251,6 +253,8 @@ La documentación completa (conceptos, manual de usuario, métodos y fórmulas, 
 
 - Archivo SPHEREx en IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
 - Tutoriales oficiales de SPHEREx: https://caltech-ipac.github.io/irsa-tutorials/spherex/
+- Herramientas oficiales de IRSA: [SPHEREx Data Explorer](https://irsa.ipac.caltech.edu/applications/spherex) · [MOST](https://irsa.ipac.caltech.edu/applications/MOST) (imágenes de SPHEREx que cubren un objeto del Sistema Solar) · [Spectrophotometry Tool](https://irsa.ipac.caltech.edu/applications/spherex/tool-spectrophotometry)
+- Artículos canónicos de SPHEREx: Bock et al. 2026 (misión), Akeson et al. 2026 (pipeline), Korngut et al. 2026 (instrumento y calibración), Crill et al. 2025 (simulador del cielo)
 - Recursos del reto: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
 - Gaia DR3 en MAST: https://archive.stsci.edu/missions-and-data/gaia
 - WiseView: http://byw.tools/wiseview

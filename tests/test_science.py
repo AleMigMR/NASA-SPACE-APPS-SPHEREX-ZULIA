@@ -202,6 +202,44 @@ def test_measured_motion_recovers_catalogue_motion():
     assert abs(m["pa_deg"] - m["predicted_pa_deg"]) < 10
 
 
+def test_stored_exposure_lists_cover_challenge_targets():
+    """Las listas oficiales guardadas (respuestas reales de IRSA SIA) existen para los 5 objetivos y son coherentes."""
+    for tid in ("Barnard", "EpsIndiB", "WISE0855", "RW_Aur", "R_Dra"):
+        t = se._TARGETS_BY_ID[tid]
+        res = se._query_snapshot_exposures(t["ra"], t["dec"])
+        assert res is not None, tid
+        rows, info = res
+        assert info["target_id"] == tid and len(rows) >= 100
+        assert all(r["uri"].startswith("ibe/data/spherex/") and r["uri"].endswith(".fits") for r in rows)
+        assert all(r["band"] in se.DETECTOR_INFO for r in rows)
+        assert all(se.DR1_MJD_RANGE[0] - 30 < r["t_min"] < 62000 for r in rows)
+    assert se._query_snapshot_exposures(10.0, 10.0) is None  # lejos de los objetivos: no hay respaldo
+
+
+def test_exposure_discovery_falls_back_to_stored_list_when_irsa_is_down(tmp_path=None):
+    import tempfile
+    t = se._TARGETS_BY_ID["WISE0855"]
+    old_cache, old_get, old_status = se.CACHE_DIR, se.requests.get, dict(se._TAP_STATUS)
+    tmp = tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmp, "tap"))
+
+    def _down(*a, **k):
+        raise se.requests.exceptions.ConnectionError("IRSA caído (simulado)")
+
+    try:
+        se.CACHE_DIR = tmp
+        se.requests.get = _down
+        se._TAP_STATUS.update({"tap_fail_t": 0.0, "sia_fail_t": 0.0})
+        rows = se.query_spherex_exposures(t["ra"], t["dec"], bands=["D6"], release="all")
+        assert rows and all(r["band"] == "D6" for r in rows)
+        assert se._TAP_STATUS["ok"] and se._TAP_STATUS["via"] == "snapshot"
+        assert not os.listdir(os.path.join(tmp, "tap"))  # la lista guardada no se escribe como caché
+    finally:
+        se.CACHE_DIR, se.requests.get = old_cache, old_get
+        se._TAP_STATUS.clear()
+        se._TAP_STATUS.update(old_status)
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

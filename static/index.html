@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=26" />
+  <link rel="stylesheet" href="/static/styles.css?v=27" />
   <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
 </head>
@@ -872,33 +872,44 @@
 
         <div class="res-cards-grid">
           <div class="res-card">
-            <span class="res-tag">NASA DATA · NASA/IPAC IRSA</span>
-            <h3>SPHEREx Mission at IRSA</h3>
-            <p>Archivo oficial: imágenes espectrales L2b (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), cubo All-Sky DR1, Suplemento Explicativo y servicios TAP/SIA.</p>
+            <span class="res-tag" id="resTag1">NASA DATA · NASA/IPAC IRSA</span>
+            <h3 id="resTitle1">SPHEREx Mission at IRSA</h3>
+            <p id="resDesc1">Archivo oficial: imágenes espectrales L2b (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), cubo All-Sky DR1, Suplemento Explicativo y servicios TAP/SIA.</p>
             <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noopener">irsa.ipac.caltech.edu/Missions/spherex.html ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">NASA DATA · TUTORIALES OFICIALES</span>
-            <h3>SPHEREx Tutorial Notebooks</h3>
-            <p>Notebooks de IRSA en Python (acceso SIA/TAP, recortes, PSF, cubo HiPS, mosaicos). SkyChrono sigue los mismos métodos: SIA con colecciones DR1/QR3 y lectura en S3.</p>
+            <span class="res-tag" id="resTag2">NASA DATA · TUTORIALES OFICIALES</span>
+            <h3 id="resTitle2">SPHEREx Tutorial Notebooks</h3>
+            <p id="resDesc2">Notebooks de IRSA en Python (acceso SIA/TAP, recortes, PSF, cubo HiPS, mosaicos). SkyChrono sigue los mismos métodos: SIA con colecciones DR1/QR3 y lectura en S3.</p>
             <a href="https://caltech-ipac.github.io/irsa-tutorials/spherex/" target="_blank" rel="noopener">caltech-ipac.github.io/irsa-tutorials/spherex ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">NASA DATA · MODELO DE HERRAMIENTA</span>
-            <h3>WiseView</h3>
-            <p>Visor de parpadeo (blink) de datos de WISE usado por el público para cientos de descubrimientos de movimiento propio. Inspiración del modo Blink de SkyChrono.</p>
+            <span class="res-tag" id="resTag3">NASA DATA · HERRAMIENTAS OFICIALES DE IRSA</span>
+            <h3 id="resTitle3">SPHEREx Data Explorer · MOST · Espectrofotometría</h3>
+            <p id="resDesc3">Para contrastar resultados: el explorador oficial de datos, MOST (busca las imágenes de SPHEREx que cubren la órbita de un objeto del Sistema Solar, el camino para buscar objetos tipo Planeta X) y la herramienta oficial de fotometría forzada.</p>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+              <a href="https://irsa.ipac.caltech.edu/applications/spherex" target="_blank" rel="noopener" class="doi-pill">Data Explorer</a>
+              <a href="https://irsa.ipac.caltech.edu/applications/MOST" target="_blank" rel="noopener" class="doi-pill">MOST</a>
+              <a href="https://irsa.ipac.caltech.edu/applications/spherex/tool-spectrophotometry" target="_blank" rel="noopener" class="doi-pill">Spectrophotometry Tool</a>
+              <a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/" target="_blank" rel="noopener" class="doi-pill">Archive User Guide</a>
+            </div>
+          </div>
+          <div class="res-card">
+            <span class="res-tag" id="resTag4">NASA DATA · MODELO DE HERRAMIENTA</span>
+            <h3 id="resTitle4">WiseView</h3>
+            <p id="resDesc4">Visor de parpadeo (blink) de datos de WISE usado por el público para cientos de descubrimientos de movimiento propio. Inspiración del modo Blink de SkyChrono.</p>
             <a href="http://byw.tools/wiseview" target="_blank" rel="noopener">byw.tools/wiseview ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">NASA DATA · GAIA DR3 EN MAST</span>
-            <h3>Gaia Mission Data (Data Release 3)</h3>
-            <p>SkyChrono consulta Gaia DR3 en MAST para identificar fuentes, propagar posiciones y dar distancias solo cuando la paralaje es fiable (π/σ ≥ 5).</p>
+            <span class="res-tag" id="resTag5">NASA DATA · GAIA DR3 EN MAST</span>
+            <h3 id="resTitle5">Gaia Mission Data (Data Release 3)</h3>
+            <p id="resDesc5">SkyChrono consulta Gaia DR3 en MAST para identificar fuentes, propagar posiciones y dar distancias solo cuando la paralaje es fiable (π/σ ≥ 5).</p>
             <a href="https://archive.stsci.edu/missions-and-data/gaia" target="_blank" rel="noopener">archive.stsci.edu/missions-and-data/gaia ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">DOIs · DATOS UTILIZADOS</span>
-            <h3>DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES</h3>
-            <p>Citas de los productos usados: imágenes DR1, cubo All-Sky DR1, imágenes QR3 y la lista de objetivos de hielos SPLICES.</p>
+            <span class="res-tag" id="resTag6">DOIs · DATOS UTILIZADOS</span>
+            <h3 id="resTitle6">DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES</h3>
+            <p id="resDesc6">Citas de los productos usados: imágenes DR1, cubo All-Sky DR1, imágenes QR3 y la lista de objetivos de hielos SPLICES.</p>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
               <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA678</a>
               <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener" class="doi-pill">10.26131/IRSA679</a>
@@ -907,15 +918,15 @@
             </div>
           </div>
           <div class="res-card">
-            <span class="res-tag">IAU MINOR PLANET CENTER</span>
-            <h3>Formato de observaciones desde satélite</h3>
-            <p>Código de observatorio de SPHEREx: <strong>288</strong>. Las observaciones espaciales requieren una segunda línea con el vector geocéntrico del satélite. El MPC solo acepta objetos del Sistema Solar.</p>
+            <span class="res-tag" id="resTag7">IAU MINOR PLANET CENTER</span>
+            <h3 id="resTitle7">Formato de observaciones desde satélite</h3>
+            <p id="resDesc7">Código de observatorio de SPHEREx: 288. Las observaciones espaciales requieren una segunda línea con el vector geocéntrico del satélite. El MPC solo acepta objetos del Sistema Solar.</p>
             <a href="https://www.minorplanetcenter.net/iau/info/SatelliteObs.html" target="_blank" rel="noopener">minorplanetcenter.net · SatelliteObs ↗</a>
           </div>
           <div class="res-card">
-            <span class="res-tag">SOCIO · AGENCIA ESPACIAL CANADIENSE (CSA)</span>
-            <h3>NEOSSat · CADC</h3>
-            <p>NEOSSat, primer telescopio espacial dedicado a asteroides, cometas y basura espacial, y el Canadian Astronomy Data Centre con su tutorial y conjunto de datos.</p>
+            <span class="res-tag" id="resTag8">SOCIO · AGENCIA ESPACIAL CANADIENSE (CSA)</span>
+            <h3 id="resTitle8">NEOSSat · CADC</h3>
+            <p id="resDesc8">NEOSSat, primer telescopio espacial dedicado a asteroides, cometas y basura espacial, y el Canadian Astronomy Data Centre con su tutorial y conjunto de datos.</p>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
               <a href="https://www.asc-csa.gc.ca/eng/satellites/neossat/" target="_blank" rel="noopener" class="doi-pill">NEOSSat</a>
               <a href="https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/en/" target="_blank" rel="noopener" class="doi-pill">CADC</a>
@@ -924,9 +935,9 @@
             </div>
           </div>
           <div class="res-card">
-            <span class="res-tag">RETO OFICIAL · NASA SPACE APPS 2026</span>
-            <h3>Planet X and SPHEREx</h3>
-            <p>Página del reto con la lista oficial de recursos. NASA no respalda entidades ajenas al Gobierno de EE. UU.; respeta las condiciones de uso de cada sitio.</p>
+            <span class="res-tag" id="resTag9">RETO OFICIAL · NASA SPACE APPS 2026</span>
+            <h3 id="resTitle9">Planet X and SPHEREx</h3>
+            <p id="resDesc9">Página del reto con la lista oficial de recursos. NASA no respalda entidades ajenas al Gobierno de EE. UU.; respeta las condiciones de uso de cada sitio.</p>
             <a href="https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources" target="_blank" rel="noopener">spaceappschallenge.org · Planet X &amp; SPHEREx ↗</a>
           </div>
         </div>
@@ -934,6 +945,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=26"></script>
+  <script src="/static/app.js?v=27"></script>
 </body>
 </html>

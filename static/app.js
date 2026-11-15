@@ -251,6 +251,37 @@ const I18N = {
     resourcesModalTitle: "Centro Oficial de Recursos NASA, IRSA/IPAC y Herramientas de Misión",
     i18nBtnCloseRes: "Cerrar",
     i18nResLiveTitle: "Puente Directo en Vivo a Archivos Oficiales NASA/IPAC para la Coordenada Actual",
+    resTag1: "NASA DATA · NASA/IPAC IRSA",
+    resTitle1: "SPHEREx Mission at IRSA",
+    resDesc1: "Archivo oficial: imágenes espectrales L2b (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), cubo All-Sky DR1, Suplemento Explicativo y servicios TAP/SIA.",
+    resTag2: "NASA DATA · TUTORIALES OFICIALES",
+    resTitle2: "SPHEREx Tutorial Notebooks",
+    resDesc2: "Notebooks de IRSA en Python (acceso SIA/TAP, recortes, PSF, cubo HiPS, mosaicos). SkyChrono sigue los mismos métodos: SIA con colecciones DR1/QR3 y lectura en S3.",
+    resTag3: "NASA DATA · HERRAMIENTAS OFICIALES DE IRSA",
+    resTitle3: "SPHEREx Data Explorer · MOST · Espectrofotometría",
+    resDesc3: "Para contrastar resultados: el explorador oficial de datos, MOST (busca las imágenes de SPHEREx que cubren la órbita de un objeto del Sistema Solar, el camino para buscar objetos tipo Planeta X) y la herramienta oficial de fotometría forzada.",
+    resTag4: "NASA DATA · MODELO DE HERRAMIENTA",
+    resTitle4: "WiseView",
+    resDesc4: "Visor de parpadeo (blink) de datos de WISE usado por el público para cientos de descubrimientos de movimiento propio. Inspiración del modo Blink de SkyChrono.",
+    resTag5: "NASA DATA · GAIA DR3 EN MAST",
+    resTitle5: "Gaia Mission Data (Data Release 3)",
+    resDesc5: "SkyChrono consulta Gaia DR3 en MAST para identificar fuentes, propagar posiciones y dar distancias solo cuando la paralaje es fiable (π/σ ≥ 5).",
+    resTag6: "DOIs · DATOS UTILIZADOS",
+    resTitle6: "DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES",
+    resDesc6: "Citas de los productos usados: imágenes DR1, cubo All-Sky DR1, imágenes QR3 y la lista de objetivos de hielos SPLICES.",
+    resTag7: "IAU MINOR PLANET CENTER",
+    resTitle7: "Formato de observaciones desde satélite",
+    resDesc7: "Código de observatorio de SPHEREx: 288. Las observaciones espaciales requieren una segunda línea con el vector geocéntrico del satélite. El MPC solo acepta objetos del Sistema Solar.",
+    resTag8: "SOCIO · AGENCIA ESPACIAL CANADIENSE (CSA)",
+    resTitle8: "NEOSSat · CADC",
+    resDesc8: "NEOSSat, primer telescopio espacial dedicado a asteroides, cometas y basura espacial, y el Canadian Astronomy Data Centre con su tutorial y conjunto de datos.",
+    resTag9: "RETO OFICIAL · NASA SPACE APPS 2026",
+    resTitle9: "Planet X and SPHEREx",
+    resDesc9: "Página del reto con la lista oficial de recursos. NASA no respalda entidades ajenas al Gobierno de EE. UU.; respeta las condiciones de uso de cada sitio.",
+    linkIrsaSpherexLive: "🔭 Abrir Misión SPHEREx en IRSA",
+    linkIrsaViewerLive: "🌌 Abrir Coordenada en IRSA Viewer (Firefly)",
+    linkSimbadLive: "✦ Consultar Campo en SIMBAD (CDS)",
+    linkVizierLive: "◈ Catálogos Gaia DR3 / AllWISE en VizieR",
     i18nDocsBadge: "DOCUMENTACIÓN OFICIAL",
     docsModalTitle: "Centro de Documentación SPHEREx SkyChrono",
     i18nBtnRawMd: "Abrir Markdown",
@@ -419,6 +450,37 @@ const I18N = {
     resourcesModalTitle: "Official NASA, IRSA/IPAC & Mission Tools Resource Hub",
     i18nBtnCloseRes: "Close",
     i18nResLiveTitle: "Live Direct Bridge to Official NASA/IPAC Archives for Current Coordinates",
+    resTag1: "NASA DATA · NASA/IPAC IRSA",
+    resTitle1: "SPHEREx Mission at IRSA",
+    resDesc1: "Official archive: L2b spectral images (IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE), DR1 All-Sky cube, Explanatory Supplement and TAP/SIA services.",
+    resTag2: "NASA DATA · OFFICIAL TUTORIALS",
+    resTitle2: "SPHEREx Tutorial Notebooks",
+    resDesc2: "IRSA Python notebooks (SIA/TAP access, cutouts, PSF, HiPS cube, mosaics). SkyChrono follows the same methods: SIA with DR1/QR3 collections and reads from S3.",
+    resTag3: "NASA DATA · OFFICIAL IRSA TOOLS",
+    resTitle3: "SPHEREx Data Explorer · MOST · Spectrophotometry",
+    resDesc3: "To cross-check results: the official data explorer, MOST (finds the SPHEREx images that cover a Solar System object's orbit, the way to search for Planet X-like objects) and the official forced-photometry tool.",
+    resTag4: "NASA DATA · TOOL MODEL",
+    resTitle4: "WiseView",
+    resDesc4: "Blink viewer for WISE data used by the public for hundreds of proper-motion discoveries. Inspiration for SkyChrono's Blink mode.",
+    resTag5: "NASA DATA · GAIA DR3 AT MAST",
+    resTitle5: "Gaia Mission Data (Data Release 3)",
+    resDesc5: "SkyChrono queries Gaia DR3 at MAST to identify sources, propagate positions and give distances only when the parallax is reliable (π/σ ≥ 5).",
+    resTag6: "DOIs · DATA USED",
+    resTitle6: "DR1 Spectral Images · DR1 All-Sky Cube · QR3 · SPLICES",
+    resDesc6: "Citations of the products used: DR1 images, DR1 All-Sky cube, QR3 images and the SPLICES ice target list.",
+    resTag7: "IAU MINOR PLANET CENTER",
+    resTitle7: "Format for observations from satellites",
+    resDesc7: "SPHEREx observatory code: 288. Space-based observations need a second line with the satellite's geocentric vector. The MPC only accepts Solar System objects.",
+    resTag8: "PARTNER · CANADIAN SPACE AGENCY (CSA)",
+    resTitle8: "NEOSSat · CADC",
+    resDesc8: "NEOSSat, the first space telescope dedicated to asteroids, comets and space debris, and the Canadian Astronomy Data Centre with its tutorial and dataset.",
+    resTag9: "OFFICIAL CHALLENGE · NASA SPACE APPS 2026",
+    resTitle9: "Planet X and SPHEREx",
+    resDesc9: "Challenge page with the official list of resources. NASA does not endorse non-U.S. Government entities; follow each site's terms of use.",
+    linkIrsaSpherexLive: "🔭 Open SPHEREx Mission at IRSA",
+    linkIrsaViewerLive: "🌌 Open Coordinate in IRSA Viewer (Firefly)",
+    linkSimbadLive: "✦ Query Field in SIMBAD (CDS)",
+    linkVizierLive: "◈ Gaia DR3 / AllWISE Catalogs in VizieR",
     i18nDocsBadge: "OFFICIAL DOCUMENTATION",
     docsModalTitle: "SPHEREx SkyChrono Documentation Center",
     i18nBtnRawMd: "Open Markdown",
@@ -2425,6 +2487,10 @@ async function handleSearchResolve() {
 
 async function loadSkyPatch(opts = {}) {
   const silent = Boolean(opts && opts.silent);
+  if (STATE.irsaRetryTimer) {
+    clearTimeout(STATE.irsaRetryTimer);
+    STATE.irsaRetryTimer = null;
+  }
   STATE.panFetchInProgress = true;
   if (!silent) {
     showLoading(true);
@@ -2520,14 +2586,22 @@ async function loadSkyPatch(opts = {}) {
     setStatus(
       cube.data_mode === "dr1_static"
         ? STATE.lang === "en"
-          ? `Static DR1 (no L2b available) · ${cube.elapsed_sec}s`
-          : `DR1 estático (sin L2b disponible) · ${cube.elapsed_sec}s`
+          ? `Static DR1 (no L2b available)${cube.retry_after_s ? " · retrying IRSA automatically" : ""} · ${cube.elapsed_sec}s`
+          : `DR1 estático (sin L2b disponible)${cube.retry_after_s ? " · reintento automático de IRSA" : ""} · ${cube.elapsed_sec}s`
         : `${cube.epochs.length} ${STATE.lang === "en" ? "epochs" : "épocas"} · ${cube.used_exposures} exp (${cube.elapsed_sec}s)`,
       false
     );
 
     fetchExternalCatalogs();
     fetchDr1Spectrum();
+    // IRSA no respondió: reintento automático del mismo campo (el cubo DR1 estático no tiene épocas reales)
+    if (cube.retry_after_s && cube.data_mode === "dr1_static") {
+      const stamp = STATE.cubeStamp;
+      STATE.irsaRetryTimer = setTimeout(() => {
+        STATE.irsaRetryTimer = null;
+        if (STATE.cubeStamp === stamp && STATE.mode !== "allsky") loadSkyPatch({ silent: false });
+      }, cube.retry_after_s * 1000);
+    }
   } catch (err) {
     console.error("Error construyendo cubo SPHEREx:", err);
     showLoading(false);

@@ -766,7 +766,7 @@ def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr:
 # Descubrimiento de exposiciones (IRSA TAP)
 # ---------------------------------------------------------------------------
 _TAP_STATUS: Dict[str, Any] = {"ok": None, "error": None, "t": 0.0, "via": None, "tap_fail_t": 0.0, "sia_fail_t": 0.0}
-SERVICE_RETRY_S = 300.0
+SERVICE_RETRY_S = 120.0  # tras un fallo de TAP o SIA no se vuelve a esperar ese servicio durante 2 minutos
 
 
 def query_spherex_exposures(
@@ -776,9 +776,10 @@ def query_spherex_exposures(
     release: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Consulta IRSA TAP (spherex.artifact ⋈ spherex.plane) por las exposiciones L2b cuyo polígono
-    contiene (ra, dec). Cachea en disco solo respuestas válidas. Si IRSA no responde devuelve []
-    y deja constancia en `_TAP_STATUS` (la UI lo comunica en vez de inventar datos).
+    Exposiciones L2b cuyo polígono contiene (ra, dec): caché local → IRSA TAP (spherex.artifact ⋈ spherex.plane)
+    → IRSA SIA → lista oficial guardada en `data/spherex_exposure_index/` (solo objetivos del reto). Cachea en disco
+    solo respuestas en vivo. Si nada está disponible devuelve [] y deja constancia en `_TAP_STATUS` (la UI lo
+    comunica en vez de inventar datos).
     """
     key_str = f"tap_v2_{ra:.4f}_{dec:.4f}"
     cache_file = os.path.join(CACHE_DIR, "tap", f"{key_str}.json")
@@ -825,7 +826,7 @@ def query_spherex_exposures(
             else:
                 _TAP_STATUS["via"] = "TAP"
         else:
-            errors.append("TAP: falló hace menos de 5 min (no se reintenta todavía)")
+            errors.append("TAP: falló hace menos de 2 min (no se reintenta todavía)")
         if all_rows is None:
             if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
                 all_rows = _query_sia_exposures(ra, dec)
@@ -835,17 +836,27 @@ def query_spherex_exposures(
                 else:
                     _TAP_STATUS["via"] = "SIA"
             else:
-                errors.append("SIA: falló hace menos de 5 min (no se reintenta todavía)")
+                errors.append("SIA: falló hace menos de 2 min (no se reintenta todavía)")
+        snap_info = None
         if all_rows is None:
-            _TAP_STATUS.update({"ok": False, "error": " · ".join(errors), "t": time.time()})
+            # Último respaldo: lista OFICIAL de exposiciones guardada en el proyecto para los objetivos del reto
+            # (respuesta real de IRSA SIA). Las imágenes se siguen leyendo en vivo desde AWS S3.
+            snap = _query_snapshot_exposures(ra, dec)
+            if snap is not None:
+                all_rows, snap_info = snap
+        if all_rows is None:
+            _TAP_STATUS.update({"ok": False, "error": " · ".join(errors), "t": time.time(), "snapshot": None})
             return []
-        _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time()})
-        if all_rows:  # una respuesta vacía no se cachea: puede cambiar con nuevas versiones de datos
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(all_rows, f)
-            except Exception:
-                pass
+        if snap_info is not None:
+            _TAP_STATUS.update({"ok": True, "via": "snapshot", "snapshot": snap_info, "error": " · ".join(errors), "t": time.time()})
+        else:
+            _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time(), "snapshot": None})
+            if all_rows:  # una respuesta vacía no se cachea: puede cambiar con nuevas versiones de datos
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(all_rows, f)
+                except Exception:
+                    pass
     else:
         _TAP_STATUS.update({"ok": True, "error": None, "via": "caché"})
 
@@ -856,6 +867,53 @@ def query_spherex_exposures(
     if release and release.lower() != "all":
         filtered = [r for r in filtered if (r.get("release") or "").lower() == release.lower()]
     return filtered
+
+
+SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "spherex_exposure_index")
+SNAPSHOT_MATCH_DEG = 0.3  # cada exposición cubre 3.5° × 3.5°; la cobertura real se comprueba luego con el WCS
+_SNAPSHOTS: Optional[List[Dict[str, Any]]] = None
+
+
+def _load_exposure_snapshots() -> List[Dict[str, Any]]:
+    """Listas oficiales de exposiciones L2b (respuestas de IRSA SIA) incluidas en el proyecto para los objetivos del reto."""
+    global _SNAPSHOTS
+    if _SNAPSHOTS is not None:
+        return _SNAPSHOTS
+    snaps: List[Dict[str, Any]] = []
+    if os.path.isdir(SNAPSHOT_DIR):
+        for fn in sorted(os.listdir(SNAPSHOT_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(SNAPSHOT_DIR, fn), "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                cols = d["columns"]
+                rows = []
+                for vals in d["rows"]:
+                    r = dict(zip(cols, vals))
+                    r["band_full"] = f"SPHEREx-{r['band']}"
+                    r["date_iso"] = Time(float(r["t_min"]), format="mjd").isot[:19] if r.get("t_min") else ""
+                    r.setdefault("exptime", EXPTIME_S)
+                    rows.append(r)
+                snaps.append({"target_id": d.get("target_id"), "ra": float(d["ra"]), "dec": float(d["dec"]),
+                              "date_utc": (d.get("query") or {}).get("date_utc"), "rows": rows})
+            except Exception:
+                continue
+    _SNAPSHOTS = snaps
+    return snaps
+
+
+def _query_snapshot_exposures(ra: float, dec: float) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    """Exposiciones de la lista guardada más cercana (≤ SNAPSHOT_MATCH_DEG), o None si no hay ninguna aplicable."""
+    best, best_d = None, 999.0
+    for snap in _load_exposure_snapshots():
+        d = float(np.hypot(((ra - snap["ra"] + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(dec)), dec - snap["dec"]))
+        if d < best_d:
+            best, best_d = snap, d
+    if best is None or best_d > SNAPSHOT_MATCH_DEG:
+        return None
+    info = {"target_id": best["target_id"], "date_utc": best["date_utc"], "sep_deg": round(best_d, 4), "n_rows": len(best["rows"])}
+    return [dict(r) for r in best["rows"]], info
 
 
 def _query_tap_exposures(ra: float, dec: float) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -2924,8 +2982,8 @@ def build_sky_cube_and_spectrum(
                 "dr1_channels": dr1_info.get("channels", []), "dr1_tiles": dr1_info.get("tiles", []),
             })
             notes.append({"level": "warn",
-                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA TAP no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales.",
-                          "en": "No L2b exposures available" + (" (IRSA TAP is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve."})
+                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales." + (" La app reintentará IRSA automáticamente en unos 2 minutos." if not tap_ok else ""),
+                          "en": "No L2b exposures available" + (" (IRSA is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve." + (" The app will retry IRSA automatically in about 2 minutes." if not tap_ok else "")})
         else:
             return {"error": ("IRSA TAP no responde y no se pudo leer el cubo DR1." if not tap_ok else "No hay datos SPHEREx en esta posición."),
                     "tap_status": dict(_TAP_STATUS)}
@@ -2984,6 +3042,11 @@ def build_sky_cube_and_spectrum(
         notes.append({"level": "warn", "es": "IRSA (TAP y SIA) no respondió: " + str(_TAP_STATUS.get("error") or "sin detalle"), "en": "IRSA (TAP and SIA) did not respond: " + str(_TAP_STATUS.get("error") or "no detail")})
     elif tap_ok and _TAP_STATUS.get("via") == "SIA":
         notes.append({"level": "info", "es": "Exposiciones obtenidas con el servicio SIA de IRSA (TAP no respondió).", "en": "Exposures retrieved with the IRSA SIA service (TAP did not respond)."})
+    elif tap_ok and _TAP_STATUS.get("via") == "snapshot":
+        snap_d = str((_TAP_STATUS.get("snapshot") or {}).get("date_utc") or "")[:10]
+        notes.append({"level": "info",
+                      "es": f"IRSA no responde: se usa la lista oficial de exposiciones de este objetivo guardada en el proyecto (consulta IRSA SIA del {snap_d}). Las imágenes L2b se leen en vivo desde AWS S3.",
+                      "en": f"IRSA is not responding: using this target's official exposure list stored in the project (IRSA SIA query of {snap_d}). The L2b images are read live from AWS S3."})
 
     light_curve = build_light_curve(photometry)
     quality = _build_data_quality(items, epochs_out, photometry, all_rows, tap_ok, data_mode)
@@ -3000,7 +3063,8 @@ def build_sky_cube_and_spectrum(
         "data_mode": data_mode,
         "data_source": {"l2b": "SPHEREx L2b (IRSA / AWS S3)", "dr1_static": "SPHEREx DR1 All-Sky Cube (co-adición estática)"}.get(data_mode, "—"),
         "notes": notes,
-        "tap_status": {"ok": tap_ok, "error": _TAP_STATUS.get("error")},
+        "tap_status": {"ok": tap_ok, "error": _TAP_STATUS.get("error"), "via": _TAP_STATUS.get("via"), "snapshot": _TAP_STATUS.get("snapshot")},
+        "retry_after_s": (int(SERVICE_RETRY_S) + 5) if (data_mode != "l2b" and not tap_ok) else None,
         "requested_bands": norm_bands, "release": release,
         "total_matching_irsa": len(all_rows), "total_all_bands_irsa": len(all_cov) if tap_ok else None,
         "used_exposures": len(items),
@@ -3383,8 +3447,11 @@ def _build_data_quality(items: List[Dict[str, Any]], epochs: List[Dict[str, Any]
     he_hits = sum(1 for p in photometry if p.get("wavelength_um") and p.get("bandwidth_um") and abs(p["wavelength_um"] - 1.083) <= p["bandwidth_um"])
     sat = sum(1 for p in photometry if p["quality"] == "saturated")
     zodi = [it["zodi"] for it in items]
-    via = {"TAP": "TAP", "SIA": "SIA", "caché": "caché local de una consulta TAP/SIA"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
-    via_en = {"TAP": "TAP", "SIA": "SIA", "caché": "local cache of a TAP/SIA query"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    snap_d = str((_TAP_STATUS.get("snapshot") or {}).get("date_utc") or "")[:10]
+    via = {"TAP": "TAP", "SIA": "SIA", "caché": "caché local de una consulta TAP/SIA",
+           "snapshot": f"lista oficial guardada, consulta SIA del {snap_d}"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
+    via_en = {"TAP": "TAP", "SIA": "SIA", "caché": "local cache of a TAP/SIA query",
+              "snapshot": f"stored official list, SIA query of {snap_d}"}.get(str(_TAP_STATUS.get("via")), "TAP/SIA")
     checks = [
         {"id": "source", "status": data_mode.upper(), "title_es": "Origen de los datos", "title_en": "Data origin",
          "metric": f"{len(items)} exp L2b" if data_mode == "l2b" else "DR1 estático",

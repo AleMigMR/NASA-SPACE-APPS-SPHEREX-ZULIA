@@ -55,7 +55,7 @@ The universe has no absolute "up". The viewer offers three standard planes: **Ga
 ## Chapter 2 · User Manual
 
 ### 2.1 Header and reference targets
-- **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
+- **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, official IRSA tools such as the Data Explorer and MOST, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
 - **📐 MPC Report:** draft in the official two-line satellite format (SPHEREx code **288**). It is only generated for candidates with confirmed motion and no stellar counterpart; otherwise the window explains why it is empty.
 - **🔗 Share** and **🎞️ GIF:** reproducible link and animation of the epochs.
 - **Reference targets:** when you choose one, the app centres the field on its **position propagated to epoch 2026.0** and propagates its position to the date of **each** exposure to measure it. The tooltip explains which epoch the reference coordinates belong to (e.g. the WISE 0855 coordinates in the challenge statement are from 2010.6).
@@ -87,9 +87,9 @@ The **🛡️ Data quality** panel summarises, with data from the current cube: 
 ## Chapter 3 · Methods, Mathematics and API
 
 ### 3.1 Data flow
-1. **Exposure search:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). If TAP fails, **IRSA SIA** is used with the collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` and `spherex_qr3_deep`, the method of the official tutorials. A service that has just failed is not waited for again for 5 minutes. An observation published in several releases is used only once (priority DR1 > QR3 > QR2).
-2. **Cutouts:** partial reads (HTTP Range) from `s3://nasa-irsa-spherex/`, with IRSA's IBE cutout service as fallback. The app reads `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, the `WCS-WAVE` table, the **ePSF** row of the detector zone (~9 KB) and the full header: `MJD-AVG`, `PSF_FWHM` and the geocentric position of the spacecraft.
-3. **No L2b exposures** (or IRSA down): **one** static image from the DR1 All-Sky cube is shown, clearly labelled. There is no blink or difference, because the cube has no time information.
+1. **Exposure search:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). If TAP fails, **IRSA SIA** is used with the collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` and `spherex_qr3_deep`, the method of the official tutorials. A service that has just failed is not waited for again for 2 minutes. If neither responds, for the five challenge targets the app uses the **stored official exposure list** in `data/spherex_exposure_index/` (the real IRSA SIA response, with its query date), so the blink keeps working: IRSA is only needed to know which images cover a point, because the images themselves are read from AWS S3. An observation published in several releases is used only once (priority DR1 > QR3 > QR2).
+2. **Cutouts:** partial reads (HTTP Range) from `s3://nasa-irsa-spherex/`, with IRSA's IBE cutout service as fallback. The app reads `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, the `WCS-WAVE` table, the **ePSF** row of the detector zone (~9 KB; the zone is chosen with its `XCENTER`/`YCENTER` columns, so it is not affected by the QR1/QR2 PSF header error described by IRSA) and the full header: `MJD-AVG`, `PSF_FWHM` and the geocentric position of the spacecraft.
+3. **No L2b exposures** (a point without a stored list while IRSA is not responding): **one** static image from the DR1 All-Sky cube is shown, clearly labelled, and the app retries IRSA automatically every ~2 minutes. There is no blink or difference, because the cube has no time information.
 
 ### 3.2 Implemented formulas
 1. **Clean image:** $I = \text{IMAGE} - \text{ZODI}$. For display, pixels are rejected with the official list used to build the DR1 cube: `TRANSIENT, SUR_ERROR, NONFUNC, DICHROIC, MISSING_DATA, HOT, COLD, PHANMISS, NONLINEAR, PERSIST, CROSSTALK, STREAK, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
@@ -161,7 +161,7 @@ Optional variables: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEO
 - **Saturation:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) and R Dra saturate SPHEREx in almost every channel. Their **position** is measured from the saturated core and their motion is visible in the blink, but their fluxes are not reliable.
 - **Blending:** in 2025–2026 WISE 0855 passes **8″** from the star Gaia DR3 5756956644387831296 (G = 16.3). With 6.15″ pixels they blend; the L2b photometry separates both sources with the ePSF, but the DR1 spectrum (25.8″ aperture) includes the neighbour.
 - **WISE 0855** is faint in SPHEREx (≈ 0.5 mJy at 4.6 µm, W2 ≈ 13.9): expect low S/N per exposure and invisibility below ~3.5 µm.
-- **Planet X / Nine** is hypothetical and nobody has detected it. At ~500 AU its parallactic motion would be ~7″ per day. Between visits six months apart it would leave a 0.1° field, so it must be searched for by comparing exposures from the same visit (days).
+- **Planet X / Nine** is hypothetical and nobody has detected it. At ~500 AU its parallactic motion would be ~7″ per day. Between visits six months apart it would leave a 0.1° field, so it must be searched for by comparing exposures from the same visit (days). For Solar System objects with a known orbit, IRSA's official **MOST** tool finds the SPHEREx images that cover them.
 - **DR1 cube:** 12.9″ pixels and no time information. Its HiPS PNGs are for visualisation only.
 
 ### 4.5 Submission text (EN)
@@ -199,6 +199,7 @@ The coordinates were verified in SIMBAD and JPL Horizons. **Elias 16** is at 69.
 10. Rustamkulov, Z. et al. 2026, *SPHEREx 0.75 to 5 µm Spectra for a Sequence of Nearby Brown Dwarfs*, arXiv:2607.00543.
 11. Lisse, C. M. et al. 2026, ApJL 1000, L52 (3I/ATLAS with SPHEREx).
 12. Górski, K. M. et al. 2005, ApJ 622, 759 (HEALPix).
+13. Canonical SPHEREx papers (per IRSA): mission, Bock et al. 2026, ApJ 999, 139; pipeline, Akeson et al. 2026, ApJS 285, 67; instrument and calibration, Korngut et al. 2026, arXiv:2603.29835; sky simulator, Crill et al. 2025, ApJS 281, 10.
 
 ### 5.4 Data DOIs
 - SPHEREx DR1 Spectral Images: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678)
