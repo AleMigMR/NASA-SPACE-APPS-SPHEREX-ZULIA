@@ -240,6 +240,40 @@ def test_exposure_discovery_falls_back_to_stored_list_when_irsa_is_down(tmp_path
         se._TAP_STATUS.update(old_status)
 
 
+def test_stale_exposure_cache_is_refreshed_but_kept_as_fallback():
+    """Una lista en caché de más de 7 días se rehace con IRSA; si IRSA no responde, se usa como respaldo."""
+    import json
+    import tempfile
+    import time as _time
+    tmp = tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmp, "tap"))
+    ra, dec = 10.0, 10.0
+    path = os.path.join(tmp, "tap", f"tap_v2_{ra:.4f}_{dec:.4f}.json")
+    old_row = {"obs_id": "OLD_1", "uri": "ibe/data/spherex/dr1/level2/x/OLD_1.fits", "release": "dr1", "band": "D1", "t_min": 60800.0}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([old_row], f)
+    eight_days = _time.time() - 8 * 86400
+    os.utime(path, (eight_days, eight_days))
+    old_cache, old_tap, old_sia, old_status = se.CACHE_DIR, se._query_tap_exposures, se._query_sia_exposures, dict(se._TAP_STATUS)
+    try:
+        se.CACHE_DIR = tmp
+        se._TAP_STATUS.update({"tap_fail_t": 0.0, "sia_fail_t": 0.0})
+        se._query_tap_exposures = lambda r, d: (None, "caído")
+        se._query_sia_exposures = lambda r, d: None
+        rows = se.query_spherex_exposures(ra, dec)
+        assert [r["obs_id"] for r in rows] == ["OLD_1"] and se._TAP_STATUS["via"] == "caché"
+        new_row = dict(old_row, obs_id="NEW_1", t_min=61200.0)
+        se._TAP_STATUS.update({"tap_fail_t": 0.0, "sia_fail_t": 0.0})
+        se._query_sia_exposures = lambda r, d: [new_row]
+        rows = se.query_spherex_exposures(ra, dec)
+        assert [r["obs_id"] for r in rows] == ["NEW_1"] and se._TAP_STATUS["via"] in ("TAP", "SIA")
+        assert _time.time() - os.path.getmtime(path) < 60  # la caché se renovó
+    finally:
+        se.CACHE_DIR, se._query_tap_exposures, se._query_sia_exposures = old_cache, old_tap, old_sia
+        se._TAP_STATUS.clear()
+        se._TAP_STATUS.update(old_status)
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

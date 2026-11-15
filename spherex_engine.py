@@ -30,7 +30,8 @@ import re
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -491,6 +492,7 @@ _finalize_landmarks()
 
 CUSTOM_TARGETS_FILE = os.path.join(CACHE_DIR, "custom_targets.json")
 _CUBE_RESP_CACHE: Dict[str, Dict[str, Any]] = {}
+_CUBE_RESP_T: Dict[str, float] = {}
 
 
 _PROTECTED_TARGET_KEYS = (
@@ -769,7 +771,8 @@ def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr:
 # Descubrimiento de exposiciones (IRSA TAP)
 # ---------------------------------------------------------------------------
 _TAP_STATUS: Dict[str, Any] = {"ok": None, "error": None, "t": 0.0, "via": None, "tap_fail_t": 0.0, "sia_fail_t": 0.0}
-SERVICE_RETRY_S = 120.0  # tras un fallo de TAP o SIA no se vuelve a esperar ese servicio durante 2 minutos
+EXPOSURE_CACHE_TTL_S = 7 * 86400.0  # listas de exposiciones y cubos en caché se rehacen cada 7 días (nuevas épocas)
+SERVICE_RETRY_S = 60.0  # tras un fallo de TAP o SIA no se vuelve a esperar ese servicio durante 1 minuto
 
 
 def query_spherex_exposures(
@@ -787,10 +790,15 @@ def query_spherex_exposures(
     key_str = f"tap_v2_{ra:.4f}_{dec:.4f}"
     cache_file = os.path.join(CACHE_DIR, "tap", f"{key_str}.json")
     all_rows: Optional[List[Dict[str, Any]]] = None
+    stale_rows: Optional[List[Dict[str, Any]]] = None  # caché caducada: solo se usa si IRSA no responde
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
-                all_rows = json.load(f)
+                cached_rows = json.load(f)
+            if time.time() - os.path.getmtime(cache_file) < EXPOSURE_CACHE_TTL_S:
+                all_rows = cached_rows
+            else:
+                stale_rows = cached_rows
         except Exception:
             all_rows = None
 
@@ -812,7 +820,11 @@ def query_spherex_exposures(
         if best_file and best_dist <= 0.05:
             try:
                 with open(best_file, "r", encoding="utf-8") as f:
-                    all_rows = json.load(f)
+                    near_rows = json.load(f)
+                if time.time() - os.path.getmtime(best_file) < EXPOSURE_CACHE_TTL_S:
+                    all_rows = near_rows
+                elif stale_rows is None:
+                    stale_rows = near_rows
             except Exception:
                 all_rows = None
 
@@ -821,26 +833,44 @@ def query_spherex_exposures(
         # de fallar no se vuelve a esperar durante SERVICE_RETRY_S (cortacircuito), para no bloquear cada consulta.
         now = time.time()
         errors: List[str] = []
+        # TAP y SIA se consultan A LA VEZ y gana el primero que responda: un TAP colgado (30 s) ya no retrasa a SIA.
+        futs: Dict[Any, str] = {}
         if now - float(_TAP_STATUS.get("tap_fail_t") or 0.0) >= SERVICE_RETRY_S:
-            all_rows, tap_err = _query_tap_exposures(ra, dec)
-            if all_rows is None:
-                _TAP_STATUS["tap_fail_t"] = time.time()
-                errors.append("TAP: " + str(tap_err))
-            else:
-                _TAP_STATUS["via"] = "TAP"
+            futs[_DISCOVERY_POOL.submit(_query_tap_exposures, ra, dec)] = "TAP"
         else:
-            errors.append("TAP: falló hace menos de 2 min (no se reintenta todavía)")
-        if all_rows is None:
-            if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
-                all_rows = _query_sia_exposures(ra, dec)
-                if all_rows is None:
-                    _TAP_STATUS["sia_fail_t"] = time.time()
-                    errors.append("SIA: sin respuesta válida")
-                else:
-                    _TAP_STATUS["via"] = "SIA"
-            else:
-                errors.append("SIA: falló hace menos de 2 min (no se reintenta todavía)")
+            errors.append("TAP: falló hace menos de 1 min (no se reintenta todavía)")
+        if now - float(_TAP_STATUS.get("sia_fail_t") or 0.0) >= SERVICE_RETRY_S:
+            futs[_DISCOVERY_POOL.submit(_query_sia_exposures, ra, dec)] = "SIA"
+        else:
+            errors.append("SIA: falló hace menos de 1 min (no se reintenta todavía)")
+        pending = set(futs)
+        try:
+            for fut in as_completed(futs, timeout=max(TAP_TIMEOUT_S, SIA_TIMEOUT_S) + 30.0):
+                pending.discard(fut)
+                svc = futs[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:  # error inesperado del hilo
+                    res = (None, str(exc)[:200]) if svc == "TAP" else None
+                rows_svc, err_svc = res if svc == "TAP" else (res, "sin respuesta válida")
+                if rows_svc is None:
+                    _TAP_STATUS[("tap" if svc == "TAP" else "sia") + "_fail_t"] = time.time()
+                    errors.append(f"{svc}: {err_svc}")
+                    continue
+                all_rows = rows_svc
+                _TAP_STATUS["via"] = svc
+                break
+        except FuturesTimeout:
+            for fut in pending:
+                svc = futs[fut]
+                _TAP_STATUS[("tap" if svc == "TAP" else "sia") + "_fail_t"] = time.time()
+                errors.append(f"{svc}: tiempo de espera agotado")
         snap_info = None
+        if all_rows is None and stale_rows:
+            # IRSA no responde: una lista de IRSA de hace más de 7 días sigue siendo oficial (quizá sin las épocas más nuevas)
+            all_rows = stale_rows
+            _TAP_STATUS["via"] = "caché"
+            errors.append("se usa la lista guardada en caché de hace más de 7 días")
         if all_rows is None:
             # Último respaldo: lista OFICIAL de exposiciones guardada en el proyecto para los objetivos del reto
             # (respuesta real de IRSA SIA). Las imágenes se siguen leyendo en vivo desde AWS S3.
@@ -848,13 +878,13 @@ def query_spherex_exposures(
             if snap is not None:
                 all_rows, snap_info = snap
         if all_rows is None:
-            _TAP_STATUS.update({"ok": False, "error": " · ".join(errors), "t": time.time(), "snapshot": None})
+            _TAP_STATUS.update({"ok": False, "via": None, "error": " · ".join(errors), "t": time.time(), "snapshot": None})
             return []
         if snap_info is not None:
             _TAP_STATUS.update({"ok": True, "via": "snapshot", "snapshot": snap_info, "error": " · ".join(errors), "t": time.time()})
         else:
             _TAP_STATUS.update({"ok": True, "error": (" · ".join(errors) or None), "t": time.time(), "snapshot": None})
-            if all_rows:  # una respuesta vacía no se cachea: puede cambiar con nuevas versiones de datos
+            if all_rows and all_rows is not stale_rows:  # ni respuestas vacías ni listas caducadas se reescriben como nuevas
                 try:
                     with open(cache_file, "w", encoding="utf-8") as f:
                         json.dump(all_rows, f)
@@ -919,6 +949,9 @@ def _query_snapshot_exposures(ra: float, dec: float) -> Optional[Tuple[List[Dict
     return [dict(r) for r in best["rows"]], info
 
 
+_DISCOVERY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="irsa-discovery")
+
+
 def _query_tap_exposures(ra: float, dec: float) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """Exposiciones L2b cuyo polígono contiene (ra, dec) vía IRSA TAP (spherex.artifact ⋈ spherex.plane)."""
     q = (
@@ -967,8 +1000,15 @@ def _query_sia_exposures(ra: float, dec: float) -> Optional[List[Dict[str, Any]]
     params: List[Tuple[str, str]] = [("POS", f"CIRCLE {ra:.6f} {dec:.6f} 0.0005"), ("RESPONSEFORMAT", "CSV")]
     params += [("COLLECTION", c) for c in SIA_COLLECTIONS]
     try:
-        r = requests.get(SIA_URL, params=params, timeout=SIA_TIMEOUT_S)
-        if not r.ok or "access_url" not in r.text[:4000]:
+        # Una sola consulta con las 4 colecciones (por colección en paralelo IRSA responde 502). Los 502/503/504 de
+        # su proxy suelen durar segundos: se reintenta con pausas crecientes. Un tiempo agotado no se repite.
+        r = None
+        for pause in (1.0, 2.0, 3.0, 5.0, 8.0, None):  # hasta 6 intentos en ~19 s: los 502 de IRSA llegan en ráfagas
+            r = requests.get(SIA_URL, params=params, timeout=SIA_TIMEOUT_S)
+            if r.ok or r.status_code not in (502, 503, 504) or pause is None:
+                break
+            time.sleep(pause)
+        if r is None or not r.ok or "access_url" not in r.text[:4000]:
             return None
         out: List[Dict[str, Any]] = []
         for row in csv.DictReader(io.StringIO(r.text)):
@@ -2777,15 +2817,16 @@ def build_sky_cube_and_spectrum(
     ).hexdigest()[:16]
     cube_cache_path = os.path.join(CACHE_DIR, "cubes", f"cube_{cube_hash}.json")
     if not force_reproject:
-        if cube_hash in _CUBE_RESP_CACHE:
+        if cube_hash in _CUBE_RESP_CACHE and time.time() - _CUBE_RESP_T.get(cube_hash, 0.0) < EXPOSURE_CACHE_TTL_S:
             cached = dict(_CUBE_RESP_CACHE[cube_hash])
             cached["elapsed_sec"] = round(time.time() - t0, 3)
             return cached
-        if os.path.exists(cube_cache_path):
+        if os.path.exists(cube_cache_path) and time.time() - os.path.getmtime(cube_cache_path) < EXPOSURE_CACHE_TTL_S:
             try:
                 with open(cube_cache_path, "r", encoding="utf-8") as f:
                     cached = json.load(f)
                 _CUBE_RESP_CACHE[cube_hash] = cached
+                _CUBE_RESP_T[cube_hash] = os.path.getmtime(cube_cache_path)
                 out_c = dict(cached)
                 out_c["elapsed_sec"] = round(time.time() - t0, 3)
                 return out_c
@@ -2985,8 +3026,8 @@ def build_sky_cube_and_spectrum(
                 "dr1_channels": dr1_info.get("channels", []), "dr1_tiles": dr1_info.get("tiles", []),
             })
             notes.append({"level": "warn",
-                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales." + (" La app reintentará IRSA automáticamente en unos 2 minutos." if not tap_ok else ""),
-                          "en": "No L2b exposures available" + (" (IRSA is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve." + (" The app will retry IRSA automatically in about 2 minutes." if not tap_ok else "")})
+                          "es": "Sin exposiciones L2b disponibles" + (" (IRSA no responde)" if not tap_ok else "") + ": se muestra UNA imagen estática del cubo DR1 (co-adición de un año, píxeles de 12.9″). No hay blink, diferencia ni curva de luz reales." + (" La app reintentará IRSA automáticamente en alrededor de un minuto." if not tap_ok else ""),
+                          "en": "No L2b exposures available" + (" (IRSA is not responding)" if not tap_ok else "") + ": showing ONE static image from the DR1 cube (one-year co-add, 12.9″ pixels). There is no real blink, difference or light curve." + (" The app will retry IRSA automatically in about a minute." if not tap_ok else "")})
         else:
             return {"error": ("IRSA TAP no responde y no se pudo leer el cubo DR1." if not tap_ok else "No hay datos SPHEREx en esta posición."),
                     "tap_status": dict(_TAP_STATUS)}
@@ -3109,6 +3150,7 @@ def build_sky_cube_and_spectrum(
 
     if data_mode == "l2b":
         _CUBE_RESP_CACHE[cube_hash] = result_payload
+        _CUBE_RESP_T[cube_hash] = time.time()
         try:
             with open(cube_cache_path, "w", encoding="utf-8") as f:
                 json.dump(result_payload, f)
