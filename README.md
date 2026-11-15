@@ -238,11 +238,11 @@ Para Render, [`render.yaml`](render.yaml) ya está configurado; añade `GEMINI_A
 
 ## ⚠️ Limitaciones conocidas
 
-- **Saturación:** Barnard, RW Aur y R Dra saturan SPHEREx. Su posición se mide, pero su flujo no es fiable.
-- **WISE 0855** es débil para SPHEREx y está mezclado con una estrella G = 16.3 a 8″: espera S/N bajo por exposición.
-- **IRSA:** IRSA solo hace falta para saber qué exposiciones cubren un punto; las imágenes se leen de AWS S3. Si TAP y SIA no responden, los cinco objetivos del reto usan su lista oficial guardada en `data/spherex_exposure_index/` y el blink sigue funcionando. En cualquier otro punto, si IRSA no responde en ese momento, la app muestra una sola imagen estática del cubo DR1, claramente señalada, nunca simula épocas y reintenta IRSA automáticamente cada ~1 minuto (TAP y SIA se consultan a la vez, con reintentos). Cuando IRSA responde, cualquier punto muestra todas sus épocas.
-- **Planeta X / Nueve** es hipotético y no se ha detectado. A ~500 UA se movería ~7″ por día: hay que buscarlo dentro de una misma visita (días), no entre visitas separadas seis meses.
-- **Cubo DR1:** píxeles de 12.9″, sin información temporal. Sus PNG HiPS sirven solo para visualizar.
+SkyChrono trabaja con datos reales de SPHEREx, y eso tiene algunas limitaciones que conviene conocer. Barnard's Star, RW Aurigae y R Draconis son tan brillantes que saturan los detectores, así que su posición se mide con precisión pero su flujo no es fiable. En el extremo opuesto, WISE 0855−0714 es un objeto débil para SPHEREx y además está mezclado con una estrella de magnitud G = 16.3 situada a solo 8″, por lo que su relación señal/ruido en cada exposición individual es baja.
+
+En cuanto a la disponibilidad de los datos, IRSA solo se necesita para saber qué exposiciones cubren un punto del cielo, ya que las imágenes se leen directamente de AWS S3. Si los servicios TAP y SIA de IRSA no responden, los cinco objetivos del reto usan su lista oficial guardada en `data/spherex_exposure_index/` y el blink sigue funcionando con normalidad. En cualquier otro punto del cielo, si IRSA falla en ese momento, la aplicación muestra una sola imagen estática del cubo DR1, claramente señalada como tal, y nunca simula épocas. Mientras tanto, vuelve a intentar la conexión cada minuto aproximadamente, consultando TAP y SIA a la vez y con reintentos. En cuanto IRSA responde, cualquier punto del cielo muestra todas sus épocas.
+
+Por último, el Planeta X (o Planeta Nueve) sigue siendo un objeto hipotético que no se ha detectado. A unas 500 UA del Sol se desplazaría unos 7″ por día, de modo que habría que buscarlo dentro de una misma visita de SPHEREx, que abarca varios días, y no comparando visitas separadas por seis meses. Tampoco el cubo DR1 sirve para esa búsqueda: tiene píxeles de 12.9″, combina las observaciones de todo un año sin información temporal, y sus imágenes HiPS están pensadas solo para visualizar, no para hacer medidas científicas.
 
 ---
 
