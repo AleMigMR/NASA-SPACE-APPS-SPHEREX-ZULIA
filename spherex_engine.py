@@ -2027,9 +2027,11 @@ def _dr1_read_rows(ipix: int, offset: int, dtype: str, ch: int, y0: int, y1: int
 
 def compute_band_depths(points: List[Dict[str, Any]], object_kind: str = "generic") -> List[Dict[str, Any]]:
     """
-    Profundidad aparente τ = −ln(F_banda / F_continuo) con un continuo lineal ajustado a ventanas a ambos
-    lados de la banda. Requiere ≥2 puntos válidos (S/N ≥ 3, no saturados) en cada ventana y ≥1 en la banda;
-    si no, devuelve `tau = None` con el motivo.
+    Profundidad aparente τ = −ln(F_banda / F_continuo) con un continuo de LEY DE POTENCIAS (recta en
+    log F – log λ) ajustado a ventanas a ambos lados de la banda. Requiere ≥2 puntos válidos (S/N ≥ 3, no
+    saturados) en cada ventana y ≥1 en la banda; si no, devuelve `tau = None` con el motivo. Un τ negativo
+    significativo indica que la banda está POR ENCIMA del continuo interpolado (pico de la SED o emisión):
+    no es absorción y se informa como tal.
     """
     interp = FEATURE_INTERPRETATION.get(object_kind, FEATURE_INTERPRETATION["generic"])
     good = [p for p in points if p.get("flux_ujy") is not None and p.get("snr") is not None and p["snr"] >= 3 and p.get("quality") not in ("saturated", "masked", "no_coverage")]
@@ -2077,7 +2079,12 @@ def compute_band_depths(points: List[Dict[str, Any]], object_kind: str = "generi
         # Piso sistemático de 0.04 en τ (calibración relativa entre canales y forma real del continuo)
         tau_err = float(np.sqrt(slnfb ** 2 + slnfc ** 2 + 0.04 ** 2))
         entry.update({"tau": round(float(tau), 3), "tau_err": round(tau_err, 3), "f_band_ujy": round(fb, 2), "f_cont_ujy": round(fc, 2),
-                      "significant": bool(tau >= 3 * tau_err), "continuum": "power_law"})
+                      "significant": bool(tau >= 3 * tau_err), "above_continuum": bool(tau <= -3 * tau_err), "continuum": "power_law"})
+        if entry["above_continuum"]:
+            entry["reason_es"] = ("La banda está por encima del continuo de ley de potencias (τ < 0 a ≥3σ): la forma real de la SED "
+                                  "entre las ventanas no es una ley de potencias (p. ej. el pico de 4 µm de las enanas T). No indica absorción.")
+            entry["reason_en"] = ("The band lies above the power-law continuum (τ < 0 at ≥3σ): the real SED shape between the windows "
+                                  "is not a power law (e.g. the 4 µm peak of T dwarfs). It does not indicate absorption.")
         out.append(entry)
     return out
 

@@ -69,6 +69,7 @@ Tres vistas sincronizadas: **Hammer-Aitoff** (proporción real 2:1), **globo 3D*
 - **Ratón:** arrastrar mueve el campo (al soltar se descarga el campo vecino), la rueda hace zoom anclado al cursor, un clic mide la fuente bajo el cursor y un doble clic recentra.
 - **Teclado:** `Espacio` reproduce o pausa, `← / →` cambian de época y `F` activa la pantalla completa.
 - **Marcas:** ✚ es la **posición predicha** del objetivo en cada época (Gaia DR3 o literatura más movimiento propio). Las zonas grises son píxeles sin datos L2b reales. Los candidatos muestran ✔ (confirmado por la ePSF), ✖ (no confirmado) o ? (no verificable).
+- **Movimiento medido:** la ecuación 5 del panel de matemática y el análisis del copiloto comparan el desplazamiento que **mide SPHEREx** entre la primera y la última visita con el que predice el catálogo para las mismas fechas.
 - **Fuentes del campo:** se identifican con Gaia DR3 o AllWISE; la distancia solo aparece si hay paralaje con π/σ ≥ 5 o una distancia publicada.
 - **📏 Medir A↔B:** la separación angular y el ángulo de posición son exactos; la distancia 3D solo se calcula si ambas fuentes tienen distancia medida.
 
@@ -86,25 +87,25 @@ El panel **🛡️ Calidad de datos** resume, con datos del cubo actual: origen 
 ## Capítulo 3 · Métodos, Matemática y API
 
 ### 3.1 Flujo de datos
-1. **Búsqueda de exposiciones:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). Si TAP falla se usa **IRSA SIA** con las colecciones `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` y `spherex_qr3_deep`, el método de los tutoriales oficiales. Una misma observación publicada en varias versiones se usa una sola vez (prioridad DR1 > QR3 > QR2).
+1. **Búsqueda de exposiciones:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). Si TAP falla se usa **IRSA SIA** con las colecciones `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` y `spherex_qr3_deep`, el método de los tutoriales oficiales. Un servicio que acaba de fallar no se vuelve a esperar durante 5 minutos. Una misma observación publicada en varias versiones se usa una sola vez (prioridad DR1 > QR3 > QR2).
 2. **Recortes:** lectura parcial (HTTP Range) de `s3://nasa-irsa-spherex/` con respaldo en el servicio de recortes IBE de IRSA. Se leen `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, la tabla `WCS-WAVE`, la fila de la **ePSF** de la zona del detector (~9 KB) y la cabecera completa: `MJD-AVG`, `PSF_FWHM` y la posición geocéntrica de la nave.
 3. **Sin exposiciones L2b** (o IRSA caído): se muestra **una** imagen estática del cubo All-Sky DR1, claramente señalada. No hay blink ni diferencia, porque el cubo no tiene información temporal.
 
 ### 3.2 Fórmulas implementadas
 1. **Imagen limpia:** $I = \text{IMAGE} - \text{ZODI}$. Para visualizar se rechazan los píxeles con la lista oficial usada al construir el cubo DR1: `TRANSIENT, SUR_ERROR, NONFUNC, DICHROIC, MISSING_DATA, HOT, COLD, PHANMISS, NONLINEAR, PERSIST, CROSSTALK, STREAK, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
-2. **Posición del objetivo:** $(\alpha, \delta)(t)$ = `SkyCoord.apply_space_motion` con $\mu_{\alpha*}$, $\mu_\delta$, $\varpi$ y $v_r$ desde la época de la astrometría hasta el `MJD-AVG` de cada exposición. La paralaje anual (≤ 0.55″) se desprecia por ser menor que 0.1 píxel.
+2. **Posición del objetivo:** $(\alpha, \delta)(t)$ = `SkyCoord.apply_space_motion` con $\mu_{\alpha*}$, $\mu_\delta$, $\varpi$ y $v_r$ desde la época de la astrometría hasta el `MJD-AVG` de cada exposición. La paralaje anual (≤ 0.55″) se desprecia por ser menor que 0.1 píxel. El **desplazamiento medido** compara la posición media de la primera y de la última visita (separadas más de 30 días), cada una con su error estándar, con el desplazamiento predicho entre las mismas fechas medias.
 3. **Fotometría PSF forzada** (Suplemento sec. 3.3): $d_j = F\,P_{\text{eff}}(x_j - x_\star) + \sum_k F_k P_{\text{eff}}(x_j - x_k) + B$, resuelta por mínimos cuadrados ponderados $\theta = (A^T W A)^{-1} A^T W d$ con $W = 1/\text{VARIANCE}$. Las fuentes Gaia a menos de 20″ ($k$) se ajustan a la vez (*deblending*). Los píxeles se enmascaran con la máscara fotométrica oficial: `SUR_ERROR, NONFUNC, MISSING_DATA, HOT, COLD, NONLINEAR, PERSIST, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
 4. **Flujo y error:** $F_{\mu\text{Jy}} = F\,\Omega_{\text{pix}}\,10^{12}$, con $\Omega_{\text{pix}}$ obtenido del jacobiano del WCS con distorsión SIP (≈ 8.86 × 10⁻¹⁰ sr; el valor nominal $(6.15'')^2$ es 8.890 × 10⁻¹⁰ sr). El error es $\sigma^2 = \sigma_{\text{stat}}^2 + (0.03F)^2$. La calidad del ajuste es $\langle|p-m|/\sigma\rangle$ en r ≤ 2.5 px. Si S/N < 3 se informa un **límite superior** $F + 3\sigma$.
 5. **Magnitud AB:** $m_{\text{AB}} = 23.9 - 2.5\log_{10}F_{\mu\text{Jy}}$, con $\sigma_m = 1.0857/(S/N)$, solo para detecciones.
 6. **Longitud de onda:** $\lambda(x,y)$ por interpolación bilineal de `WCS-WAVE` en la posición del detector donde cae la fuente. Error frente a los archivos oficiales `CWAVE`: ≤ 5 % del ancho de banda (verificado).
-7. **Saturación:** una medición se marca *saturada* si hay `OVERFLOW`, `NONLINEAR` o `BLOOM` en r ≤ 2.5 px, o si faltan ≥ 2 píxeles del núcleo (r ≤ 1.2 px).
+7. **Saturación:** una medición se marca *saturada* si hay `OVERFLOW`, `NONLINEAR` o `BLOOM` en r ≤ 2.5 px, o si faltan ≥ 2 píxeles del núcleo (r ≤ 1.2 px). Su flujo no se informa, pero su **posición** se mide con el centroide de los píxeles `OVERFLOW` a ≤ 4 px de la posición predicha (solo astrometría; validado con Barnard, ver capítulo 4).
 8. **Candidatos:** $\Delta I = E_n - E_1$ y $\sigma_{\text{MAD}} = 1.4826\,\text{med}|\Delta I - \text{med}\,\Delta I|$, con umbral de 5σ y solo en píxeles con datos reales en ambas épocas. Cada candidato se **verifica con la ePSF**:
    - *movimiento confirmado* si los centroides de la primera y la última época difieren en ≥ 3σ y ≥ 0.3 píxeles nativos;
    - *variabilidad confirmada* si el flujo cambia ≥ 5σ entre mediciones del **mismo canal**;
    - *no confirmado* en cualquier otro caso.
 9. **Curva de luz:** las mediciones se agrupan por canal DR1; la variabilidad se evalúa con $\chi^2_\nu$ respecto a un flujo constante y con el mayor cambio en σ dentro de cada canal.
 10. **Espectro DR1:** fotometría de apertura en el cubo All-Sky (r = 25.8″, fondo en un anillo de 51–90″, $\Omega$ HEALPix de orden 14 = 3.901 × 10⁻⁹ sr). Un canal se marca saturado si el núcleo no tiene datos, si `NHITS` = 0, o si hay una caída de `NHITS` cuando el detector muestra saturación en otros canales. Se avisa cuando hay fuentes Gaia dentro de la apertura.
-11. **Profundidad aparente de banda:** $\tau = \ln F_{\text{cont}} - \ln F_{\text{banda}}$, con un continuo de **ley de potencias** (recta en log F – log λ) ajustado a ventanas a ambos lados de la banda y un error sistemático mínimo de 0.04. Si el muestreo no basta, τ = no medible. Con este continuo, una cola de Rayleigh–Jeans sin absorción da τ = 0.00 (un continuo lineal habría dado un τ falso de ~0.19 a 3 µm).
+11. **Profundidad aparente de banda:** $\tau = \ln F_{\text{cont}} - \ln F_{\text{banda}}$, con un continuo de **ley de potencias** (recta en log F – log λ) ajustado a ventanas a ambos lados de la banda y un error sistemático mínimo de 0.04. Si el muestreo no basta, τ = no medible. Con este continuo, una cola de Rayleigh–Jeans sin absorción da τ = 0.00 (un continuo lineal habría dado un τ falso de ~0.19 a 3 µm). Un τ **negativo** a ≥ 3σ significa que la banda está por encima del continuo interpolado (por ejemplo, el pico de 4 µm de las enanas T): la app lo indica y no lo interpreta como absorción.
 12. **Distancias:** $d = 1000/\varpi$ pc solo si $\varpi/\sigma_\varpi \ge 5$ (Gaia DR3) o a partir de la distancia publicada de los objetivos de referencia. La distancia 3D entre A y B, $D = \sqrt{d_A^2 + d_B^2 - 2 d_A d_B \cos\theta}$, solo se calcula si ambas existen.
 13. **MPC:** dos registros de 80 columnas: «S» con la posición medida por la ePSF y «s» con el vector geocéntrico de SPHEREx en km. Ese vector se obtiene de `X/Y/Z_SC_START` y `_END` por interpolación de Hermite a mitad de exposición. Código de observatorio **288**.
 
@@ -134,7 +135,8 @@ El cubo DR1 se organiza en teselas HEALPix NESTED de orden 5 (512×512 píxeles 
 ## Capítulo 4 · Validación, Seguridad y Despliegue
 
 ### 4.1 Validación con datos reales
-- **Fotometría:** 12 estrellas no saturadas de un campo L2b real dieron una razón SPHEREx / 2MASS de mediana **1.03** con ~3 % de dispersión. Los centroides de Gaia DR3 propagados cayeron a 0.0–0.1 píxeles de las estrellas medidas.
+- **Fotometría:** 12 estrellas no saturadas de un campo L2b real (D2, λ ≈ 1.30–1.38 µm) dieron una razón SPHEREx / 2MASS (interpolada entre J y H) de **1.03** de media (mediana 1.02) con 3 % de dispersión. Los centroides de Gaia DR3 propagados cayeron a 0.0–0.1 píxeles de las estrellas medidas.
+- **Astrometría de una estrella saturada (Barnard):** en 28 exposiciones L2b reales (agosto de 2025 a mayo de 2026), el centroide del núcleo saturado cayó a una mediana de 1.2″ (0.19 px) de la posición predicha. SPHEREx mide un desplazamiento de **6.42 ± 0.33″** con AP 349° entre 2025-08-25 y 2026-03-30; Gaia DR3 predice 6.19″ con AP 356° para esas fechas.
 - **Verificación de candidatos:** una fuente sintética de 5 mJy que se movía 12″, inyectada en exposiciones reales, se recuperó como *movimiento confirmado 12.0″ ± 0.4″*. Las estrellas estáticas cuyo pico cambiaba por la fase subpíxel quedaron como *no confirmadas*.
 - **Objetivos del reto:** ver la tabla del capítulo 5 y la herramienta `tools/validate_targets.py`.
 - **Pruebas unitarias:** `python -m pytest tests/` (o `python tests/test_science.py`) comprueba HEALPix, propagación de WISE 0855 a la época AllWISE, bits oficiales, punto cero AB, formato MPC, ausencia de sesgo en τ y recuperación de flujo inyectado.
@@ -150,12 +152,12 @@ source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py                      # http://localhost:8050
 ```
-Variables opcionales: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
+Variables opcionales: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, por defecto 30), `SPHEREX_SIA_TIMEOUT` (s, por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga). Para Docker: `docker build -t spherex-skychrono .` y `docker run -p 8050:8050 spherex-skychrono`.
 
 ### 4.4 Limitaciones conocidas
-- **Saturación:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) y R Dra saturan SPHEREx en casi todos los canales. Su **posición** y su cambio aparente se ven en el blink, pero sus flujos no son fiables.
+- **Saturación:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) y R Dra saturan SPHEREx en casi todos los canales. Su **posición** se mide con el núcleo saturado y su movimiento se ve en el blink, pero sus flujos no son fiables.
 - **Mezcla de fuentes:** en 2025–2026 WISE 0855 pasa a **8″** de la estrella Gaia DR3 5756956644387831296 (G = 16.3). Con píxeles de 6.15″ se mezclan; la fotometría L2b separa ambas fuentes con la ePSF, pero el espectro DR1 (apertura de 25.8″) incluye a la vecina.
-- **WISE 0855** es débil en SPHEREx (≈ 0.55 mJy a 4.6 µm): espera S/N bajo por exposición e invisibilidad por debajo de ~3.5 µm.
+- **WISE 0855** es débil en SPHEREx (≈ 0.5 mJy a 4.6 µm, W2 ≈ 13.9): espera S/N bajo por exposición e invisibilidad por debajo de ~3.5 µm.
 - **Planeta X / Nueve** es hipotético y nadie lo ha detectado. A ~500 UA su movimiento paraláctico sería de ~7″ por día. Entre visitas separadas seis meses saldría de un campo de 0.1°, así que debe buscarse comparando exposiciones de una misma visita (días).
 - **Cubo DR1:** píxeles de 12.9″ y sin información temporal. Sus PNG HiPS sirven solo para visualizar.
 
@@ -170,9 +172,9 @@ Variables opcionales: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIM
 
 | Objetivo | Posición de referencia | Mov. propio (mas/año) | Distancia | En SPHEREx |
 | :--- | :--- | :--- | :--- | :--- |
-| **WISE 0855−0714** (Y) | J2000 133.81891°, −7.24705° (Kirkpatrick+2021) · coordenadas NASA = época 2010.6 | −8123.7, +673.2 | 2.28 pc (ϖ = 439.0 ± 2.4 mas) | En 2026 está a **~2.1′** de las coordenadas del enunciado. Débil (~0.55 mJy a 4.6 µm) y mezclado con una estrella G = 16.3 a 8″. |
-| **Barnard's Star** (M4V) | J2000 269.45208°, +4.69336° (Gaia DR3) | −801.6, +10362.4 | 1.828 pc | Se desplaza ~10.4″ por año. **Saturada** en 99 de 100 canales DR1: posición útil, flujo no. |
-| **Epsilon Indi Ba/Bb** (T1 + T6) | J2000 331.04415°, −56.78284° (Gaia DR3) | +3982.0, −2466.8 | 3.64 pc (sistema ε Ind) | No saturada; SED de enana T: J ≈ 31, K ≈ 22, 4.0 µm ≈ 63 mJy; **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** (gas). |
+| **WISE 0855−0714** (Y) | J2000 133.81891°, −7.24705° (Kirkpatrick+2021) · coordenadas NASA = época 2010.6 | −8123.7, +673.2 | 2.28 pc (ϖ = 439.0 ± 2.4 mas) | En 2026 está a **~2.1′** de las coordenadas del enunciado. Débil (≈0.5 mJy a 4.6 µm) y a 8″ de una estrella G = 16.3, que domina la apertura DR1 por debajo de 3.5 µm; a 4.6 µm el DR1 da 0.58 ± 0.32 mJy (sin detección significativa). |
+| **Barnard's Star** (M4V) | J2000 269.45208°, +4.69336° (Gaia DR3) | −801.6, +10362.4 | 1.828 pc | **Saturada** en 28/28 exposiciones L2b y 99/100 canales DR1: flujo no medible. Posición medida a 1.2″ de la predicha; SPHEREx mide **6.42 ± 0.33″** en 217 d frente a 6.19″ predichos. |
+| **Epsilon Indi Ba/Bb** (T1 + T6) | J2000 331.04415°, −56.78284° (Gaia DR3) | +3982.0, −2466.8 | 3.64 pc (sistema ε Ind) | No saturada. SED de enana T en DR1: 31 mJy (1.25 µm), 36 (1.66), 25 (2.19), 8 (3.29), 63 (4.0) y 18 mJy (4.6 µm); **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** y τ(H₂O 3.0 µm) = 0.52 ± 0.05 (gas). |
 | **RW Aurigae A** (T Tauri) | Gaia DR3 2016.0: 76.95608°, +30.40120° | +2.6, −27.4 | 156 pc | **Saturada** en ~48 canales DR1; OVERFLOW frecuente en L2b. |
 | **R Draconis** (Mira, P ≈ 245.6 d) | Gaia DR3 2016.0: 248.16738°, +66.75501° | −20.6, +6.1 | ~800 pc (paralaje de Mira, con cautela) | **Saturada** en los 100 canales DR1. |
 

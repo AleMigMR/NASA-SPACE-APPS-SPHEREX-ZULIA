@@ -3645,7 +3645,12 @@ function drawVectorOverlays(ctx, cw, ch, nx, ny, ep) {
       ctx.font = "600 10px 'JetBrains Mono', monospace";
       ctx.fillStyle = "#f4f4f5";
       const lbl = STATE.lang === "en" ? `predicted: ${STATE.cube.target.name}` : `predicha: ${STATE.cube.target.name}`;
-      ctx.fillText(lbl, cx + 11, cy + 20);
+      // Encima del marcador (la etiqueta de la fuente reconocida va debajo): sin solapamiento
+      const tw = ctx.measureText(lbl).width;
+      ctx.fillStyle = "rgba(9, 9, 11, 0.72)";
+      ctx.fillRect(cx + 9, cy - 25, tw + 6, 14);
+      ctx.fillStyle = "#f4f4f5";
+      ctx.fillText(lbl, cx + 12, cy - 14);
     }
     ctx.restore();
   }
@@ -4188,7 +4193,11 @@ function renderBandDepthPills() {
     const b = bd.find((x) => x.id === id);
     if (!b) return null;
     if (b.tau === null || b.tau === undefined) return `${b.label}: ${en ? "not measurable" : "no medible"}`;
-    const sig = b.significant ? "" : en ? " (not significant)" : " (no significativo)";
+    const sig = b.significant
+      ? ""
+      : b.above_continuum
+        ? en ? " (above continuum: not absorption)" : " (sobre el continuo: no es absorción)"
+        : en ? " (not significant)" : " (no significativo)";
     return `${b.label}: τ = ${b.tau} ± ${b.tau_err}${sig}`;
   };
   const titleOf = (id) => {
@@ -4215,7 +4224,7 @@ function renderBandDepthPills() {
   }
   if (e3) {
     e3.textContent = `${fmt("CO2_4.27")} · ${fmt("CO_4.67")}`;
-    e3.title = titleOf("CO2_4.27");
+    e3.title = `${titleOf("CO2_4.27")} | ${titleOf("CO_4.67")}`;
   }
 }
 
