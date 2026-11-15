@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=28" />
+  <link rel="stylesheet" href="/static/styles.css?v=29" />
   <!-- Aladin Lite v3 para el Visor del Universo Observable 360° estilo IRSA -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8" async></script>
 </head>
@@ -137,7 +137,7 @@
 
         <div class="control-grid-2">
           <div>
-            <label class="field-label" for="selectGap" id="i18nLabelGap">Separación Temporal</label>
+            <label class="field-label" for="selectGap" id="i18nLabelGap">Separación mínima entre épocas</label>
             <select id="selectGap" class="select-input">
               <option value="15">15 días (Cadencia Fina)</option>
               <option value="30">30 días (Mensual)</option>
@@ -249,7 +249,7 @@
         <div class="toggle-list">
           <label class="toggle-row">
             <input type="checkbox" id="chkAiDetector" checked />
-            <span id="i18nChkAiDetector">🧠 Detector IA de Anomalías y Dipolos</span>
+            <span id="i18nChkAiDetector">🧠 Detector de candidatos (diferencia + verificación ePSF)</span>
           </label>
           <label class="toggle-row">
             <input type="checkbox" id="chkStarRecognizer" checked />
@@ -329,7 +329,7 @@
 
     <!-- COLUMNA CENTRAL: VISOR CELESTE INTERACTIVO Y CONTROL DE BLINKING -->
     <section class="panel panel-center">
-      <!-- Barra de modos de visualización + Detector IA Integrado -->
+      <!-- Barra de modos de visualización + detector de candidatos -->
       <div class="viewer-toolbar">
         <div class="mode-tabs" role="tablist">
           <button type="button" class="mode-tab" data-mode="allsky" id="modeAllsky" title="Explorar el plano completo 360° del Universo Observable al estilo IRSA/IPAC">
@@ -358,9 +358,6 @@
           </button>
           <button type="button" id="btnToggleStarRecognizer" class="btn-star-recognizer active" title="Fuentes del campo identificadas con Gaia DR3 / AllWISE (la distancia solo aparece si hay paralaje fiable)">
             🔭 <span id="i18nBtnStarRecognizer">Fuentes: ON</span>
-          </button>
-          <button type="button" id="btnToggleDistanceRuler" class="btn-distance-ruler" title="Separación angular y ángulo de posición entre dos fuentes; distancia 3D solo si ambas tienen paralaje medida">
-            📏 <span id="i18nBtnDistanceRuler">Medir A↔B</span>
           </button>
           <button type="button" id="btnScanWithGemini" class="btn-ai-gemini-scan" title="Enviar la telemetría medida y la imagen actual al copiloto (Gemini, o motor local sin clave)">
             ✨ <span id="i18nBtnScanGemini">Consultar a Gemini</span>
@@ -466,7 +463,7 @@
           <div class="hud-chip hud-chip-snr" id="hudSnrPeak">Pico: — MJy/sr (S/N —)</div>
         </div>
 
-        <!-- HUD Flotante del Detector IA de Anomalías sobre el Lienzo -->
+        <!-- HUD del detector de candidatos (verificación ePSF) sobre el lienzo -->
         <div class="ai-detector-hud" id="aiDetectorHud">
           <div class="ai-hud-header">
             <span class="ai-hud-pulse"></span>
@@ -536,7 +533,7 @@
         </div>
       </div>
 
-      <!-- ESCUDO ANTI-ARTEFACTOS L2b, FOTOMETRÍA TRACTOR 15x15 Y MOTOR MATEMÁTICO EN VIVO -->
+      <!-- CALIDAD DE DATOS (BITS FLAGS OFICIALES) Y ECUACIONES CON VALORES MEDIDOS -->
       <details class="math-shield-details" id="mathShieldDetails">
         <summary id="i18nMathShieldSummary">🛡️ Calidad de datos (FLAGS oficiales), fotometría ePSF y ecuaciones en vivo</summary>
         <div class="math-shield-body">
@@ -549,7 +546,7 @@
             </span>
           </div>
           <div class="artifact-shield-grid" id="artifactShieldGrid">
-            <!-- Tarjetas de los 6 módulos del Escudo Anti-Artefactos generadas dinámicamente -->
+            <!-- Tarjetas de calidad de datos generadas con los datos del cubo -->
           </div>
           <div class="math-equations-header" id="i18nMathEqHeader">🧮 Motor Matemático en Vivo (Evaluación Cuantitativa sobre el Cubo Actual)</div>
           <div class="math-telemetry-grid" id="mathEquationsGrid">
@@ -615,26 +612,23 @@
         </div>
       </div>
 
-      <!-- GRÁFICA 2: CURVA DE LUZ MULTI-ÉPOCA + ASTROS RECONOCIDOS Y DISTANCIAS -->
+      <!-- CANDIDATOS VERIFICADOS Y FUENTES DEL CAMPO (clic = espectro ePSF en todas las exposiciones) -->
       <div class="panel-section chart-section">
         <div class="section-header-compact">
           <div class="section-title-left">
             <span class="section-step">05</span>
-            <h2 id="i18nSec5">Curva de luz por canal (misma λ)</h2>
+            <h2 id="i18nSec5">Candidatos y fuentes del campo</h2>
           </div>
           <span class="aperture-badge" id="apertureCoordBadge">—</span>
         </div>
         <p class="chart-sub" id="i18nLcSub">
-          Flujo ePSF vs. fecha; cada color es un canal (λ fija). Clic en un candidato o fuente para medirla:
+          Clic en un candidato o en una fuente para medir su espectro ePSF en todas las exposiciones:
         </p>
         <div class="candidates-bar" id="candidatesBar">
           <!-- Píldoras de candidatos detectados automáticamente -->
         </div>
         <div class="recognized-objects-bar" id="recognizedObjectsBar">
           <!-- Píldoras de astros reconocidos automáticamente con su distancia en pc / años luz -->
-        </div>
-        <div class="chart-box">
-          <canvas id="lightcurveCanvas" width="460" height="175"></canvas>
         </div>
       </div>
 
@@ -953,6 +947,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=28"></script>
+  <script src="/static/app.js?v=29"></script>
 </body>
 </html>

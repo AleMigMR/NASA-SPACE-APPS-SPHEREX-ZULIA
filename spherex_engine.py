@@ -771,6 +771,7 @@ def parse_coordinates(query_or_ra: str, dec_str: Optional[str] = None, epoch_yr:
 # Descubrimiento de exposiciones (IRSA TAP)
 # ---------------------------------------------------------------------------
 _TAP_STATUS: Dict[str, Any] = {"ok": None, "error": None, "t": 0.0, "via": None, "tap_fail_t": 0.0, "sia_fail_t": 0.0}
+EXPOSURE_REUSE_DEG = 0.5  # radio para reutilizar la lista de exposiciones de un campo vecino
 EXPOSURE_CACHE_TTL_S = 7 * 86400.0  # listas de exposiciones y cubos en caché se rehacen cada 7 días (nuevas épocas)
 SERVICE_RETRY_S = 60.0  # tras un fallo de TAP o SIA no se vuelve a esperar ese servicio durante 1 minuto
 
@@ -803,8 +804,8 @@ def query_spherex_exposures(
             all_rows = None
 
     if all_rows is None:
-        # Reutilizar una consulta cercana (≤ 0.05°): cada exposición cubre 3.5° × 3.5°, y luego se
-        # comprueba la cobertura real con el WCS de cada archivo.
+        # Reutilizar una consulta cercana (≤ EXPOSURE_REUSE_DEG): cada exposición cubre 3.5° × 3.5°, así que al
+        # navegar no hace falta volver a consultar IRSA; la cobertura real se comprueba con el WCS de cada archivo.
         tap_dir = os.path.join(CACHE_DIR, "tap")
         best_file, best_dist = None, 999.0
         for fname in os.listdir(tap_dir):
@@ -817,7 +818,7 @@ def query_spherex_exposures(
                         best_dist, best_file = dist, os.path.join(tap_dir, fname)
                 except Exception:
                     pass
-        if best_file and best_dist <= 0.05:
+        if best_file and best_dist <= EXPOSURE_REUSE_DEG:
             try:
                 with open(best_file, "r", encoding="utf-8") as f:
                     near_rows = json.load(f)
@@ -903,7 +904,7 @@ def query_spherex_exposures(
 
 
 SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "spherex_exposure_index")
-SNAPSHOT_MATCH_DEG = 0.3  # cada exposición cubre 3.5° × 3.5°; la cobertura real se comprueba luego con el WCS
+SNAPSHOT_MATCH_DEG = 0.5  # cada exposición cubre 3.5° × 3.5°; la cobertura real se comprueba luego con el WCS
 _SNAPSHOTS: Optional[List[Dict[str, Any]]] = None
 
 
@@ -949,7 +950,7 @@ def _query_snapshot_exposures(ra: float, dec: float) -> Optional[Tuple[List[Dict
     return [dict(r) for r in best["rows"]], info
 
 
-_DISCOVERY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="irsa-discovery")
+_DISCOVERY_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="irsa-discovery")
 
 
 def _query_tap_exposures(ra: float, dec: float) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -1050,7 +1051,8 @@ def eval_wcs_wave(X: np.ndarray, Y: np.ndarray, V: np.ndarray, x_raw: float, y_r
 # Recortes L2b (AWS S3 HTTP Range → IRSA IBE) con metadatos para fotometría y astrometría
 # ---------------------------------------------------------------------------
 _HTTP_POOL = requests.Session()
-_HTTP_POOL.mount("https://", requests.adapters.HTTPAdapter(pool_connections=24, pool_maxsize=24))
+_HTTP_POOL.mount("https://", requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=96))
+_LAYER_POOL = ThreadPoolExecutor(max_workers=72, thread_name_prefix="s3-layers")
 _CUT_META_KEYS = ("mjd_avg", "psf_fwhm", "detector", "x0_det", "y0_det", "sc_start", "sc_end", "vsc_start", "vsc_end", "t_span_s")
 
 
@@ -1129,6 +1131,70 @@ def _cut_from_npz(d: Any, row: Dict[str, Any], source: str) -> Dict[str, Any]:
     }
 
 
+_L2B_LAYOUTS: Dict[str, Dict[str, Any]] = {}
+_FITS_DTYPES = {-32: ">f4", -64: ">f8", 8: "u1", 16: ">i2", 32: ">i4", 64: ">i8"}
+
+
+def _l2b_layout(uri: str, url: str) -> Dict[str, Any]:
+    """
+    Estructura de un archivo L2b (posición y forma de cada capa, cabecera IMAGE, tabla WCS-WAVE y fila de la ePSF),
+    leída una vez con bloques pequeños y guardada en memoria y en cache/layouts/. Al navegar se reutilizan las
+    mismas exposiciones, así que los recortes siguientes solo leen datos, sin volver a pedir cabeceras.
+    """
+    if uri in _L2B_LAYOUTS:
+        return _L2B_LAYOUTS[uri]
+    lpath = os.path.join(CACHE_DIR, "layouts", hashlib.md5(uri.encode()).hexdigest()[:20] + "_v2.json")
+    if os.path.exists(lpath):
+        try:
+            with open(lpath, "r", encoding="utf-8") as f:
+                _L2B_LAYOUTS[uri] = json.load(f)
+                return _L2B_LAYOUTS[uri]
+        except Exception:
+            pass
+    lay: Dict[str, Any] = {"layers": {}}
+    with fits.open(url, use_fsspec=True, fsspec_kwargs={"block_size": 64 * 1024}) as h:
+        for ext in ("IMAGE", "ZODI", "FLAGS", "VARIANCE"):
+            hd = h[ext].header
+            lay["layers"][ext] = {"offset": int(h[ext]._data_offset), "naxis1": int(hd["NAXIS1"]), "naxis2": int(hd["NAXIS2"]),
+                                  "bitpix": int(hd["BITPIX"]), "bscale": float(hd.get("BSCALE", 1.0)), "bzero": float(hd.get("BZERO", 0.0)),
+                                  # FLAGS viene comprimida por mosaicos: sus bytes no se pueden leer en bruto
+                                  "compressed": isinstance(h[ext], fits.CompImageHDU)}
+        lay["image_header"] = h["IMAGE"].header.tostring()
+        wtbl = h["WCS-WAVE"].data
+        lay["wave_x"] = np.asarray(wtbl["X"][0], float).tolist()
+        lay["wave_y"] = np.asarray(wtbl["Y"][0], float).tolist()
+        lay["wave_v"] = np.asarray(wtbl["VALUES"][0], float).tolist()
+        try:
+            lay["epsf_offset"], lay["epsf_row_len"] = int(h["EPSF"]._data_offset), int(h["EPSF"].header["NAXIS1"])
+        except Exception:
+            lay["epsf_offset"], lay["epsf_row_len"] = None, None
+    _L2B_LAYOUTS[uri] = lay
+    try:
+        os.makedirs(os.path.dirname(lpath), exist_ok=True)
+        with open(lpath, "w", encoding="utf-8") as f:
+            json.dump(lay, f)
+    except Exception:
+        pass
+    return lay
+
+
+def _read_layer_rows(url: str, layer: Dict[str, Any], y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """Filas y0..y1 de una capa de imagen con UNA petición HTTP Range; devuelve el recorte [y0:y1, x0:x1] ya escalado."""
+    if layer.get("compressed"):
+        raise ValueError("capa comprimida: usar astropy")
+    nx, bitpix = layer["naxis1"], layer["bitpix"]
+    bpp = abs(bitpix) // 8
+    b0 = layer["offset"] + y0 * nx * bpp
+    b1 = layer["offset"] + y1 * nx * bpp - 1
+    r = _HTTP_POOL.get(url, headers={"Range": f"bytes={b0}-{b1}"}, timeout=40)
+    if r.status_code not in (200, 206) or len(r.content) != b1 - b0 + 1:
+        raise IOError(f"lectura parcial S3 incompleta ({r.status_code})")
+    arr = np.frombuffer(r.content, dtype=_FITS_DTYPES[bitpix]).reshape(y1 - y0, nx)[:, x0:x1]
+    if layer.get("bscale", 1.0) != 1.0 or layer.get("bzero", 0.0) != 0.0:
+        arr = arr.astype(np.float64 if bitpix < 0 else np.int64) * layer["bscale"] + layer["bzero"]
+    return arr
+
+
 def fetch_cutout_cached(row: Dict[str, Any], ra: float, dec: float, size_deg: float) -> Optional[Dict[str, Any]]:
     """
     Devuelve el recorte nativo (IMAGE−ZODI, FLAGS, VARIANCE, WCS TAN-SIP, tabla WCS-WAVE, ePSF y
@@ -1150,28 +1216,39 @@ def fetch_cutout_cached(row: Dict[str, Any], ra: float, dec: float, size_deg: fl
     s3_key = uri.replace("ibe/data/spherex/", "")
     s3_url = S3_BASE + s3_key
     try:
-        with fits.open(s3_url, use_fsspec=True, fsspec_kwargs={"block_size": 256 * 1024}) as h:
-            hdr_full = h["IMAGE"].header
-            w_full = WCS(hdr_full)
-            ny, nx = h["IMAGE"].shape
-            x_det, y_det = [float(v) for v in w_full.world_to_pixel_values(ra, dec)]
-            r_pix = int(np.ceil(size_deg * 0.78 * 3600.0 / PIX_SCALE_NATIVE)) + 10
-            x0, x1 = max(int(round(x_det)) - r_pix, 0), min(int(round(x_det)) + r_pix, nx)
-            y0, y1 = max(int(round(y_det)) - r_pix, 0), min(int(round(y_det)) + r_pix, ny)
-            if x1 - x0 < 12 or y1 - y0 < 12:
-                return None
-            img_raw = h["IMAGE"].section[y0:y1, x0:x1].astype(np.float32)
-            zod_raw = h["ZODI"].section[y0:y1, x0:x1].astype(np.float32)
-            flg_raw = h["FLAGS"].section[y0:y1, x0:x1].astype(np.int64)
-            var_raw = h["VARIANCE"].section[y0:y1, x0:x1].astype(np.float32)
-            wtbl = h["WCS-WAVE"].data
-            X_w, Y_w, V_w = (wtbl["X"][0].astype(float), wtbl["Y"][0].astype(float), wtbl["VALUES"][0].astype(float))
-            meta = _hdr_meta(hdr_full)
-            meta["x0_det"], meta["y0_det"] = int(x0), int(y0)
-            psf = None
+        lay = _l2b_layout(uri, s3_url)
+        hdr_full = fits.Header.fromstring(lay["image_header"])
+        w_full = WCS(hdr_full)
+        ny, nx = lay["layers"]["IMAGE"]["naxis2"], lay["layers"]["IMAGE"]["naxis1"]
+        x_det, y_det = [float(v) for v in w_full.world_to_pixel_values(ra, dec)]
+        r_pix = int(np.ceil(size_deg * 0.78 * 3600.0 / PIX_SCALE_NATIVE)) + 10
+        x0, x1 = max(int(round(x_det)) - r_pix, 0), min(int(round(x_det)) + r_pix, nx)
+        y0, y1 = max(int(round(y_det)) - r_pix, 0), min(int(round(y_det)) + r_pix, ny)
+        if x1 - x0 < 12 or y1 - y0 < 12:
+            return None
+        # Una petición HTTP Range por capa con exactamente las filas necesarias (sin sobrelectura de bloques)
+        def _flags() -> np.ndarray:
+            if lay["layers"]["FLAGS"].get("compressed", True):
+                with fits.open(s3_url, use_fsspec=True, fsspec_kwargs={"block_size": 64 * 1024}) as hf:
+                    return hf["FLAGS"].section[y0:y1, x0:x1]
+            return _read_layer_rows(s3_url, lay["layers"]["FLAGS"], y0, y1, x0, x1)
+
+        # Las 4 capas se piden a la vez (la latencia es la de la más lenta, no la suma)
+        f_img = _LAYER_POOL.submit(_read_layer_rows, s3_url, lay["layers"]["IMAGE"], y0, y1, x0, x1)
+        f_zod = _LAYER_POOL.submit(_read_layer_rows, s3_url, lay["layers"]["ZODI"], y0, y1, x0, x1)
+        f_var = _LAYER_POOL.submit(_read_layer_rows, s3_url, lay["layers"]["VARIANCE"], y0, y1, x0, x1)
+        f_flg = _LAYER_POOL.submit(_flags)
+        img_raw = f_img.result(timeout=60).astype(np.float32)
+        zod_raw = f_zod.result(timeout=60).astype(np.float32)
+        var_raw = f_var.result(timeout=60).astype(np.float32)
+        flg_raw = f_flg.result(timeout=60).astype(np.int64)
+        X_w, Y_w, V_w = (np.asarray(lay["wave_x"], float), np.asarray(lay["wave_y"], float), np.asarray(lay["wave_v"], float))
+        meta = _hdr_meta(hdr_full)
+        meta["x0_det"], meta["y0_det"] = int(x0), int(y0)
+        psf = None
+        if lay.get("epsf_offset") is not None:
             try:
-                e = h["EPSF"]
-                psf = _read_epsf_row(s3_url, int(e._data_offset), int(e.header["NAXIS1"]), meta["detector"], x_det, y_det)
+                psf = _read_epsf_row(s3_url, int(lay["epsf_offset"]), int(lay["epsf_row_len"]), meta["detector"], x_det, y_det)
             except Exception:
                 psf = None
         w_sub = w_full[y0:y1, x0:x1]
@@ -1424,15 +1501,20 @@ def forced_photometry_cut(cut: Dict[str, Any], ra: float, dec: float, fit_positi
             extra.append(psf_native_model(psf, xs, ys, xn, yn, fwhm_px))
     out["n_deblended"] = len(extra)
     best_dx, best_dy = 0.0, 0.0
-    if fit_position:
-        best_chi = None
-        for dx in np.arange(-1.5, 1.501, 0.25):
-            for dy in np.arange(-1.5, 1.501, 0.25):
-                res = _wls_flux(st_img, st_var, good, psf_native_model(psf, xs, ys, x + dx, y + dy, fwhm_px), extra)
-                if res is not None and res[0] > 0 and (best_chi is None or res[3] < best_chi):
-                    best_chi, best_dx, best_dy = res[3], dx, dy
     P_t = psf_native_model(psf, xs, ys, x, y, fwhm_px)
     res = _wls_flux(st_img, st_var, good, P_t, extra)
+    # La posición solo se ajusta si hay fuente (S/N ≥ 5 en la posición predicha): rejilla gruesa (0.5 px) y fina (0.125 px)
+    if fit_position and res is not None and res[1] > 0 and res[0] / res[1] >= 5.0:
+        best_chi = None
+        cx, cy = 0.0, 0.0
+        for step, half in ((0.5, 1.5), (0.125, 0.375)):
+            bx, by = cx, cy
+            for dx in np.arange(-half, half + 1e-9, step):
+                for dy in np.arange(-half, half + 1e-9, step):
+                    r2 = _wls_flux(st_img, st_var, good, psf_native_model(psf, xs, ys, x + bx + dx, y + by + dy, fwhm_px), extra)
+                    if r2 is not None and r2[0] > 0 and (best_chi is None or r2[3] < best_chi):
+                        best_chi, cx, cy = r2[3], bx + dx, by + dy
+        best_dx, best_dy = cx, cy
     if saturated:
         _saturated_core_astrometry(out, st_flg, xs, ys, x, y, w)
     if res is None:
@@ -1518,7 +1600,7 @@ def fit_source_position(cut: Dict[str, Any], ra_guess: float, dec_guess: float, 
         if xs0 - 3 <= xn <= xs1 + 2 and ys0 - 3 <= yn <= ys1 + 2 and np.hypot(xn - x0, yn - y0) >= 0.8:
             extra.append(psf_native_model(psf, xs, ys, xn, yn, fwhm_px))
     best = None
-    for step, half in ((0.25, search_px), (0.05, 0.3)):
+    for step, half in ((0.5, search_px), (0.125, 0.375), (0.04, 0.12)):
         cx, cy = (x0, y0) if best is None else (best[0], best[1])
         for dx in np.arange(-half, half + 1e-9, step):
             for dy in np.arange(-half, half + 1e-9, step):
@@ -2469,7 +2551,45 @@ def _allwise_gator(ra: float, dec: float, radius_deg: float) -> Optional[List[Di
         return None
 
 
+CATALOG_MARGIN_DEG = 0.1  # se pide un radio mayor que el campo para reutilizarlo al navegar
+
+
 def fetch_catalog_sources(ra: float, dec: float, radius_deg: float) -> Dict[str, Any]:
+    """
+    Fuentes Gaia DR3 y AllWISE en el campo. Si una consulta ya guardada cubre este campo (campo vecino al
+    navegar), se filtra localmente sin volver a consultar; si no, se pide un radio CATALOG_MARGIN_DEG mayor.
+    """
+    cdir = os.path.join(CACHE_DIR, "catalogs")
+    try:
+        for fname in os.listdir(cdir):
+            m = re.match(r"catv2_([-\d.]+)_([-\d.]+)_([\d.]+)\.json$", fname)
+            if not m:
+                continue
+            c_ra, c_dec, c_rad = float(m.group(1)), float(m.group(2)), float(m.group(3))
+            dist = float(np.hypot(((ra - c_ra + 180.0) % 360.0 - 180.0) * np.cos(np.deg2rad(dec)), dec - c_dec))
+            if dist + radius_deg <= c_rad and time.time() - os.path.getmtime(os.path.join(cdir, fname)) < EXPOSURE_CACHE_TTL_S:
+                with open(os.path.join(cdir, fname), "r", encoding="utf-8") as f:
+                    return _filter_catalog(json.load(f), ra, dec, radius_deg + 0.005)
+    except Exception:
+        pass
+    big = float(min(radius_deg + CATALOG_MARGIN_DEG, 0.6))
+    return _filter_catalog(_fetch_catalog_sources_remote(ra, dec, big), ra, dec, radius_deg + 0.005)
+
+
+def _filter_catalog(cat: Dict[str, Any], ra: float, dec: float, radius_deg: float) -> Dict[str, Any]:
+    cosd = np.cos(np.deg2rad(dec))
+    def _inside(s_: Dict[str, Any]) -> bool:
+        try:
+            return float(np.hypot(((s_["ra"] - ra + 180.0) % 360.0 - 180.0) * cosd, s_["dec"] - dec)) <= radius_deg
+        except Exception:
+            return True
+    out = dict(cat)
+    out["gaia"] = [g for g in cat.get("gaia", []) if _inside(g)]
+    out["allwise"] = [w for w in cat.get("allwise", []) if _inside(w)]
+    return out
+
+
+def _fetch_catalog_sources_remote(ra: float, dec: float, radius_deg: float) -> Dict[str, Any]:
     """Fuentes Gaia DR3 (época 2016.0) y AllWISE (época ≈ 2010.5) en el campo, con caché en disco."""
     ckey = f"catv2_{ra:.4f}_{dec:.4f}_{radius_deg:.3f}"
     cfile = os.path.join(CACHE_DIR, "catalogs", f"{ckey}.json")
@@ -2480,8 +2600,8 @@ def fetch_catalog_sources(ra: float, dec: float, radius_deg: float) -> Dict[str,
         except Exception:
             pass
     gaia_mast = _gaia_dr3_mast(ra, dec, radius_deg)
-    gaia_rows = None if gaia_mast is not None else _vizier_asu("I/355/gaiadr3", ra, dec, radius_deg, "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,e_Plx,Gmag,BP-RP,RUWE", 300, "Gmag")
-    wise_rows = _vizier_asu("II/328/allwise", ra, dec, radius_deg, "AllWISE,RAJ2000,DEJ2000,W1mag,W2mag,W3mag,pmRA,pmDE", 300, "W2mag")
+    gaia_rows = None if gaia_mast is not None else _vizier_asu("I/355/gaiadr3", ra, dec, radius_deg, "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,e_Plx,Gmag,BP-RP,RUWE", 2000, "Gmag")
+    wise_rows = _vizier_asu("II/328/allwise", ra, dec, radius_deg, "AllWISE,RAJ2000,DEJ2000,W1mag,W2mag,W3mag,pmRA,pmDE", 2000, "W2mag")
     if wise_rows is None:
         wise_rows = _allwise_gator(ra, dec, radius_deg)
     gaia = list(gaia_mast or [])
@@ -2853,8 +2973,10 @@ def build_sky_cube_and_spectrum(
             for r in _select_band_balanced(grp, max_per_epoch):
                 selected_rows.append({**r, "epoch_id": ep_id})
     valid_cuts: List[Dict[str, Any]] = []
+    cat_radius = float(min(max(size_deg * 0.75, 0.03), 0.6))
+    cat_future = _DISCOVERY_POOL.submit(fetch_catalog_sources, ra, dec, cat_radius) if selected_rows else None
     if selected_rows:
-        with ThreadPoolExecutor(max_workers=16) as ex:
+        with ThreadPoolExecutor(max_workers=24) as ex:
             fetched = list(ex.map(lambda r: _safe_fetch(r, ra, dec, size_deg), selected_rows))
         valid_cuts = [c for c in fetched if c is not None]
 
@@ -2864,8 +2986,14 @@ def build_sky_cube_and_spectrum(
         return ra, dec
 
     refs_in_field = _reference_targets_in_field(ra, dec, size_deg)
-    cat_radius = float(min(max(size_deg * 0.75, 0.03), 0.6))
-    catalogs = fetch_catalog_sources(ra, dec, cat_radius) if valid_cuts else {"gaia": [], "allwise": [], "ok": False}
+    catalogs = {"gaia": [], "allwise": [], "ok": False}
+    if valid_cuts and cat_future is not None:
+        try:
+            # Un catálogo lento (p. ej. VizieR saturado) no frena el campo: tras 8 s se sigue sin él; la consulta
+            # continúa en segundo plano y queda en caché para /api/catalogs y el siguiente campo
+            catalogs = cat_future.result(timeout=8)
+        except Exception:
+            catalogs = {"gaia": [], "allwise": [], "ok": False}
 
     def _neighbors_at(mjd: float, ra_t: float, dec_t: float) -> List[Tuple[float, float]]:
         """Fuentes Gaia a < 20″ del objetivo (propagadas a la fecha), excluida la propia fuente (< 1.5″)."""
@@ -3043,8 +3171,8 @@ def build_sky_cube_and_spectrum(
 
     candidates = detect_candidates(epoch_arrays, common_wcs, pix_arcsec, coverage_arrays) if data_mode == "l2b" else []
     mean_mjd = float(np.mean([e["mjd"] for e in epochs_out]))
-    if not catalogs.get("gaia") and not catalogs.get("allwise"):
-        catalogs = fetch_catalog_sources(ra, dec, cat_radius)
+    if not catalogs.get("gaia") and not catalogs.get("allwise") and (cat_future is None or not valid_cuts):
+        catalogs = fetch_catalog_sources(ra, dec, cat_radius)  # modo DR1 estático (sin recortes L2b)
     ref_tracks = []
     for t in refs_in_field:
         ra_r, de_r = propagate_astrometry(t["astrometry"], mean_mjd)
@@ -3578,7 +3706,9 @@ def _build_equations(cube: Dict[str, Any]) -> Dict[str, Any]:
     good = [p for p in cube.get("photometry", []) if p["quality"] in ("good", "warning")]
     best = max(good, key=lambda p: p["snr"]) if good else None
     eps = cube.get("epochs", [])
-    zodi = np.mean([e["mean_zodi"] for e in eps]) if eps else 0.0
+    # ⟨ZODI⟩ = media sobre TODAS las exposiciones (el mismo valor que el panel de calidad de datos)
+    n_tot = sum(int(e.get("n_exp") or 0) for e in eps)
+    zodi = (sum(float(e["mean_zodi"]) * int(e.get("n_exp") or 0) for e in eps) / n_tot) if n_tot else None
     cands = cube.get("candidates", [])
     tgt = cube.get("target") or {}
     mot = tgt.get("expected_motion")
@@ -3614,7 +3744,8 @@ def _build_equations(cube: Dict[str, Any]) -> Dict[str, Any]:
         {"id": "eq_zodi", "title_es": "1. Resta de luz zodiacal y máscara oficial", "title_en": "1. Zodiacal-light subtraction and official mask",
          "formula": "I(x,y) = IMAGE − ZODI ;  píxel rechazado si FLAGS ∧ M_oficial ≠ 0",
          "formula_en": "I(x,y) = IMAGE − ZODI ;  pixel rejected if FLAGS ∧ M_official ≠ 0",
-         "live_value": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr", "live_value_en": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr"},
+         "live_value": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr" if zodi is not None else "⟨ZODI⟩ n/d (cubo DR1 estático)",
+         "live_value_en": f"⟨ZODI⟩ = {zodi:.3f} MJy/sr" if zodi is not None else "⟨ZODI⟩ n/a (static DR1 cube)"},
         {"id": "eq_psf", "title_es": "2. Fotometría PSF forzada (método del pipeline SPHEREx)", "title_en": "2. Forced PSF photometry (SPHEREx pipeline method)",
          "formula": "d_j = F·P_eff(x_j − x⋆) + B ;  θ = (AᵀWA)⁻¹AᵀWd ,  W = 1/VARIANCE",
          "formula_en": "d_j = F·P_eff(x_j − x⋆) + B ;  θ = (AᵀWA)⁻¹AᵀWd ,  W = 1/VARIANCE",
