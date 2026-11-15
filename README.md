@@ -35,7 +35,6 @@
 | **Estrellas saturadas** | Posición medida aunque el flujo no sea medible | Centroide de los píxeles `OVERFLOW` del núcleo |
 | **Movimiento medido** | Desplazamiento del objetivo entre la primera y la última visita, frente al predicho, con su diferencia en σ | Ajuste lineal ponderado a las medias de cada visita (error estándar más 0.7″ de sistemático para núcleos saturados) |
 | **Candidatos** | Dipolos y residuos de la imagen de diferencia, cada uno verificado | Umbral 5σ con σ_MAD y verificación ePSF: movimiento ≥ 3σ y ≥ 0.3 px; variabilidad ≥ 5σ en el mismo canal en ≥ 2 pares independientes. No cuentan las mediciones saturadas, las del borde del detector ni las que quedan fuera del rango del filtro |
-| **Curva de luz** | Flujo / mediana por canal (misma λ) | χ²ν frente a flujo constante y mayor cambio en σ |
 | **Espectro DR1** | 102 canales en la posición del objetivo, con avisos de saturación y de fuentes vecinas | Fotometría de apertura en el cubo All-Sky DR1 (teselas HEALPix de orden 5) |
 | **Profundidad de bandas** | τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm, con su error e interpretación (gas o hielo) | Continuo de ley de potencias y piso sistemático de 0.04 |
 | **Fuentes del campo** | Gaia DR3 y AllWISE; distancia solo si π/σ ≥ 5 o hay una distancia publicada | MAST con respaldo VizieR; VizieR con respaldo IRSA Gator |

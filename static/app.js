@@ -8,7 +8,7 @@
  * - Modos: Blink Video, Diferencia (E_n - E_1), Falso Color RGB Cronológico, Co-Adición y Cortina A/B.
  * - Detector Super-Inteligente de Anomalías IA integrado en el visor con puente directo a Gemini Copilot (Visión + Telemetría).
  * - Escudo Anti-Artefactos L2b (Charge Blooming B1, SAA, Persistencia H2RG, ZODI, Trazas LEO, Dicroico).
- * - Fotometría Forzada Tractor (15x15), Magnitud AB (ZP=23.9001), Profundidad Óptica de Hielos τ(λ) y Exportador MPC 80-Columnas.
+ * - Fotometría PSF forzada con la ePSF oficial, magnitud AB (ZP = 23.9), profundidad aparente de bandas y borrador MPC (código 288).
  * - Administrador Completo de Objetivos de Referencia + Tooltip Flotante con el cursor.
  * - Simetría visual y traducción dinámica 100% completa Español (ES) <-> Inglés (EN).
  */
@@ -115,7 +115,7 @@ const I18N = {
     i18nLblPm: "Mov. Propio:",
     i18nLabelFov: "Campo de Visión (FOV)",
     i18nLabelDepth: "Exposiciones / Época",
-    i18nLabelGap: "Separación Temporal",
+    i18nLabelGap: "Separación mínima entre épocas",
     i18nLabelRelease: "Lanzamiento IRSA",
     optRelAll: "DR1 + QR3 (recomendado)",
     optRelQr2: "Solo DR1 (año 1)",
@@ -215,9 +215,8 @@ const I18N = {
     spectrumSubtitle:
       "Flujo (µJy) vs. longitud de onda. Cada punto es una exposición L2b a su λ real; la línea es la co-adición DR1. Huecos = saturado o sin detección.",
     i18nMolBands: "Profundidad aparente de banda (espectro DR1):",
-    i18nSec5: "Curva de luz por canal (misma λ)",
-    i18nLcSub:
-      "Flujo ePSF vs. fecha. Cada color es un canal (λ fija): solo puntos del mismo color son comparables. Clic en un candidato o fuente para medirla:",
+    i18nSec5: "Candidatos y fuentes del campo",
+    i18nLcSub: "Clic en un candidato o en una fuente para medir su espectro ePSF en todas las exposiciones:",
     i18nAiTitle: "AstroAI Copilot · Diagnóstico Científico",
     qChip1: "🚀 ¿Qué se mueve aquí?",
     qChip2: "🌈 Interpretar el espectro",
@@ -317,7 +316,7 @@ const I18N = {
     i18nLblPm: "Proper Motion:",
     i18nLabelFov: "Field of View (FOV)",
     i18nLabelDepth: "Exposures / Epoch",
-    i18nLabelGap: "Epoch Separation",
+    i18nLabelGap: "Minimum gap between epochs",
     i18nLabelRelease: "IRSA Data Release",
     optRelAll: "DR1 + QR3 (recommended)",
     optRelQr2: "DR1 only (year 1)",
@@ -417,9 +416,8 @@ const I18N = {
     spectrumSubtitle:
       "Flux (µJy) vs. wavelength. Each point is one L2b exposure at its true λ; the line is the DR1 co-add. Gaps = saturated or not detected.",
     i18nMolBands: "Apparent band depth (DR1 spectrum):",
-    i18nSec5: "Per-channel light curve (same λ)",
-    i18nLcSub:
-      "ePSF flux vs. date. Each colour is one channel (fixed λ): only same-colour points are comparable. Click a candidate or source to measure it:",
+    i18nSec5: "Candidates and field sources",
+    i18nLcSub: "Click a candidate or a source to measure its ePSF spectrum in every exposure:",
     i18nAiTitle: "AstroAI Copilot · Scientific Diagnosis",
     qChip1: "🚀 What is moving here?",
     qChip2: "🌈 Interpret the spectrum",
@@ -2169,20 +2167,18 @@ function bindEvents() {
     STATE.isDragging = false;
     // Si estamos en modo FITS y el usuario arrastró el cielo para explorar los alrededores,
     // actualizamos automáticamente las coordenadas centrales y transmitimos el nuevo cubo continuo sin pantallas negras
-    if (STATE.mode !== "allsky" && STATE.cube && !STATE.panFetchInProgress) {
+    if (STATE.mode !== "allsky" && STATE.cube) {
       const panDist = Math.hypot(STATE.viewPanX, STATE.viewPanY);
       if (panDist > 18) {
         const c = document.getElementById("skyCanvas");
         const { gx, gy } = canvasToGrid(c.width * 0.5, c.height * 0.5);
         const { ra, dec } = pixelToWorld(gx, gy);
-        STATE.ra = ((ra % 360.0) + 360.0) % 360.0;
-        STATE.dec = Math.max(-89.9, Math.min(89.9, dec));
-        STATE.activeTarget = null;
-        STATE.aperturePx = null;
-        STATE.pointSpectrum = null;
-        const inp = document.getElementById("inputQuery");
-        if (inp) inp.value = `${STATE.ra.toFixed(5)}, ${STATE.dec.toFixed(5)}`;
-        renderPresets();
+        if (STATE.panFetchInProgress) {
+          // Arrastre durante una carga: se guarda el último destino y se carga al terminar (no se pierde)
+          STATE.pendingPan = { ra, dec };
+          return;
+        }
+        applyPanCenter(ra, dec);
         loadSkyPatch({ silent: true });
       }
     }
@@ -2494,6 +2490,25 @@ async function handleSearchResolve() {
   }
 }
 
+function applyPanCenter(ra, dec) {
+  STATE.ra = ((ra % 360.0) + 360.0) % 360.0;
+  STATE.dec = Math.max(-89.9, Math.min(89.9, dec));
+  STATE.activeTarget = null;
+  STATE.aperturePx = null;
+  STATE.pointSpectrum = null;
+  const inp = document.getElementById("inputQuery");
+  if (inp) inp.value = `${STATE.ra.toFixed(5)}, ${STATE.dec.toFixed(5)}`;
+  renderPresets();
+}
+
+function runPendingPan() {
+  if (!STATE.pendingPan || STATE.panFetchInProgress) return;
+  const p = STATE.pendingPan;
+  STATE.pendingPan = null;
+  applyPanCenter(p.ra, p.dec);
+  loadSkyPatch({ silent: true });
+}
+
 async function loadSkyPatch(opts = {}) {
   const silent = Boolean(opts && opts.silent);
   if (STATE.irsaRetryTimer) {
@@ -2536,6 +2551,7 @@ async function loadSkyPatch(opts = {}) {
     if (cube.error) {
       showLoading(false);
       STATE.panFetchInProgress = false;
+      setTimeout(runPendingPan, 0);
       setStatus(cube.error, false);
       return;
     }
@@ -2592,6 +2608,7 @@ async function loadSkyPatch(opts = {}) {
 
     showLoading(false);
     STATE.panFetchInProgress = false;
+    setTimeout(runPendingPan, 0);
     setStatus(
       cube.data_mode === "dr1_static"
         ? STATE.lang === "en"
@@ -2615,6 +2632,7 @@ async function loadSkyPatch(opts = {}) {
     console.error("Error construyendo cubo SPHEREx:", err);
     showLoading(false);
     STATE.panFetchInProgress = false;
+    setTimeout(runPendingPan, 0);
     setStatus("Error", false);
   }
 }
@@ -4535,7 +4553,7 @@ function renderExposureTable() {
 }
 
 // ============================================================================
-// 14. GRÁFICAS CIENTÍFICAS (ESPECTRO LVF + MODELO PLANCK/HIELOS Y CURVA DE LUZ)
+// 14. GRÁFICAS CIENTÍFICAS (ESPECTRO ePSF/DR1 Y CURVA DE LUZ POR CANAL)
 // ============================================================================
 const BAND_COLORS = {
   D1: "#6366f1",
