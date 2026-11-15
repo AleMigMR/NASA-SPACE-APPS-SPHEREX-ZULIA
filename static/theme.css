@@ -37,7 +37,7 @@
   --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px -24px rgba(0, 0, 0, 0.9);
   --ring: 0 0 0 3px rgba(56, 189, 248, 0.28);
 
-  --topbar-h: 68px;
+  --topbar-h: 92px;
 }
 
 /* --------------------------------------------------------------------------
@@ -963,21 +963,19 @@ body {
   box-shadow: 0 0 22px -6px rgba(251, 191, 36, 0.55);
 }
 .agency-logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  overflow: hidden;
-  flex-shrink: 0;
+  height: 40px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: #ffffff;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  background: #0b3d91;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 6px 16px -8px rgba(0, 0, 0, 0.9);
+  flex-shrink: 0;
+  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.9);
 }
 .agency-logo img {
-  width: 128%;
-  height: 128%;
-  object-fit: cover;
+  height: 100%;
+  width: auto;
+  display: block;
 }
 .topbar-identity {
   display: inline-flex;
@@ -997,4 +995,20 @@ body {
 .accent-gold { color: #fbbf24; }
 @media (max-width: 1240px) {
   .topbar-identity small { display: none; }
+}
+
+/* Insignias de la cabecera completas (antes se cortaban por overflow:hidden) */
+.brand-titles,
+.brand-row {
+  overflow: visible;
+}
+.brand-row {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.mission-badge,
+.badge-subtle {
+  flex-shrink: 0;
+  overflow: visible;
+  text-overflow: clip;
 }
