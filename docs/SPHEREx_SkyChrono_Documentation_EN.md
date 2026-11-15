@@ -1,213 +1,208 @@
 # Complete Documentation — SPHEREx SkyChrono (EN)
 
-**Interactive 360° Full-Sky Explorer (Official DR1), Multi-Epoch Level-2b Blinking, LVF Infrared Spectroscopy (`0.75–5.0 µm`), Tractor Forced Photometry, Automated 3D Celestial Recognition, and Multimodal AstroAI Copilot · *"Planet X and SPHEREx"* Challenge (NASA Space Apps Challenge 2026 · Delegación Zuliana de Astronomía).**
+**All-sky and time-domain explorer for SPHEREx: multi-epoch blinking of real L2b images, photometry with the official ePSF, 0.75–5.0 µm spectra, and verification of moving or variable candidates · *"Planet X and SPHEREx"* Challenge (NASA Space Apps Challenge 2026 · Delegación Zuliana de Astronomía).**
 
 > [!NOTE]
-> This **single unified master guide** consolidates **Beginner's Astrophysics**, the **User Manual**, the **Technical & Mathematical Architecture for NASA/IPAC Judges**, and the **Deployment & Space Apps Submission Guide** with zero redundancy. Use the **🌐 View in Español** button above to read the complete Spanish edition.
+> Single master document with **Basic Concepts**, **User Manual**, **Methods and API**, **Validation, Security and Deployment**, and **Targets and References**. Use **🌐 View in Español** for the Spanish edition.
+>
+> **Rigor principle:** every number shown by the app comes from an official product (SPHEREx at IRSA/AWS, Gaia DR3, AllWISE, SIMBAD, JPL Horizons) or from a calculation documented here. When a value does not exist or is not reliable (saturation, low S/N, no parallax), the app says so instead of inventing it.
 
 ## Quick Index
 
-- [Chapter 1 · Astrophysics Basics and SPHEREx Mission](#chapter-1-astrophysics-basics-and-spherex-mission)
-- [Chapter 2 · User Manual: 360° Universe and Discovery Tools](#chapter-2-user-manual-360-universe-and-discovery-tools)
-- [Chapter 3 · Technical Architecture, L2b Mathematics and API](#chapter-3-technical-architecture-l2b-mathematics-and-api)
-- [Chapter 4 · Security, Live Deployment and Submission](#chapter-4-security-live-deployment-and-submission)
-- [Chapter 5 · Reference Targets, Citations and DOIs](#chapter-5-reference-targets-citations-and-dois)
+- [Chapter 1 · Basic Concepts and the SPHEREx Mission](#chapter-1-basic-concepts-and-the-spherex-mission)
+- [Chapter 2 · User Manual](#chapter-2-user-manual)
+- [Chapter 3 · Methods, Mathematics and API](#chapter-3-methods-mathematics-and-api)
+- [Chapter 4 · Validation, Security and Deployment](#chapter-4-validation-security-and-deployment)
+- [Chapter 5 · Targets, References and DOIs](#chapter-5-targets-references-and-dois)
 
 ---
 
-## Chapter 1 · Astrophysics Basics and SPHEREx Mission
+## Chapter 1 · Basic Concepts and the SPHEREx Mission
 
-### 1.1 What is SPHEREx and Why Observe in Infrared?
-**SPHEREx** (*Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer*) is a **NASA** space observatory mapping **100% of the entire sky (`360° × 180°`)** from a sun-synchronous polar orbit. Using **Linear Variable Filters (LVF)** mounted across **6 HgCdTe H2RG detector arrays (`D1–D6`)**, SPHEREx resolves light into **102 infrared spectral channels** spanning **0.753 µm** to **4.988 µm** (`100` active spectral bins excluding `2` dichroic transition bins at `2.42 µm`).
+### 1.1 What is SPHEREx?
+**SPHEREx** (*Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer*) is a NASA observatory launched on **12 March 2025**. It observes the whole sky from a sun-synchronous polar orbit (~7037 km semi-major axis). Since **1 May 2025** it has been carrying out four complete surveys in 25 months. Its 20 cm telescope feeds **6 H2RG detectors**, each with a **linear variable filter (LVF)**: the wavelength a pixel measures depends on its position on the detector. Pixels are **6.15″** and each exposure lasts **113.58 s**.
 
-| Detector Array | Spectral Range ($\lambda$) | DR1 Channels | What It Reveals Best |
+| Detector | Range (µm) | Resolution R | What it shows best |
 | :--- | :---: | :---: | :--- |
-| **D1** | `0.753 – 1.102 µm` | `Ch 0 – 16` | Far-red continuum, bright main-sequence stars, and Hα / metallic features. |
-| **D2** | `1.113 – 1.631 µm` | `Ch 17 – 33` | Nearby red dwarfs (*Barnard's Star*), **H₂O** (`1.4 µm`), and **CH₄** (`1.15–1.6 µm`) troughs. |
-| **D3** | `1.656 – 2.345 µm` | `Ch 34 – 49` | **H₂O** vapor (`1.9 µm`), **CO** (`2.3 µm`), and dust-piercing circumstellar structure. |
-| **Dichroic Split** | `~2.42 µm` | `Ch 50 – 51` | Internal beam-splitter dividing short-wave (`D1–D3`) and thermal mid-IR (`D4–D6`). |
-| **D4** | `2.506 – 3.768 µm` | `Ch 52 – 67` | Cryogenic **H₂O ice** (`3.05 µm`), **CH₄** (`3.32 µm`), and PAH emission (`3.29 µm`). |
-| **D5** | `3.833 – 4.405 µm` | `Ch 68 – 84` | **CO₂ ice** (`4.27 µm`) and transition into thermal mid-infrared continuum. |
-| **D6** | `4.435 – 4.988 µm` | `Ch 85 – 101` | **CO** (`4.67 µm`), thermal glow of ultra-cold **Y brown dwarfs (~250 K)**, and **Planet X / KBOs**. |
+| **D1** | 0.744 – 1.116 | 39 | Stellar continuum; the atmospheric He I line at 1.083 µm contaminates the background |
+| **D2** | 1.099 – 1.651 | 41 | H₂O (1.4 µm) and CH₄ (1.6 µm) in cool atmospheres |
+| **D3** | 1.636 – 2.421 | 41 | H₂O (1.9 µm), CH₄ (2.2 µm), CO (2.3 µm) |
+| **D4** | 2.423 – 3.822 | 35 | H₂O (2.7–3.1 µm, gas or ice), CH₄ (3.3 µm), PAH (3.29 µm) |
+| **D5** | 3.809 – 4.420 | 112 | The 4 µm window, CO₂ (4.27 µm, gas or ice) |
+| **D6** | 4.412 – 5.002 | 128 | CO (4.67 µm); emission peak of Y dwarfs |
 
-- **Cold objects vs. visible light:** A ~`250 K` Y-type brown dwarf such as `WISE 0855−0714` is nearly invisible in optical and SWIR bands due to methane/water absorption, yet shines brightly in `D5–D6`.
-- **Biogenic Ices (SPLICES Catalog):** Infrared spectroscopy directly quantifies absorption signatures of volatile habitability molecules (**H₂O**, **CH₄**, **CO₂**, **CO**).
+*Source: SPHEREx Explanatory Supplement v2.1, Table 2.* The DR1 All-Sky cube groups the data into **102 channels** (17 per detector); channels 50–51, next to the dichroic split, are empty in DR1.
 
-### 1.2 Motion, Dipoles, `ZODI` & `FLAGS`
-- **Blink vs. Diff ($E_n - E_1$):** Repeated observations yield distinct time epochs. **`Blink`** cycles epochs so eyes catch motion or pulsing; **`Diff`** numerically subtracts Epoch 1 from the active epoch so constant stars cancel out while:
-  - **Moving bodies** (*Planet X*, *3I/ATLAS*, *WISE 0855*, *Barnard's Star*) stand out as **dipoles** (dark negative lobe at old coordinates + bright positive lobe at current coordinates).
-  - **Variables** (*RW Aurigae*, *R Draconis*) shine as isolated bright positive peaks (brightening) or dark pits (dimming).
-- **`ZODI` (Zodiacal Light):** Interplanetary dust in our Solar System scatters sunlight and radiates thermal infrared across the sky. SkyChrono **subtracts the physical `ZODI` model per exposure** so faint targets emerge cleanly.
-- **`FLAGS` (L2b Bitmask):** Hardware quality flags identify cosmic rays (South Atlantic Anomaly), LEO satellite streaks, and diode persistence to suppress false anomaly alerts.
+### 1.2 How motion and variability are detected
+- **Blink:** SPHEREx revisits each area roughly every 6 months (more often near the ecliptic poles). Alternating the epochs shows what changes.
+- **Difference ($E_n - E_1$):** a moving object leaves a **dipole** (negative where it was, positive where it is); an object that changes brightness leaves a residual at the same place.
+- **Beware of undersampling and the LVF:** with 6.15″ pixels the PSF is undersampled (FWHM ≈ 7.5″), so a star's peak changes with its sub-pixel phase. In addition, each exposure measures the source at a different λ. Difference imaging therefore **only proposes** candidates: the app verifies them with exposure-by-exposure ePSF photometry (chapter 3).
+- **`ZODI`:** each L2b image includes a zodiacal-light model that is **not** subtracted from `IMAGE`; the app subtracts it.
+- **`FLAGS`:** official per-pixel bits (Table 16 of the Supplement). `SOURCE` (bit 21) only means that the pixel belongs to a catalogued source and is **never** masked.
 
-### 1.3 Does the Universe Have a "North" or "South Pole"? (Cosmological Principle)
-> [!IMPORTANT]
-> **Physical cosmology has NO absolute "up", "down", "North Pole", or "South Pole".** Under the **Cosmological Principle**, the Universe on large scales is **isotropic and homogeneous** in every direction.
+### 1.3 Ice and gas are not the same
+The H₂O, CH₄, CO₂ and CO bands appear in two forms:
+- **Gas** in cool atmospheres: brown dwarfs such as WISE 0855 or Eps Indi B, M dwarfs and Mira-type giants. This is the case for every challenge target.
+- **Ice** on dust grains: background stars seen through molecular clouds (e.g. Elias 16 behind the Taurus cloud) and protostars. This is SPHEREx's science goal with its SPLICES target list.
 
-Orientations inside our 360° viewer strictly reflect **3 standard astronomical reference frames**:
-- **Galactic $(l, b)$:** Aligns the Milky Way disk horizontally (`Sgr A*` centered), ideal for interstellar dust and SPLICES molecular clouds.
-- **Ecliptic $(\lambda, \beta)$:** Aligns Earth's orbital plane, scanning the **Planet X / KBO** search belt, zodiacal dust glow, and SPHEREx's ultra-deep **NEP** & **SEP** fields (`>2,400 exposures`).
-- **Equatorial ICRS (RA, Dec):** International quasar-locked reference grid used by Gaia DR3, SIMBAD, and the IAU MPC.
+The app measures an **apparent band depth** and explains which of the two cases applies; it never claims "ice" in a brown dwarf.
+
+### 1.4 Reference planes of the 360° viewer
+The universe has no absolute "up". The viewer offers three standard planes: **Galactic** $(l, b)$, **Ecliptic** $(\lambda, \beta)$ (the plane of Earth's orbit and of the SPHEREx surveys) and **Equatorial ICRS** (RA, Dec), the frame of Gaia, SIMBAD and the Minor Planet Center.
 
 ---
 
-## Chapter 2 · User Manual: 360° Universe and Discovery Tools
+## Chapter 2 · User Manual
 
-### 2.1 Global Header & Reference Targets
-From left to right, the top bar organizes global scientific and export actions:
-- **🎯 Quick Tour** & **📚 Manuals & Docs**: Open this single unified bilingual Documentation Center with chapter jump navigation and raw Markdown download.
-- **🏛️ NASA / IRSA Resources**: Opens live deep links pre-bound to the active **RA/Dec** in IRSA Viewer (Firefly), SPHEREx Portal, CDS SIMBAD, VizieR (Gaia DR3 / AllWISE), official DOIs (`IRSA678`, `IRSA679`, `IRSA662`), SPLICES/3I-ATLAS, and Caltech-IPAC.
-- **📐 MPC 80-Col Report**: Generates, copies, or downloads strict 80-column **IAU Minor Planet Center** astrometry (`C59`).
-- **🔗 Share** & **🎞️ Export Blink GIF**: Copy reproducible state URLs (`?ra=...&dec=...&fov=...&bands=...&mode=...&lang=...`) or export multi-epoch `.GIF` animations.
-- **🌐 ES / EN**: Switches all UI panels, charts, tooltips, and AstroAI responses instantaneously between English and Spanish.
+### 2.1 Header and reference targets
+- **🏛️ NASA / IRSA Resources:** official challenge links (IRSA, tutorial notebooks, WiseView, Gaia DR3 at MAST, Canadian Space Agency resources) and live links to the current coordinate.
+- **📐 MPC Report:** draft in the official two-line satellite format (SPHEREx code **288**). It is only generated for candidates with confirmed motion and no stellar counterpart; otherwise the window explains why it is empty.
+- **🔗 Share** and **🎞️ GIF:** reproducible link and animation of the epochs.
+- **Reference targets:** when you choose one, the app centres the field on its **position propagated to epoch 2026.0** and propagates its position to the date of **each** exposure to measure it. The tooltip explains which epoch the reference coordinates belong to (e.g. the WISE 0855 coordinates in the challenge statement are from 2010.6).
 
-Directly below sits the **Reference Targets** strip:
-- Hover over any target card to display the **Cursor-Tracking Scientific Tooltip** without shifting page geometry.
-- Click **`+ New`** to add custom targets via coordinates or SIMBAD/Sesame, or **`⚙️ Manage`** for full CRUD editing (ES/EN metadata, removal, and factory restore).
+### 2.2 360° viewer (DR1 All-Sky cube)
+Three synchronised views: **Hammer-Aitoff** (true 2:1 aspect ratio), **3D globe** and **Aladin Lite HiPS**. The map uses the official visualisation PNGs (fixed asinh stretch, 0–40 MJy/sr): it is for orientation, not for measurement. Double-click any point to open the multi-epoch exposures of that area.
 
-### 2.2 360° Observable Universe Mode (Official SPHEREx DR1 Cube)
-Select **`🌌 360° Observable Universe`** to switch seamlessly among **3 synchronized engines**:
+### 2.3 Image viewer and fullscreen
+- **Modes:** Blink, Difference, chronological RGB (R = last epoch, B = first), Co-add and A/B Curtain.
+- **Fullscreen:** the **⛶** button next to the zoom controls, or the **F** key; **Esc** to exit. The image is always drawn with square pixels (no distortion of angles or distances).
+- **Mouse:** dragging pans the field (the neighbouring field is downloaded on release), the wheel zooms anchored at the cursor, a click measures the source under the cursor and a double-click re-centres.
+- **Keyboard:** `Space` plays or pauses, `← / →` change epoch and `F` toggles fullscreen.
+- **Marks:** ✚ is the target's **predicted position** at each epoch (Gaia DR3 or literature plus proper motion). Grey areas are pixels without real L2b data. Candidates show ✔ (confirmed by the ePSF), ✖ (not confirmed) or ? (not verifiable).
+- **Field sources:** identified with Gaia DR3 or AllWISE; a distance only appears if there is a parallax with π/σ ≥ 5 or a published distance.
+- **📏 Measure A↔B:** the angular separation and position angle are exact; the 3D distance is only computed when both sources have a measured distance.
 
-| 360° Engine | Technology | Operational Advantage |
+### 2.4 Right panel
+- **Target spectrum:** each point is one L2b exposure measured with the ePSF at its real λ (in µJy, 1σ error). ▼ marks a 3σ upper limit and × a saturated measurement. The yellow line is the 102-channel spectrum of the DR1 co-add at the same position.
+- **Apparent band depth:** τ of H₂O 3.0, CH₄ 3.3, CO₂ 4.27 and CO 4.67 µm on the DR1 spectrum, with its error and its interpretation (gas or ice).
+- **Light curve per channel:** flux / median for each channel (same λ). Only points of the same colour are comparable.
+- **Copilot:** uses Gemini (if a key is available) or a deterministic local engine. In both cases it receives only measured telemetry and is forbidden from inventing values.
+
+### 2.5 Data quality
+The **🛡️ Data quality** panel summarises, with data from the current cube: origin (L2b or static DR1), zodiacal light subtracted, percentage of rejected pixels (official list), PSF used (official ePSF or Gaussian), target saturation, satellites and artefacts (`STREAK`, `SATELLITE_HALO`, `BLOOM`, `SNOWBALL`) and warnings about the dichroic edge and He I.
+
+---
+
+## Chapter 3 · Methods, Mathematics and API
+
+### 3.1 Data flow
+1. **Exposure search:** IRSA TAP (`spherex.artifact ⋈ spherex.plane`). If TAP fails, **IRSA SIA** is used with the collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3` and `spherex_qr3_deep`, the method of the official tutorials. An observation published in several releases is used only once (priority DR1 > QR3 > QR2).
+2. **Cutouts:** partial reads (HTTP Range) from `s3://nasa-irsa-spherex/`, with IRSA's IBE cutout service as fallback. The app reads `IMAGE`, `ZODI`, `FLAGS`, `VARIANCE`, the `WCS-WAVE` table, the **ePSF** row of the detector zone (~9 KB) and the full header: `MJD-AVG`, `PSF_FWHM` and the geocentric position of the spacecraft.
+3. **No L2b exposures** (or IRSA down): **one** static image from the DR1 All-Sky cube is shown, clearly labelled. There is no blink or difference, because the cube has no time information.
+
+### 3.2 Implemented formulas
+1. **Clean image:** $I = \text{IMAGE} - \text{ZODI}$. For display, pixels are rejected with the official list used to build the DR1 cube: `TRANSIENT, SUR_ERROR, NONFUNC, DICHROIC, MISSING_DATA, HOT, COLD, PHANMISS, NONLINEAR, PERSIST, CROSSTALK, STREAK, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
+2. **Target position:** $(\alpha, \delta)(t)$ = `SkyCoord.apply_space_motion` with $\mu_{\alpha*}$, $\mu_\delta$, $\varpi$ and $v_r$ from the astrometry epoch to the `MJD-AVG` of each exposure. The annual parallax (≤ 0.55″) is neglected because it is smaller than 0.1 pixel.
+3. **Forced PSF photometry** (Supplement sec. 3.3): $d_j = F\,P_{\text{eff}}(x_j - x_\star) + \sum_k F_k P_{\text{eff}}(x_j - x_k) + B$, solved by weighted least squares $\theta = (A^T W A)^{-1} A^T W d$ with $W = 1/\text{VARIANCE}$. Gaia sources within 20″ ($k$) are fitted at the same time (deblending). Pixels are masked with the official photometry mask: `SUR_ERROR, NONFUNC, MISSING_DATA, HOT, COLD, NONLINEAR, PERSIST, BLOOM, SNOWBALL, HALO, SATELLITE_HALO`.
+4. **Flux and error:** $F_{\mu\text{Jy}} = F\,\Omega_{\text{pix}}\,10^{12}$, with $\Omega_{\text{pix}}$ obtained from the Jacobian of the WCS with SIP distortion (≈ 8.86 × 10⁻¹⁰ sr; the nominal value $(6.15'')^2$ is 8.890 × 10⁻¹⁰ sr). The error is $\sigma^2 = \sigma_{\text{stat}}^2 + (0.03F)^2$. The fit quality is $\langle|p-m|/\sigma\rangle$ within r ≤ 2.5 px. If S/N < 3 an **upper limit** $F + 3\sigma$ is reported.
+5. **AB magnitude:** $m_{\text{AB}} = 23.9 - 2.5\log_{10}F_{\mu\text{Jy}}$, with $\sigma_m = 1.0857/(S/N)$, for detections only.
+6. **Wavelength:** $\lambda(x,y)$ by bilinear interpolation of `WCS-WAVE` at the detector position where the source falls. Error against the official `CWAVE` files: ≤ 5 % of the bandwidth (verified).
+7. **Saturation:** a measurement is flagged *saturated* if there is `OVERFLOW`, `NONLINEAR` or `BLOOM` within r ≤ 2.5 px, or if ≥ 2 core pixels (r ≤ 1.2 px) are missing.
+8. **Candidates:** $\Delta I = E_n - E_1$ and $\sigma_{\text{MAD}} = 1.4826\,\text{med}|\Delta I - \text{med}\,\Delta I|$, with a 5σ threshold and only in pixels with real data in both epochs. Each candidate is **verified with the ePSF**:
+   - *motion confirmed* if the centroids of the first and last epoch differ by ≥ 3σ and ≥ 0.3 native pixels;
+   - *variability confirmed* if the flux changes by ≥ 5σ between measurements of the **same channel**;
+   - *not confirmed* in any other case.
+9. **Light curve:** measurements are grouped by DR1 channel; variability is evaluated with $\chi^2_\nu$ against a constant flux and with the largest change in σ within each channel.
+10. **DR1 spectrum:** aperture photometry on the All-Sky cube (r = 25.8″, background in a 51–90″ annulus, order-14 HEALPix $\Omega$ = 3.901 × 10⁻⁹ sr). A channel is flagged saturated if the core has no data, if `NHITS` = 0, or if there is a dip in `NHITS` while the detector shows saturation in other channels. A warning is issued when there are Gaia sources inside the aperture.
+11. **Apparent band depth:** $\tau = \ln F_{\text{cont}} - \ln F_{\text{band}}$, with a **power-law** continuum (a straight line in log F – log λ) fitted to windows on both sides of the band and a minimum systematic error of 0.04. If the sampling is insufficient, τ = not measurable. With this continuum, an absorption-free Rayleigh–Jeans tail gives τ = 0.00 (a linear continuum would have given a spurious τ of ~0.19 at 3 µm).
+12. **Distances:** $d = 1000/\varpi$ pc only if $\varpi/\sigma_\varpi \ge 5$ (Gaia DR3), or from the published distance of the reference targets. The 3D distance between A and B, $D = \sqrt{d_A^2 + d_B^2 - 2 d_A d_B \cos\theta}$, is only computed when both exist.
+13. **MPC:** two 80-column records: «S» with the position measured by the ePSF and «s» with the geocentric SPHEREx vector in km. That vector is obtained from `X/Y/Z_SC_START` and `_END` by Hermite interpolation to mid-exposure. Observatory code **288**.
+
+### 3.3 HEALPix
+The DR1 cube is organised in order-5 NESTED HEALPix tiles (512×512 pixels of 12.9″). The (α, δ) → index conversion follows the HEALPix reference algorithm (Górski et al. 2005) and is validated against `astropy-healpix` at 200,000 random positions with no discrepancies.
+
+### 3.4 REST API (`app.py`)
+
+| Method | Route | Function |
 | :--- | :--- | :--- |
-| **360° × 180° Plane (Official DR1 Aitoff)** | Equal-area Hammer-Aitoff built from Official IRSA DR1 Cube (`10.26131/IRSA679`) | Full-sky view of the Galactic disk, ecliptic band, NEP/SEP, and 18 major sky landmarks. |
-| **3D Celestial Sphere (Free Rotation)** | Unrestricted spherical trackball (*yaw / pitch / roll*, no cosmic poles) | Rotate freely backward, zenith, nadir, and across every sky hemisphere. |
-| **Progressive IRSA HiPS / Aladin** | Aladin Lite v3 via local CORS proxy (`/api/hips/spherex/...`) | Continuous multi-resolution HiPS zooming across DR1 (`DR1 RGB`, `0.91–4.67 µm` bands), `AllWISE`, and `2MASS`. |
-
-- **Isotropic Controls:** Switch **Reference Plane** (`Galactic`, `Ecliptic`, `ICRS`), jump to **`Galactic Center`**, **`Deep NEP`**, **`Deep SEP`**, step **`-30° / +30°`**, reset via **`🎯 Isotropic 360° View`**, and double-click anywhere (or click **`🔬 Extract DR1 FITS Cube Here`**) to extract the matching `Norder5` tile (`Npix{ipix}_cube.fits`) and load the high-resolution L2b multi-epoch cube.
-
-### 2.3 Analysis Controls, Continuous Sky Streaming & 3D Cosmic Ruler
-- **Left Sidebar (`01–03`):** Resolve decimal/sexagesimal coordinates or SIMBAD names propagated to epoch `2025.5`; pick **FOV** across 7 calibrated zoom steps (`0.06°` to `1.60°`), stacking depth (`5–20 exp/epoch`), epoch gap (`15–90 days`), IRSA release (`QR1/QR2/DR1`), and `D1–D6` arrays. Adjust real-time 60 FPS stretches (`ZScale`, `Log`, `Linear`, `Sqrt`, `Asinh`), colormaps (`Inferno`, `Viridis`, `CyanHot`, `Grayscale`), Gaussian smoothing, WCS grid, aperture radius, live **Gaia DR3 / AllWISE** overlays, **`FLAGS` / `ZODI`** diagnostics, **`🔭 Objects (ON/OFF)`**, and **`📏 Measure Distance A↔B`**.
-- **Central Viewport:** Switch modes across **`Blink`**, **`Diff (E_n - E_1)`**, **`RGB`**, **`Sum`**, **`Split (E_1 | E_n)`**, and **`360° Universe`**.
-  - *Drag to Pan:* Continuous exploration; panning beyond the cached tile automatically queries IRSA TAP/S3 to stream neighboring exposures (**zero black borders**).
-  - *Mouse Wheel:* Cursor-anchored continuous zoom across the 7 `FOV` steps. *Single Click:* Extract point spectrum (`/api/point_spectrum`). *Double Click:* Recenter and reload cube. *Keyboard:* `Spacebar` (Play/Pause), `← / →` (Step epochs).
-  - *Floating AI Anomaly HUD:* Lists ranked candidates (`#1`, `#2`...) with one-click **`💬 Gemini`** visual analysis.
-  - *3D Cosmic Distance Ruler (`📏 A ↔ B`):* Click **Object A** and **Object B** on the map to measure telescope distance, angular separation ($\theta$), Position Angle ($\text{PA}$), projected separation, and **true 3D Euclidean distance ($D_{3\text{D}}$)** in `ly`, `pc`, and `AU`.
-- **Right Sidebar (`04–05` & AstroAI):** Live `0.75–5.0 µm` LVF spectrum with **`Planck Model + Ices τ(λ)`** overlay (`T_eff` in K + optical depths of `H₂O`, `CH₄`, `CO₂`, `CO`) and **`.CSV`** export; Multi-Epoch Light Curve + clickable recognized-object pills; and **AstroAI Copilot** chat.
+| `GET` | `/` | Web interface |
+| `GET · POST · DELETE` | `/api/targets` | Targets (the official astrometry cannot be edited) |
+| `GET` | `/api/resolve?q=` | Coordinates or name (Sesame/SIMBAD) propagated to 2026.0; recognises the old coordinates of the targets |
+| `GET` | `/api/cube` | Multi-epoch cube. Parameters: `ra, dec, fov, bands, max_per_epoch, gap_days, release, target_id` or `pmra, pmdec, plx, ast_ra, ast_dec, ast_epoch` |
+| `GET` | `/api/point_spectrum` | Per-exposure ePSF photometry at the chosen pixel |
+| `GET` | `/api/dr1_spectrum` | 102-channel spectrum from the DR1 cube, band depths and warnings |
+| `GET` | `/api/catalogs` | Gaia DR3 (MAST → VizieR) and AllWISE (VizieR → IRSA Gator) projected onto the grid |
+| `GET` | `/api/gif` | GIF of the epochs |
+| `POST` | `/api/ai/chat` | Copilot (Gemini key in the `x-goog-api-key` header, never in the URL) |
+| `GET` | `/api/docs?lang=` | This documentation |
+| `GET` | `/api/spherex-allsky-map` | Equirectangular map of the DR1 cube (visualisation) |
+| `GET` | `/api/hips/spherex/{channel}/{path}` | HiPS proxy for Aladin Lite |
+| `GET` | `/static/*`, `/docs/*` | Static files |
 
 ---
 
-## Chapter 3 · Technical Architecture, L2b Mathematics and API
+## Chapter 4 · Validation, Security and Deployment
 
-### 3.1 Asynchronous Pipeline (`app.py` + `spherex_engine.py`)
-Built on **Python 3.11+ / `aiohttp`**, delegating FITS I/O and WCS algebra to `asyncio.to_thread` and a **16-thread** parallel byte-range pool:
+### 4.1 Validation with real data
+- **Photometry:** 12 unsaturated stars in a real L2b field gave a median SPHEREx / 2MASS ratio of **1.03** with ~3 % scatter. The propagated Gaia DR3 centroids fell within 0.0–0.1 pixels of the measured stars.
+- **Candidate verification:** a synthetic 5 mJy source moving 12″, injected into real exposures, was recovered as *motion confirmed 12.0″ ± 0.4″*. Static stars whose peak changed with the sub-pixel phase stayed *not confirmed*.
+- **Challenge targets:** see the table in chapter 5 and the `tools/validate_targets.py` tool.
+- **Unit tests:** `python -m pytest tests/` (or `python tests/test_science.py`) checks HEALPix, the propagation of WISE 0855 to the AllWISE epoch, the official bits, the AB zero point, the MPC format, the absence of bias in τ and the recovery of an injected flux.
 
-```mermaid
-sequenceDiagram
-    participant UI as Web Client (Canvas 2D / Aladin v3)
-    participant API as aiohttp Server (app.py)
-    participant TAP as IRSA TAP (ADQL)
-    participant S3 as AWS S3 / IBE (HTTP Range)
-    participant Eng as WCS/Tractor Engine (spherex_engine.py)
+### 4.2 Security
+- `.env` is in `.gitignore`. The Gemini key travels in the `x-goog-api-key` header and never in the URL, so it does not end up in logs. Error messages do not echo the request.
+- Without a key, every scientific function keeps working and the copilot uses the local engine.
 
-    UI->>API: GET /api/cube?ra=...&dec=...&fov=...&bands=...
-    API->>Eng: build_sky_cube_and_spectrum()
-    alt RAM Cache Hit (&lt;1 ms) or Disk (&lt;20 ms)
-        Eng-->>API: Enriched Cube + Telemetry + 3D Objects
-    else Cache Miss or Continuous Pan Outside Footprint
-        Eng->>TAP: SELECT uri, obsid, t_min... FROM spherex.artifact JOIN spherex.plane (0.14° spatial cache)
-        TAP-->>Eng: Time-ordered exposure list
-        Eng->>S3: Parallel HTTP Range (16 threads) -> IMAGE, ZODI, FLAGS, VARIANCE, WCS-WAVE
-        Eng->>Eng: ZODI Subtraction + BAD_MASK + reproject_interp (2× oversampling)
-        Eng->>Eng: 15×15 Tractor + σ_MAD Detector + 3D Recognizer + 80-Col MPC
-        Eng-->>API: JSON Payload (float32 Base64 + full telemetry)
-    end
+### 4.3 Installation and deployment
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py                      # http://localhost:8050
 ```
+Optional variables: `GEMINI_API_KEY`, `GEMINI_MODEL`, `PORT`, `SPHEREX_TAP_TIMEOUT` (s, default 30) and `SPHEREX_PREWARM=0` (disables pre-loading). With Docker: `docker build -t spherex-skychrono .` and `docker run -p 8050:8050 spherex-skychrono`.
 
-For **Official DR1 360° mode**, `ang2pix_nest_scalar(nside, ra, dec)` implements the exact **HEALPix `NESTED`** indexing of Górski et al. (2005) —verified against Caltech/IPAC's `hpgeom` (`ra=60.8109955°, dec=51.3404038°, nside=32 → ipix=445`)— serving `Norder3` tiles and partial `Norder5` `Npix{ipix}_cube.fits` extracts across `102` nominal channels (`SPHEREX_DR1_WAVELENGTHS_UM`). Client LUTs (`1024` steps) render at **60 FPS** with strict DOM/WebGL exclusion between `#allskyContainer` and `#skyCanvas`.
+### 4.4 Known limitations
+- **Saturation:** Barnard (J ≈ 5.2), RW Aur (K ≈ 7) and R Dra saturate SPHEREx in almost every channel. Their **position** and apparent change are visible in the blink, but their fluxes are not reliable.
+- **Blending:** in 2025–2026 WISE 0855 passes **8″** from the star Gaia DR3 5756956644387831296 (G = 16.3). With 6.15″ pixels they blend; the L2b photometry separates both sources with the ePSF, but the DR1 spectrum (25.8″ aperture) includes the neighbour.
+- **WISE 0855** is faint in SPHEREx (≈ 0.55 mJy at 4.6 µm): expect low S/N per exposure and invisibility below ~3.5 µm.
+- **Planet X / Nine** is hypothetical and nobody has detected it. At ~500 AU its parallactic motion would be ~7″ per day. Between visits six months apart it would leave a 0.1° field, so it must be searched for by comparing exposures from the same visit (days).
+- **DR1 cube:** 12.9″ pixels and no time information. Its HiPS PNGs are for visualisation only.
 
-### 3.2 Live Quantitative Mathematical Equations (`math_telemetry`)
-1. **Physical ZODI Subtraction & L2b Bitmasking:**
-   $$I_{\text{clean}}(x,y) = \left[\text{IMAGE}(x,y) - \text{ZODI}(x,y)\right] \cdot M_{\text{flags}}(x,y)$$
-   `BAD_MASK` filters critical instrumental bits `(2, 4, 6, 7, 9, 10, 11, 25, 26, 27)` while **preserving `Bit 21 (SOURCE)`**.
-2. **Linear Forced Photometry (15×15 Tractor) & WCS Oversampling:**
-   $$\theta = (A^T W A)^{-1} A^T W I \quad \longrightarrow \quad \text{FWHM} = 2.355 \cdot \sigma_{\text{PSF}}$$
-   Cube projections apply **2× oversampling** relative to SPHEREx native `6.15"/px` (`~3.075"/px` at standard FOV), calibrated to `Ω_pix = 8.894 × 10⁻¹⁰ sr`.
-3. **Apparent AB Magnitude Conversion:**
-   $$m_{\text{AB}} = 23.9001 - 2.5 \cdot \log_{10}(F_{\mu\text{Jy}})$$
-4. **Exact 2D Bilinear LVF Spectroscopy (`WCS-WAVE`):**
-   $$\lambda(x,y) = \sum_{i,j \in \{0,1\}} w_{ij}(t_x, t_y) \cdot V_{\text{WAVE}}(i,j)$$
-5. **Wien Thermal Estimate & Biogenic Ice Optical Depth (SPLICES):**
-   $$\tau(\lambda) = -\ln\!\left[\frac{F_{\text{obs}}(\lambda)}{F_{\text{cont}}(\lambda)}\right]$$
-   evaluated at **H₂O (`3.05 µm`)**, **CH₄ (`3.32 µm`)**, **CO₂ (`4.27 µm`)**, and **CO (`4.67 µm`)**, with $T_{\text{eff}} \in [220, 4800]\,\text{K}$.
-6. **Robust Kinematics ($\sigma_{\text{MAD}}$) & 3D Euclidean Separation:**
-   $$\Delta I = E_n - E_1, \qquad \sigma_{\text{MAD}} = 1.4826 \cdot \text{med}\left|\Delta I - \text{med}(\Delta I)\right|$$
-   $$D_{3\text{D}} = \sqrt{d_A^2 + d_B^2 - 2\, d_A\, d_B \cos\theta}$$
-
-### 3.3 6-Module L2b Anti-Artifact Shield, MPC 80-Col & Multimodal Copilot
-- **6 H2RG / LEO Guards:** (1) Band 1 *Charge Blooming* around `(1648, 1752)` `r = 85 px`, (2) SUR/SAA Cosmic Rays (`Bit 0`), (3) H2RG Persistence & 32-ch SIDECAR Crosstalk (`Bits 17/20`), (4) `ZODI` + He I `1.083 µm` airglow subtraction, (5) LEO Satellite Streak median suppression (`Bits 25/28`), (6) `2.42 µm` Dichroic Edge & `Bit 21 (SOURCE)` protection.
-- **80-Col IAU MPC Export:** `format_mpc_80col()` emits strict 80-byte records with space-based flag **`S`**, fractional UTC date, and observatory code **`C59`**.
-- **AstroAI Copilot:** 3-tier resilient cascade: **`gemini-3-flash-preview`** (receiving `#skyCanvas` JPEG snapshot) → **`gemini-flash-lite-latest`** → **`_expert_astrophysics_response`** (deterministic offline Python astrophysics engine at **USD 0** cost).
-
-### 3.4 Complete REST API Reference (14 Routes in `app.py`)
-
-| Method | Endpoint | Purpose |
-| :--- | :--- | :--- |
-| `GET` | `/` | Serves web UI (`static/index.html`). |
-| `GET / POST / DELETE` | `/api/targets` | Full target CRUD (`?id=__RESTORE_DEFAULTS__` resets factory list). |
-| `GET` | `/api/resolve?q=...` | Resolves SIMBAD TAP / Astropy Sesame names propagated to `2025.5`. |
-| `GET` | `/api/cube` | Multi-epoch Float32 Base64 cube, flags, AI candidates, Tractor & 3D objects. |
-| `GET` | `/api/point_spectrum` | Extracts `0.75–5.0 µm` LVF spectrum and light curve at clicked sky coordinate. |
-| `GET` | `/api/catalogs` | Live **Gaia DR3** and **AllWISE** VizieR overlays projected onto canvas. |
-| `GET` | `/api/gif` | Renders and downloads multi-epoch `.GIF` blink animation. |
-| `POST` | `/api/ai/chat` | Multimodal Copilot (cube telemetry + `#skyCanvas` JPEG + chat history). |
-| `GET` | `/api/docs?lang=es\|en` | Serves this unified master documentation (`es` / `en`). |
-| `GET` | `/api/spherex-allsky-map` | `1440×720` equirectangular DR1 mosaic PNG generator. |
-| `GET` | `/api/hips/spherex/{ch}/{tail}` | CORS IVOA HiPS proxy for Aladin Lite v3 across all 102 DR1 channels. |
-| `GET` | `/static/*`, `/docs/*` | Static assets and direct Markdown download. |
+### 4.5 Submission text (EN)
+> **SPHEREx SkyChrono** is an open-source time-domain explorer for NASA's SPHEREx survey. It blinks real Level-2 spectral images retrieved from IRSA (TAP/SIA) and AWS S3, propagates catalogue astrometry to every exposure, measures fluxes with the official ePSF (variance-weighted forced photometry with Gaia deblending) and verifies every difference-image candidate before calling it motion or variability. It shows 0.75–5 µm spectra from individual exposures and from the DR1 all-sky cube, flags saturation and blending explicitly, and drafts MPC satellite-format astrometry (code 288) only for confirmed movers without a stellar counterpart.
 
 ---
 
-## Chapter 4 · Security, Live Deployment and Submission
+## Chapter 5 · Targets, References and DOIs
 
-### 4.1 API Key Safety & Local Run (`USD 0`)
-- `.gitignore` excludes `.env`, `.venv/`, `__pycache__/`, `cache/`, and `poc/out/*.fits`. Never commit keys; `render.yaml` declares `GEMINI_API_KEY` with `sync: false`. Without any external API key, the offline deterministic engine runs 100% free (**`USD 0`**).
-- **Local Quickstart:**
-  ```bash
-  python -m venv .venv
-  .\.venv\Scripts\Activate.ps1   # Windows | Linux/macOS: source .venv/bin/activate
-  pip install -r requirements.txt
-  python app.py                   # http://localhost:8050 (background prewarm active)
-  ```
-- **Render (`render.yaml`) & Docker (`Dockerfile`):**
-  ```bash
-  docker build -t spherex-skychrono .
-  docker run -d -p 8050:8050 -e GEMINI_API_KEY="optional" spherex-skychrono
-  ```
+### 5.1 Challenge targets (astrometry verified in SIMBAD / Gaia DR3)
 
-### 4.2 45–55s Demo Video Script & Submission Summary
-1. **0:00–0:12:** Open in **`🌌 360° Observable Universe`** (DR1 Aitoff → 3D Sphere → Galactic Center / NEP) and double-click `WISE 0855−0714`.
-2. **0:12–0:28:** Switch `Blink → Diff` revealing the moving dipole (`8.1″/yr`), pan smoothly into adjacent sky tiles, and toggle **`🔭 Objects: ON`** + **`📏 A ↔ B`** 3D separation.
-3. **0:28–0:45:** Inspect **`Planck + Ices τ(λ)`**, open **`📐 MPC 80-Col` (`C59`)**, and trigger **`💬 Gemini`** on Candidate #1 for multimodal visual diagnosis.
-4. **0:45–0:55:** Showcase **`🏛️ NASA / IRSA Resources`** and **`ES / EN`** toggle.
+| Target | Reference position | Proper motion (mas/yr) | Distance | In SPHEREx |
+| :--- | :--- | :--- | :--- | :--- |
+| **WISE 0855−0714** (Y) | J2000 133.81891°, −7.24705° (Kirkpatrick+2021) · NASA coordinates = epoch 2010.6 | −8123.7, +673.2 | 2.28 pc (ϖ = 439.0 ± 2.4 mas) | In 2026 it is **~2.1′** from the coordinates in the challenge statement. Faint (~0.55 mJy at 4.6 µm) and blended with a G = 16.3 star at 8″. |
+| **Barnard's Star** (M4V) | J2000 269.45208°, +4.69336° (Gaia DR3) | −801.6, +10362.4 | 1.828 pc | Moves ~10.4″ per year. **Saturated** in 99 of 100 DR1 channels: useful position, unusable flux. |
+| **Epsilon Indi Ba/Bb** (T1 + T6) | J2000 331.04415°, −56.78284° (Gaia DR3) | +3982.0, −2466.8 | 3.64 pc (ε Ind system) | Not saturated; T-dwarf SED: J ≈ 31, K ≈ 22, 4.0 µm ≈ 63 mJy; **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** (gas). |
+| **RW Aurigae A** (T Tauri) | Gaia DR3 2016.0: 76.95608°, +30.40120° | +2.6, −27.4 | 156 pc | **Saturated** in ~48 DR1 channels; frequent OVERFLOW in L2b. |
+| **R Draconis** (Mira, P ≈ 245.6 d) | Gaia DR3 2016.0: 248.16738°, +66.75501° | −20.6, +6.1 | ~800 pc (Mira parallax, use with caution) | **Saturated** in all 100 DR1 channels. |
 
-**Copy-Paste Project Summary (NASA Space Apps Form):**
-> **SPHEREx SkyChrono** is an open-source 360° astrophysics explorer and multi-epoch time-domain workbench built for NASA's *Planet X and SPHEREx* challenge. Powered directly by NASA/IPAC IRSA's Official SPHEREx DR1 All-Sky Spectral Cube (`10.26131/IRSA679`), IRSA TAP ADQL, and AWS S3 HTTP Byte-Range FITS streaming, SkyChrono delivers unrestricted 360° navigation (Hammer-Aitoff, 3D Sphere, and Aladin Lite v3 HiPS), continuous sky panning/zooming across Level-2b cubes, automated $\sigma_{\text{MAD}}$ kinematic dipole detection, 15×15 Tractor forced photometry, 102-channel `WCS-WAVE` spectroscopy with cryogenic ice $\tau(\lambda)$ fitting, 3D cosmic distance measurement, 80-column IAU MPC (`C59`) reporting, and a multimodal Gemini Vision AstroAI Copilot.
+The `tools/validate_targets.py` tool repeats this validation with real L2b exposures: measured versus predicted offset, detections, saturation and candidates.
 
----
+### 5.2 Landmarks of the 360° map
+The coordinates were verified in SIMBAD and JPL Horizons. **Elias 16** is at 69.912°, +26.191° (K1III background giant behind the Taurus cloud). **3I/ATLAS** is shown at its geocentric position on 2025-08-08: SPHEREx observed it from 1 to 15 August 2025 (Lisse et al. 2026) and it moves ~1° per day. A supposed "Planet X candidate" with invented coordinates and parameters was removed.
 
-## Chapter 5 · Reference Targets, Citations and DOIs
+### 5.3 References
+1. SPHEREx Explanatory Supplement v2.1 (2026-11-10): https://irsa.ipac.caltech.edu/data/SPHEREx/docs/SPHEREx_Expsupp.pdf
+2. SPHEREx archive at IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
+3. Official tutorials: https://caltech-ipac.github.io/irsa-tutorials/spherex/
+4. Challenge resources: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
+5. Gaia DR3 at MAST: https://archive.stsci.edu/missions-and-data/gaia
+6. WiseView: http://byw.tools/wiseview
+7. MPC, format for observations from satellites: https://www.minorplanetcenter.net/iau/info/SatelliteObs.html (SPHEREx = code 288)
+8. Kirkpatrick, J. D. et al. 2021, ApJS 253, 7 (WISE 0855). Luhman, K. L. 2014, ApJL 786, L18. Luhman, K. L. et al. 2024, AJ 167, 5.
+9. King, R. R. et al. 2010, A&A 510, A99 (ε Indi Ba/Bb).
+10. Rustamkulov, Z. et al. 2026, *SPHEREx 0.75 to 5 µm Spectra for a Sequence of Nearby Brown Dwarfs*, arXiv:2607.00543.
+11. Lisse, C. M. et al. 2026, ApJL 1000, L52 (3I/ATLAS with SPHEREx).
+12. Górski, K. M. et al. 2005, ApJ 622, 759 (HEALPix).
 
-| Target / Landmark | ICRS Coordinates | Scientific Highlight |
-| :--- | :--- | :--- |
-| **WISE 0855−0714** | `133.79513°, -7.24515°` | Coldest known Y brown dwarf (~`250 K`, `2.28 pc`, `~8.1″/yr`), radiant in `D6`. |
-| **Barnard's Star** | `269.4485°, +4.7394°` | Highest sky proper motion (`10.36″/yr`, `1.83 pc`, `4.4'` displacement since J2000). |
-| **Epsilon Indi Ba/Bb** | `331.0689°, -56.7938°` | Binary `T1+T6` brown dwarf pair (`3.63 pc`, `4.70″/yr`, deep `H₂O`/`CH₄` absorption). |
-| **RW Aurigae** | `76.9565°, +30.4014°` | Young *T Tauri* binary with dusty disk eclipses & strong `D2–D5` IR variability. |
-| **R Draconis** | `248.1669°, +66.7549°` | Mira pulsating red giant (`P ≈ 245.6 days`, `>2,400 exp`) near North Ecliptic Pole. |
-| **Comet 3I/ATLAS & Elias 16** | Pre-mapped 360° Landmarks | Interstellar `CO₂/H₂O` coma visitor & benchmark SPLICES cryogenic ice probe. |
+### 5.4 Data DOIs
+- SPHEREx DR1 Spectral Images: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678)
+- SPHEREx DR1 Spectral All-Sky Cube: [10.26131/IRSA679](https://doi.org/10.26131/IRSA679)
+- SPHEREx Quick Release Spectral Images – QR3: [10.26131/IRSA662](https://doi.org/10.26131/IRSA662)
+- SPLICES (SPHEREx Target List of Ice Sources): [10.26131/IRSA554](https://doi.org/10.26131/IRSA554)
 
-### Official References
-1. **SPHEREx Mission Archive at IRSA:** https://irsa.ipac.caltech.edu/Missions/spherex.html
-2. **NASA Space Apps 2026 Challenge Resources:** https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
-3. **SPHEREx Spectral Images & Releases:** https://doi.org/10.26131/IRSA678
-4. **SPHEREx DR1 All-Sky Spectral Cube HiPS:** https://doi.org/10.26131/IRSA679
-5. **SPHEREx Cutout Service & Archival Data:** https://doi.org/10.26131/IRSA662
-6. **SPLICES & 3I/ATLAS Portal (IRSA):** https://irsa.ipac.caltech.edu/data/SPHEREx/
-7. **Caltech-IPAC SPHEREx Archive Tutorials:** https://github.com/Caltech-IPAC/spherex-archive-tutorials
-8. **IAU Minor Planet Center (80-Column Format):** https://www.minorplanetcenter.net/iau/info/OpticalObs.html
-9. **Górski, K. M. et al. (2005):** *HEALPix: A Framework for High-Resolution Discretization and Fast Analysis of Data Distributed on the Sphere*, ApJ 622, 759.
+> *Required acknowledgment:* This publication makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration.
 
 ---
 
-*Complete Documentation v3.0 · **SPHEREx SkyChrono** · Delegación Zuliana de Astronomía · NASA Space Apps Challenge 2026*
+*Complete Documentation v4.0 · **SPHEREx SkyChrono** · Delegación Zuliana de Astronomía · NASA Space Apps Challenge 2026*

@@ -2572,3 +2572,43 @@ textarea.text-input {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ===================================================================== */
+/* PANTALLA COMPLETA DEL VISOR (API Fullscreen) Y AJUSTES DE RIGOR (v23)   */
+/* ===================================================================== */
+.canvas-stage:fullscreen,
+.canvas-stage.is-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  border-radius: 0;
+  border: none;
+  background: #000;
+}
+.canvas-stage:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+}
+.canvas-stage.is-fullscreen .canvas-zoom-controls {
+  bottom: 64px;
+}
+.canvas-stage.is-fullscreen .ai-detector-hud,
+.canvas-stage.is-fullscreen .distance-ruler-hud {
+  max-width: 420px;
+}
+#btnFullscreen {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+.hud-track-legend {
+  font-size: 0.68rem;
+  opacity: 0.85;
+}
+.cand-pill.cand-rejected {
+  opacity: 0.55;
+  border-style: dashed;
+}
+.exp-table td,
+.exp-table th {
+  white-space: nowrap;
+}
