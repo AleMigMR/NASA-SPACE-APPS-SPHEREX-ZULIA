@@ -9,11 +9,11 @@
 
 ## Índice Rápido
 
-- [Capítulo 1 · Conceptos Básicos y Misión SPHEREx](#capitulo-1-conceptos-basicos-y-mision-spherex)
-- [Capítulo 2 · Manual de Usuario](#capitulo-2-manual-de-usuario)
-- [Capítulo 3 · Métodos, Matemática y API](#capitulo-3-metodos-matematica-y-api)
-- [Capítulo 4 · Validación, Seguridad y Despliegue](#capitulo-4-validacion-seguridad-y-despliegue)
-- [Capítulo 5 · Objetivos, Referencias y DOIs](#capitulo-5-objetivos-referencias-y-dois)
+- [Capítulo 1 · Conceptos Básicos y Misión SPHEREx](#capítulo-1--conceptos-básicos-y-misión-spherex)
+- [Capítulo 2 · Manual de Usuario](#capítulo-2--manual-de-usuario)
+- [Capítulo 3 · Métodos, Matemática y API](#capítulo-3--métodos-matemática-y-api)
+- [Capítulo 4 · Validación, Seguridad y Despliegue](#capítulo-4--validación-seguridad-y-despliegue)
+- [Capítulo 5 · Objetivos, Referencias y DOIs](#capítulo-5--objetivos-referencias-y-dois)
 
 ---
 

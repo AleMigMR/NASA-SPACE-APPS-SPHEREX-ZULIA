@@ -2253,8 +2253,11 @@ function bindEvents() {
       const link = e.target.closest("a[href^='#']");
       if (!link) return;
       e.preventDefault();
-      const targetId = link.getAttribute("href").slice(1);
-      const targetEl = docsBodyEl.querySelector(`#${CSS.escape(targetId)}`);
+      const targetId = decodeURIComponent(link.getAttribute("href").slice(1));
+      // Los enlaces usan el formato de GitHub (doble guion, tildes); si no coincide, se prueba el id normalizado de la app
+      const targetEl =
+        docsBodyEl.querySelector(`#${CSS.escape(targetId)}`) ||
+        docsBodyEl.querySelector(`#${CSS.escape(_slugifyHeading(targetId.replace(/-+/g, " ")))}`);
       if (targetEl) {
         docsBodyEl.scrollTo({ top: Math.max(0, targetEl.offsetTop - docsBodyEl.offsetTop - 8), behavior: "smooth" });
       }

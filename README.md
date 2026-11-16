@@ -4,6 +4,11 @@
 
 <p align="center">🌐 <b>Project website: <a href="https://skychrono.earth">skychrono.earth</a></b></p>
 
+<p align="center">
+  <a href="https://skychrono.earth/docs/media/SPHEREx_SkyChrono_presentation.mp4"><img src="docs/media/presentation_poster.jpg" alt="Watch the 30-second presentation of SPHEREx SkyChrono" width="720"></a><br>
+  <b>▶ <a href="https://skychrono.earth/docs/media/SPHEREx_SkyChrono_presentation.mp4">Watch the 30-second presentation video</a></b> · <a href="docs/media/SPHEREx_SkyChrono_presentation.mp4">file in the repository</a>
+</p>
+
 <table>
   <tr>
     <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_Beginners_Guide.md"><b>🚀 Beginner's Guide</b></a><br><sub>Your first moving star in ten minutes</sub></td>
@@ -18,6 +23,7 @@
 > **Data:** NASA/IPAC IRSA (SPHEREx DR1 and QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = code **288**)
 
 [![Website](https://img.shields.io/badge/Website-skychrono.earth-0EA5E9)](https://skychrono.earth)
+[![Video](https://img.shields.io/badge/Video-30%20s%20presentation-E11D48)](https://skychrono.earth/docs/media/SPHEREx_SkyChrono_presentation.mp4)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![aiohttp](https://img.shields.io/badge/Backend-aiohttp-2C5BB4)](https://docs.aiohttp.org/)
 [![Astropy](https://img.shields.io/badge/Astrophysics-Astropy%20%2B%20Reproject-FF6F00)](https://www.astropy.org/)
@@ -214,7 +220,8 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 │   ├── SPHEREx_SkyChrono_Jury_Guide.md         # Technical and scientific Jury Guide (EN)
 │   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Complete documentation (5 chapters, ES)
 │   ├── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
-│   └── images/                                 # Screenshots used by the README and the guides
+│   ├── images/                                 # Screenshots used by the README and the guides
+│   └── media/                                  # 30-second presentation video and its poster
 ├── tests/
 │   ├── test_science.py    # Offline tests: HEALPix, astrometry, bits, AB, MPC, τ, photometry and IRSA-less fallback
 │   └── test_copilot.py    # Copilot with simulated providers: valid/invalid key, no quota, missing model
