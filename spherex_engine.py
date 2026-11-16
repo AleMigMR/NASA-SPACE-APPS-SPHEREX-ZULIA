@@ -341,12 +341,12 @@ CHALLENGE_TARGETS: List[Dict[str, Any]] = [
             "Sistema binario pre-secuencia principal con un disco perturbado por marea. Desde 2010 sufre "
             "oscurecimientos ópticos profundos por polvo, con variaciones también en el infrarrojo. Es brillante "
             "(K ≈ 7): varios canales de SPHEREx marcan OVERFLOW en su núcleo, así que revisa los avisos de calidad "
-            "antes de interpretar su curva de luz."
+            "antes de interpretar su fotometría."
         ),
         "science_note_en": (
             "Pre-main-sequence binary with a tidally perturbed disk. Since 2010 it has shown deep optical dimming "
             "events caused by dust, with infrared variations as well. It is bright (K ≈ 7): several SPHEREx channels "
-            "flag OVERFLOW at its core, so check the quality warnings before interpreting its light curve."
+            "flag OVERFLOW at its core, so check the quality warnings before interpreting its photometry."
         ),
     },
     {
@@ -2933,7 +2933,7 @@ def build_sky_cube_and_spectrum(
             astrom, tgt_obj, target_id, user_astrometry = None, None, None, None
     astrom_key = json.dumps(astrom, sort_keys=True) if astrom else ""
     cube_hash = hashlib.md5(
-        f"cube_v6_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}_{target_id}_{astrom_key}".encode()
+        f"cube_v7_{ra:.4f}_{dec:.4f}_{','.join(norm_bands)}_{size_deg:.3f}_{max_per_epoch}_{release}_{gap_days:.1f}_{target_id}_{astrom_key}".encode()
     ).hexdigest()[:16]
     cube_cache_path = os.path.join(CACHE_DIR, "cubes", f"cube_{cube_hash}.json")
     if not force_reproject:
@@ -3400,7 +3400,7 @@ def build_light_curve(photometry: List[Dict[str, Any]]) -> Dict[str, Any]:
     best = None
     for ch, pts in sorted(by_ch.items()):
         pts = sorted(pts, key=lambda q: q["mjd"])
-        entry = {"ch": ch, "wavelength_um": tbl[ch]["wavelength_um"], "band": f"D{tbl[ch]['detector']}",
+        entry = {"ch": ch, "wavelength_um": round(float(tbl[ch]["wavelength_um"]), 3), "band": f"D{tbl[ch]['detector']}",
                  "points": [{"mjd": q["mjd"], "flux_ujy": q["flux_ujy"], "err_ujy": q["err_ujy"], "epoch_index": q.get("epoch_index"), "obs_id": q["obs_id"]} for q in pts]}
         if len({q.get("epoch_index") for q in pts}) >= 2:
             f = np.array([q["flux_ujy"] for q in pts])
@@ -3451,8 +3451,8 @@ def _annotate_candidates(cands: List[Dict[str, Any]], catalogs: Dict[str, Any], 
                 if c["type"] == "dipole":
                     ok = abs(c["shift_arcsec"] - pred) <= max(0.5 * pred, 0.5 * PIX_SCALE_NATIVE)
                     c["consistent_with_catalog_motion"] = bool(ok)
-                    c["notes_es"].append(f"Coincide con {t['name']}: desplazamiento predicho {pred:.1f}″, medido {c['shift_arcsec']:.1f}″ ({'consistente' if ok else 'no consistente'}).")
-                    c["notes_en"].append(f"Matches {t['name']}: predicted shift {pred:.1f}″, measured {c['shift_arcsec']:.1f}″ ({'consistent' if ok else 'not consistent'}).")
+                    c["notes_es"].append(f"Coincide con {t['name']}: desplazamiento predicho {pred:.1f}″; estimación de la imagen de diferencia {c['shift_arcsec']:.1f}″ ({'consistente' if ok else 'no consistente'}).")
+                    c["notes_en"].append(f"Matches {t['name']}: predicted shift {pred:.1f}″; difference-image estimate {c['shift_arcsec']:.1f}″ ({'consistent' if ok else 'not consistent'}).")
                 else:
                     c["notes_es"].append(f"Coincide con {t['name']} (movimiento predicho entre épocas: {pred:.1f}″).")
                     c["notes_en"].append(f"Matches {t['name']} (predicted motion between epochs: {pred:.1f}″).")
@@ -3474,8 +3474,8 @@ def _annotate_candidates(cands: List[Dict[str, Any]], catalogs: Dict[str, Any], 
                     break
         c["catalog_match"] = match
         if c["type"] == "variable":
-            c["notes_es"].append("Las épocas pueden tener λ distintas dentro de la banda: confirma la variabilidad en la curva de luz por canal.")
-            c["notes_en"].append("Epochs may have different λ within the band: confirm variability in the per-channel light curve.")
+            c["notes_es"].append("Las épocas pueden tener λ distintas dentro de la banda: compara solo mediciones a la misma λ en el registro de exposiciones L2b.")
+            c["notes_en"].append("Epochs may have different λ within the band: compare only same-λ measurements in the L2b exposure log.")
 
 
 def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[str, Any]], epochs: List[Dict[str, Any]], catalogs: Dict[str, Any]) -> None:
@@ -3585,6 +3585,15 @@ def _verify_candidates_with_psf(cands: List[Dict[str, Any]], items: List[Dict[st
             c["pm_arcsec_yr"] = round(shift / dt_yr, 2)
             c["label_es"] = f"Movimiento confirmado ({shift:.1f}″ ± {s_err:.1f}″)"
             c["label_en"] = f"Confirmed motion ({shift:.1f}″ ± {s_err:.1f}″)"
+            m_ref = c.get("catalog_match") or {}
+            if m_ref.get("kind") == "reference_target" and m_ref.get("predicted_shift_arcsec") is not None:
+                pred = float(m_ref["predicted_shift_arcsec"])
+                ok = abs(shift - pred) <= max(3.0 * s_err, 0.5 * pred, 0.5 * PIX_SCALE_NATIVE)
+                c["consistent_with_catalog_motion"] = bool(ok)
+                keep_es = [n for n in c.get("notes_es", []) if "desplazamiento predicho" not in n]
+                keep_en = [n for n in c.get("notes_en", []) if "predicted shift" not in n]
+                c["notes_es"] = [f"Coincide con {m_ref['name']}: desplazamiento predicho {pred:.1f}″, medido con la ePSF {shift:.1f}″ ± {s_err:.1f}″ ({'consistente' if ok else 'no consistente'})."] + keep_es
+                c["notes_en"] = [f"Matches {m_ref['name']}: predicted shift {pred:.1f}″, ePSF-measured {shift:.1f}″ ± {s_err:.1f}″ ({'consistent' if ok else 'not consistent'})."] + keep_en
         elif flux_change and flux_change["sigma"] >= 5 and flux_change.get("n_pairs_5sigma", 0) >= 2 and flux_change.get("consistent"):
             c["verification"] = "confirmed_variability"
             c["type"] = "variable"
@@ -3921,8 +3930,8 @@ def generate_ai_preliminary_analysis(cube: Dict[str, Any], lang: str = "es") -> 
                             if en else f"🧪 {n_rej} pico(s) de la imagen de diferencia NO se confirmaron con la fotometría ePSF por exposición (residuos de fase de píxel/λ)."))
     for n in cube.get("notes", [])[:2]:
         bullets.append("⚠️ " + (n["en"] if en else n["es"]))
-    tip = ("💡 Open the per-channel light curve and the DR1 spectrum: compare only points at the same wavelength."
-           if en else "💡 Revisa la curva de luz por canal y el espectro DR1: compara solo puntos a la misma longitud de onda.")
+    tip = ("💡 Check the L2b exposure log and the DR1 spectrum: compare only points at the same wavelength."
+           if en else "💡 Revisa el registro de exposiciones L2b y el espectro DR1: compara solo puntos a la misma longitud de onda.")
     return {"title": title, "bullets": bullets, "tip": tip, "candidates_count": len(cands)}
 
 

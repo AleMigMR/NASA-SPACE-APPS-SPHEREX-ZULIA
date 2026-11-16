@@ -2,6 +2,15 @@
 
 **All-sky and time-domain explorer for SPHEREx: multi-epoch blinking of real L2b images, photometry with the official ePSF, 0.75–5.0 µm spectra and verification of moving or variable candidates.**
 
+<table>
+  <tr>
+    <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_Beginners_Guide.md"><b>🚀 Beginner's Guide</b></a><br><sub>Your first moving star in ten minutes</sub></td>
+    <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_User_Guide.md"><b>📖 User Guide</b></a><br><sub>Every control, display mode and measurement, with screenshots</sub></td>
+    <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_Jury_Guide.md"><b>⚖️ Jury Guide</b></a><br><sub>Methods, data provenance and validation for evaluators</sub></td>
+    <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_Documentation_EN.md"><b>📚 Full documentation</b></a><br><sub>Formulas, API and references · <a href="docs/SPHEREx_SkyChrono_Documentation_ES.md">ES</a></sub></td>
+  </tr>
+</table>
+
 > **Official challenge:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
 > **Team:** Delegación Zuliana de Astronomía
 > **Data:** NASA/IPAC IRSA (SPHEREx DR1 and QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = code **288**)
@@ -13,6 +22,11 @@
 [![DOI](https://img.shields.io/badge/DOI-10.26131%2FIRSA678-38BDF8)](https://doi.org/10.26131/IRSA678)
 [![UI](https://img.shields.io/badge/UI-ES%20%7C%20EN-10B981)](#-documentation)
 
+<p align="center">
+  <img src="docs/images/01_overview.jpg" alt="SPHEREx SkyChrono main workspace" width="100%">
+</p>
+<p align="center"><em>Main workspace with WISE 0855−0714: reference targets, LVF detector bands, multi-epoch Blink viewer with the ePSF candidate detector, target spectrum and AstroAI Copilot. <a href="#-screenshots">More screenshots ↓</a></em></p>
+
 ---
 
 ## 🌌 Overview
@@ -22,6 +36,51 @@
 **SPHEREx SkyChrono** is an open-source web application to explore the SPHEREx sky in time and in wavelength. It finds the Level-2 (L2b) exposures that cover any point of the sky and downloads only the cutouts it needs from AWS. It then alternates the visits (*blink*) to show what moves or changes brightness, and measures every source with the same method as the official pipeline: forced PSF photometry with the official ePSF.
 
 **Rigor principle:** every number the app shows comes from an official product (SPHEREx at IRSA/AWS, Gaia DR3, AllWISE, SIMBAD) or from a documented calculation. When a value does not exist or is not reliable (saturation, low S/N, no parallax), the app says so instead of inventing it.
+
+---
+
+## 📸 Screenshots
+
+All images were captured from the running application with live data from NASA/IPAC IRSA and the SPHEREx archive on AWS. The [User Guide](docs/SPHEREx_SkyChrono_User_Guide.md) explains each one step by step.
+
+**Display modes** (Barnard's Star, the fastest-moving star in the sky)
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/03_blink_barnard.jpg" alt="Blink Video" width="100%"><br><sub><b>Blink Video</b>: each frame is a real L2b visit; ✚ is the Gaia-predicted position</sub></td>
+    <td align="center" width="33%"><img src="docs/images/04_difference_barnard.jpg" alt="Difference (E2 − E1)" width="100%"><br><sub><b>Difference</b> (E2 − E1): residuals at the saturated star, which moved between visits</sub></td>
+    <td align="center" width="33%"><img src="docs/images/05_rgb_barnard.jpg" alt="Chronological RGB" width="100%"><br><sub><b>Chronological RGB</b>: one epoch per colour channel</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/06_coadd_barnard.jpg" alt="Co-Add Stack" width="100%"><br><sub><b>Co-Add Stack</b>: compatible exposures combined</sub></td>
+    <td align="center" width="33%"><img src="docs/images/07_curtain_barnard.jpg" alt="A/B Curtain" width="100%"><br><sub><b>A/B Curtain</b>: drag the divider to compare two epochs</sub></td>
+    <td align="center" width="33%"><img src="docs/images/12_fullscreen_wise0855.jpg" alt="Fullscreen viewer (F key) on WISE 0855−0714" width="100%"><br><sub><b>Fullscreen viewer</b> (<code>F</code> key) on WISE 0855−0714</sub></td>
+  </tr>
+</table>
+
+**Navigation, measurements and assistant** (Epsilon Indi Ba/Bb, a pair of T-type brown dwarfs)
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/02_left_panel.jpg" alt="Celestial Navigation" width="100%"><br><sub><b>Celestial Navigation</b>: search, FOV, exposures per epoch and D1–D6 bands</sub></td>
+    <td align="center" width="33%"><img src="docs/images/08_spectrum_epsindib.jpg" alt="Target Spectrum" width="100%"><br><sub><b>Target Spectrum</b>: per-exposure ePSF fluxes over the DR1 spectrum, and band depths</sub></td>
+    <td align="center" width="33%"><img src="docs/images/11_copilot.jpg" alt="AstroAI Copilot" width="100%"><br><sub><b>AstroAI Copilot</b>: measured vs. predicted motion, local engine without API key</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="docs/images/09_data_quality.jpg" alt="Data Quality" width="100%"><br><sub><b>Data Quality</b>: official FLAGS, ZODI, PSF, saturation and the formulas behind each value</sub></td>
+    <td align="center" width="50%"><img src="docs/images/13_allsky_360.jpg" alt="360° Universe" width="100%"><br><sub><b>360° Universe</b>: DR1 all-sky map for orientation; click to open a field</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="100%" colspan="2"><img src="docs/images/10_exposure_log.jpg" alt="L2b exposure log" width="100%"><br><sub><b>L2b exposure log</b>: OBS_ID, detector, λ at the target, UTC date, ePSF flux, quality and subtracted ZODI for every exposure</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><img src="docs/images/14_documentation.jpg" alt="Manuals &amp; Docs" width="100%"><br><sub><b>Manuals &amp; Docs</b>: the complete documentation inside the app</sub></td>
+    <td align="center" width="50%"><img src="docs/images/15_resources.jpg" alt="NASA / IRSA Resources with live links for the current coordinates" width="100%"><br><sub><b>NASA / IRSA Resources</b> with live links for the current coordinates</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -149,8 +208,12 @@ NASA-SPACE-APPS-SPHEREX-ZULIA/
 ├── data/
 │   └── spherex_exposure_index/  # Official exposure lists (IRSA SIA) for the 5 targets: fallback when IRSA does not respond
 ├── docs/
+│   ├── SPHEREx_SkyChrono_Beginners_Guide.md    # Beginner's Guide (EN)
+│   ├── SPHEREx_SkyChrono_User_Guide.md         # User Guide with screenshots (EN)
+│   ├── SPHEREx_SkyChrono_Jury_Guide.md         # Technical and scientific Jury Guide (EN)
 │   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Complete documentation (5 chapters, ES)
-│   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
+│   ├── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
+│   └── images/                                 # Screenshots used by the README and the guides
 ├── tests/
 │   ├── test_science.py    # Offline tests: HEALPix, astrometry, bits, AB, MPC, τ, photometry and IRSA-less fallback
 │   └── test_copilot.py    # Copilot with simulated providers: valid/invalid key, no quota, missing model
@@ -248,12 +311,15 @@ Finally, Planet X (or Planet Nine) is still a hypothetical object that has not b
 
 ## 📚 Documentation
 
-The complete documentation (concepts, user manual, methods and formulas, validation and references) is a single document per language. It can also be read inside the app with **📚 Manuals and Docs**.
+| Document | For whom | Link |
+| :--- | :--- | :--- |
+| 🚀 **Beginner's Guide** | Anyone, no astronomy background needed | [docs/SPHEREx_SkyChrono_Beginners_Guide.md](docs/SPHEREx_SkyChrono_Beginners_Guide.md) |
+| 📖 **User Guide** | Users who want every control and measurement explained, with screenshots | [docs/SPHEREx_SkyChrono_User_Guide.md](docs/SPHEREx_SkyChrono_User_Guide.md) |
+| ⚖️ **Jury Guide** | Technical and scientific evaluators: methods, provenance, validation and limits | [docs/SPHEREx_SkyChrono_Jury_Guide.md](docs/SPHEREx_SkyChrono_Jury_Guide.md) |
+| 🇺🇸 **Complete documentation** | Concepts, user manual, formulas, API, validation and references | [docs/SPHEREx_SkyChrono_Documentation_EN.md](docs/SPHEREx_SkyChrono_Documentation_EN.md) |
+| 🇪🇸 **Documentación completa** | Same content in Spanish | [docs/SPHEREx_SkyChrono_Documentation_ES.md](docs/SPHEREx_SkyChrono_Documentation_ES.md) |
 
-| Edition | Link |
-| :--- | :--- |
-| 🇪🇸 Español | [docs/SPHEREx_SkyChrono_Documentation_ES.md](docs/SPHEREx_SkyChrono_Documentation_ES.md) |
-| 🇺🇸 English | [docs/SPHEREx_SkyChrono_Documentation_EN.md](docs/SPHEREx_SkyChrono_Documentation_EN.md) |
+The complete documentation can also be read inside the app with **📚 Manuals & Docs**.
 
 ---
 
