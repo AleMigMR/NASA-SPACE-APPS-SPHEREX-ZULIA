@@ -1073,6 +1073,8 @@ function applyLanguage(lang) {
   updateAiDetectorButtonText();
   updateStarRecognizerButtonText();
   updateLiveResourceLinks();
+  const dotEl = document.getElementById("statusDot");
+  if (STATE.cube && !(dotEl && dotEl.classList.contains("busy"))) setStatus(cubeStatusText(STATE.cube), false);
   renderPresets();
   if (STATE.cube) {
     updateScienceBanner();
@@ -2567,14 +2569,7 @@ async function loadSkyPatch(opts = {}) {
     showLoading(false);
     STATE.panFetchInProgress = false;
     setTimeout(runPendingPan, 0);
-    setStatus(
-      cube.data_mode === "dr1_static"
-        ? STATE.lang === "en"
-          ? `Static DR1 (no L2b available)${cube.retry_after_s ? " · retrying IRSA automatically" : ""} · ${cube.elapsed_sec}s`
-          : `DR1 estático (sin L2b disponible)${cube.retry_after_s ? " · reintento automático de IRSA" : ""} · ${cube.elapsed_sec}s`
-        : `${cube.epochs.length} ${STATE.lang === "en" ? "epochs" : "épocas"} · ${cube.used_exposures} exp (${cube.elapsed_sec}s)`,
-      false
-    );
+    setStatus(cubeStatusText(cube), false);
 
     fetchExternalCatalogs();
     fetchDr1Spectrum();
@@ -5326,6 +5321,17 @@ function updateColorbarGradient() {
 function showLoading(show) {
   const el = document.getElementById("loadingOverlay");
   if (el) el.hidden = !show;
+}
+
+// Texto del indicador de estado para un cubo cargado (se recalcula al cambiar de idioma)
+function cubeStatusText(cube) {
+  const en = STATE.lang === "en";
+  if (cube.data_mode === "dr1_static") {
+    return en
+      ? `Static DR1 (no L2b available)${cube.retry_after_s ? " · retrying IRSA automatically" : ""} · ${cube.elapsed_sec}s`
+      : `DR1 estático (sin L2b disponible)${cube.retry_after_s ? " · reintento automático de IRSA" : ""} · ${cube.elapsed_sec}s`;
+  }
+  return `${cube.epochs.length} ${en ? "epochs" : "épocas"} · ${cube.used_exposures} exp (${cube.elapsed_sec}s)`;
 }
 
 function setStatus(text, busy) {
