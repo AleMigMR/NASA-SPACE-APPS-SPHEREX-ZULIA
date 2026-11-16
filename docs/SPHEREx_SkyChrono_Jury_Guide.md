@@ -4,7 +4,7 @@
 
 **Team:** Stars Finders — Delegación Zuliana de Astronomía  
 **Project lead:** Jesús Durán · **Programming:** Alejandro Montiel and José Montiel · **Research:** Jeshua Durán  
-**Repository:** https://github.com/AleMigMR/NASA-SPACE-APPS-SPHEREX-ZULIA
+**Website:** https://skychrono.earth · **Video (30 s):** [watch](https://skychrono.earth/docs/media/SPHEREx_SkyChrono_presentation.mp4) · **Repository:** https://github.com/AleMigMR/NASA-SPACE-APPS-SPHEREX-ZULIA
 
 > **Companion documents:** [Beginner's Guide](SPHEREx_SkyChrono_Beginners_Guide.md) · [User Guide](SPHEREx_SkyChrono_User_Guide.md) · [Complete documentation (EN)](SPHEREx_SkyChrono_Documentation_EN.md) · [README](../README.md)
 

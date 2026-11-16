@@ -9,11 +9,11 @@
 
 ## Quick Index
 
-- [Chapter 1 · Basic Concepts and the SPHEREx Mission](#chapter-1-basic-concepts-and-the-spherex-mission)
-- [Chapter 2 · User Manual](#chapter-2-user-manual)
-- [Chapter 3 · Methods, Mathematics and API](#chapter-3-methods-mathematics-and-api)
-- [Chapter 4 · Validation, Security and Deployment](#chapter-4-validation-security-and-deployment)
-- [Chapter 5 · Targets, References and DOIs](#chapter-5-targets-references-and-dois)
+- [Chapter 1 · Basic Concepts and the SPHEREx Mission](#chapter-1--basic-concepts-and-the-spherex-mission)
+- [Chapter 2 · User Manual](#chapter-2--user-manual)
+- [Chapter 3 · Methods, Mathematics and API](#chapter-3--methods-mathematics-and-api)
+- [Chapter 4 · Validation, Security and Deployment](#chapter-4--validation-security-and-deployment)
+- [Chapter 5 · Targets, References and DOIs](#chapter-5--targets-references-and-dois)
 
 ---
 
