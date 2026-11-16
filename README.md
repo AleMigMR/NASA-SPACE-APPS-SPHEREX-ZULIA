@@ -1,119 +1,119 @@
 # SPHEREx SkyChrono
 
-**Explorador de cielo completo y de series temporales para SPHEREx: blinking multi-época de imágenes L2b reales, fotometría con la ePSF oficial, espectros de 0.75–5.0 µm y verificación de candidatos en movimiento o variables.**
+**All-sky and time-domain explorer for SPHEREx: multi-epoch blinking of real L2b images, photometry with the official ePSF, 0.75–5.0 µm spectra and verification of moving or variable candidates.**
 
-> **Reto oficial:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
-> **Equipo:** Delegación Zuliana de Astronomía
-> **Datos:** NASA/IPAC IRSA (SPHEREx DR1 y QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = código **288**)
+> **Official challenge:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
+> **Team:** Delegación Zuliana de Astronomía
+> **Data:** NASA/IPAC IRSA (SPHEREx DR1 and QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = code **288**)
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![aiohttp](https://img.shields.io/badge/Backend-aiohttp-2C5BB4)](https://docs.aiohttp.org/)
 [![Astropy](https://img.shields.io/badge/Astrophysics-Astropy%20%2B%20Reproject-FF6F00)](https://www.astropy.org/)
 [![IRSA DR1](https://img.shields.io/badge/Data-NASA%2FIPAC%20IRSA%20SPHEREx-0B3D91)](https://irsa.ipac.caltech.edu/Missions/spherex.html)
 [![DOI](https://img.shields.io/badge/DOI-10.26131%2FIRSA678-38BDF8)](https://doi.org/10.26131/IRSA678)
-[![UI](https://img.shields.io/badge/UI-ES%20%7C%20EN-10B981)](#-documentación)
+[![UI](https://img.shields.io/badge/UI-ES%20%7C%20EN-10B981)](#-documentation)
 
 ---
 
-## 🌌 Resumen
+## 🌌 Overview
 
-> **Equipo Stars Finders · Delegación Zuliana de Astronomía.** Interfaz v5: visor cuadrado sin deformación, paneles fijos, capas simplificadas y logos del equipo y de la NASA en la cabecera (detalle en la documentación, cap. 2.0).
+> **Team Stars Finders · Delegación Zuliana de Astronomía.** Interface v5: square viewer with no distortion, fixed panels, simplified layers, and the team and NASA logos in the header (details in the documentation, ch. 2.0).
 
-**SPHEREx SkyChrono** es una aplicación web de código abierto para explorar el cielo de SPHEREx en el tiempo y en longitud de onda. Busca las exposiciones de nivel 2 (L2b) que cubren cualquier punto del cielo y descarga solo los recortes necesarios desde AWS. Después alterna las visitas (*blink*) para ver qué se mueve o cambia de brillo, y mide cada fuente con el mismo método del pipeline oficial: fotometría PSF forzada con la ePSF oficial.
+**SPHEREx SkyChrono** is an open-source web application to explore the SPHEREx sky in time and in wavelength. It finds the Level-2 (L2b) exposures that cover any point of the sky and downloads only the cutouts it needs from AWS. It then alternates the visits (*blink*) to show what moves or changes brightness, and measures every source with the same method as the official pipeline: forced PSF photometry with the official ePSF.
 
-**Principio de rigor:** todo número que muestra la app sale de un producto oficial (SPHEREx en IRSA/AWS, Gaia DR3, AllWISE, SIMBAD) o de un cálculo documentado. Cuando un dato no existe o no es fiable (saturación, baja S/N, sin paralaje), la app lo dice en lugar de inventarlo.
+**Rigor principle:** every number the app shows comes from an official product (SPHEREx at IRSA/AWS, Gaia DR3, AllWISE, SIMBAD) or from a documented calculation. When a value does not exist or is not reliable (saturation, low S/N, no parallax), the app says so instead of inventing it.
 
 ---
 
-## ✨ Qué hace y con qué datos
+## ✨ What it does and with which data
 
-| Módulo | Qué muestra | Método y fuente |
+| Module | What it shows | Method and source |
 | :--- | :--- | :--- |
-| **Visor 360°** | Mapa del cielo completo en planos galáctico, eclíptico e ICRS (Hammer-Aitoff 2:1, globo 3D, Aladin Lite) | PNG HiPS oficiales del cubo All-Sky DR1 (solo para visualizar) |
-| **Blink multi-época** | Exposiciones L2b reales agrupadas por visita (hasta 8 visitas repartidas en todo el período): Blink, Diferencia, RGB cronológico, Co-adición y Cortina A/B | IRSA TAP → SIA → lista oficial guardada (objetivos del reto); recortes por HTTP Range desde AWS S3 (respaldo IBE) |
-| **Pantalla completa** | Visor de imágenes a pantalla completa: botón **⛶**, tecla **F**, **Esc** para salir | Fullscreen API; la imagen se dibuja siempre con píxeles cuadrados |
-| **Objetivo con movimiento propio** | ✚ posición predicha del objetivo en cada exposición | `SkyCoord.apply_space_motion` con astrometría Gaia DR3 o de la literatura |
-| **Fotometría** | Flujo en µJy con error 1σ, S/N, magnitud AB o límite superior a 3σ | ePSF oficial, mínimos cuadrados con pesos 1/VARIANCE, *deblending* con Gaia, 3 % sistemático, máscara oficial |
-| **Estrellas saturadas** | Posición medida aunque el flujo no sea medible | Centroide de los píxeles `OVERFLOW` del núcleo |
-| **Movimiento medido** | Desplazamiento del objetivo entre la primera y la última visita, frente al predicho, con su diferencia en σ | Ajuste lineal ponderado a las medias de cada visita (error estándar más 0.7″ de sistemático para núcleos saturados) |
-| **Candidatos** | Dipolos y residuos de la imagen de diferencia, cada uno verificado | Umbral 5σ con σ_MAD y verificación ePSF: movimiento ≥ 3σ y ≥ 0.3 px; variabilidad ≥ 5σ en el mismo canal en ≥ 2 pares independientes. No cuentan las mediciones saturadas, las del borde del detector ni las que quedan fuera del rango del filtro |
-| **Espectro DR1** | 102 canales en la posición del objetivo, con avisos de saturación y de fuentes vecinas | Fotometría de apertura en el cubo All-Sky DR1 (teselas HEALPix de orden 5) |
-| **Profundidad de bandas** | τ de H₂O 3.0, CH₄ 3.3, CO₂ 4.27 y CO 4.67 µm, con su error e interpretación (gas o hielo) | Continuo de ley de potencias y piso sistemático de 0.04 |
-| **Fuentes del campo** | Gaia DR3 y AllWISE; distancia solo si π/σ ≥ 5 o hay una distancia publicada | MAST con respaldo VizieR; VizieR con respaldo IRSA Gator |
-| **Calidad de datos** | Origen, luz zodiacal restada, píxeles rechazados, PSF usada, saturación y artefactos | Bits `FLAGS` oficiales (Tabla 16 del Suplemento Explicativo) |
-| **Reporte MPC** | Borrador en formato de satélite (dos líneas, código 288), solo para movimiento confirmado sin contrapartida estelar | Vector geocéntrico de la nave `X/Y/Z_SC` interpolado a mitad de exposición |
-| **Copiloto** | Respuestas basadas solo en la telemetría medida, con reglas contra inventar valores | Gemini u OpenAI opcional (botón **Confirmar** que comprueba la clave y elige el modelo; errores visibles) o motor local determinista |
+| **360° viewer** | All-sky map in Galactic, ecliptic and ICRS frames (Hammer-Aitoff 2:1, 3D globe, Aladin Lite) | Official HiPS PNGs of the DR1 All-Sky cube (visualisation only) |
+| **Multi-epoch blink** | Real L2b exposures grouped by visit (up to 8 visits spread over the whole period): Blink, Difference, chronological RGB, Co-add and A/B Curtain | IRSA TAP → SIA → stored official list (challenge targets); HTTP Range cutouts from AWS S3 (IBE fallback) |
+| **Fullscreen** | Fullscreen image viewer: **⛶** button, **F** key, **Esc** to exit | Fullscreen API; the image is always drawn with square pixels |
+| **Target with proper motion** | ✚ predicted position of the target in each exposure | `SkyCoord.apply_space_motion` with Gaia DR3 or literature astrometry |
+| **Photometry** | Flux in µJy with 1σ error, S/N, AB magnitude or 3σ upper limit | Official ePSF, least squares weighted by 1/VARIANCE, Gaia *deblending*, 3 % systematic, official mask |
+| **Saturated stars** | Measured position even when the flux cannot be measured | Centroid of the core `OVERFLOW` pixels |
+| **Measured motion** | Shift of the target between the first and last visit, against the predicted one, with the difference in σ | Weighted linear fit to the mean of each visit (standard error plus 0.7″ systematic for saturated cores) |
+| **Candidates** | Dipoles and residuals of the difference image, each one verified | 5σ threshold with σ_MAD and ePSF verification: motion ≥ 3σ and ≥ 0.3 px; variability ≥ 5σ in the same channel in ≥ 2 independent pairs. Saturated measurements, detector-edge measurements and those outside the filter range do not count |
+| **DR1 spectrum** | 102 channels at the target position, with saturation and neighbour warnings | Aperture photometry on the DR1 All-Sky cube (order-5 HEALPix tiles) |
+| **Band depths** | τ of H₂O 3.0, CH₄ 3.3, CO₂ 4.27 and CO 4.67 µm, with error and interpretation (gas or ice) | Power-law continuum and a 0.04 systematic floor |
+| **Field sources** | Gaia DR3 and AllWISE; distance only if π/σ ≥ 5 or a published distance exists | MAST with VizieR fallback; VizieR with IRSA Gator fallback |
+| **Data quality** | Origin, zodiacal light subtracted, rejected pixels, PSF used, saturation and artefacts | Official `FLAGS` bits (Table 16 of the Explanatory Supplement) |
+| **MPC report** | Draft in satellite format (two lines, code 288), only for confirmed motion without a stellar counterpart | Geocentric spacecraft vector `X/Y/Z_SC` interpolated to mid-exposure |
+| **Copilot** | Answers based only on the measured telemetry, with rules against inventing values | Optional Gemini or OpenAI (**Confirm** button that checks the key and chooses the model; visible errors) or deterministic local engine |
 
 ---
 
-## 🔬 Auditoría científica (v4.0): qué se corrigió o eliminó
+## 🔬 Scientific audit (v4.0): what was fixed or removed
 
-| Antes | Problema | Ahora |
+| Before | Problem | Now |
 | :--- | :--- | :--- |
-| Coordenadas fijas de WISE 0855, Barnard y Eps Indi B | En 2026 estaban a 125″, 103″ y 59″ de los objetos reales | Astrometría Gaia DR3 o de la literatura, propagada a la fecha de cada exposición |
-| Guarda de *blooming* fija en (1648, 1752) de la banda 1 | Los datos reales no muestran un defecto fijo en esa posición; el *blooming* depende de cada estrella | Bit oficial `BLOOM` (26), píxel a píxel |
-| Bits `FLAGS` que no existen en DR1 (p. ej. `PHANTOM`) | No están en la Tabla 16 oficial | Tabla 16 oficial; `SOURCE` (bit 21) nunca se enmascara |
-| Código MPC `C59` y formato óptico terrestre | `C59` es el telescopio Yangwang-1, no SPHEREx | Código **288** y formato de satélite de dos líneas con el vector de la nave |
-| Índice HEALPix NESTED con recorte | ~12 % del cielo apuntaba a la tesela equivocada | Algoritmo de referencia: 0 discrepancias frente a `astropy-healpix` en 200 000 posiciones |
-| "Épocas" del cubo DR1 con fechas | El cubo DR1 es una co-adición de un año, sin información temporal | Una sola imagen estática, rotulada como tal, sin blink |
-| Tipos espectrales y distancias generados por *hash*; distancias fotométricas | Datos inventados | Gaia DR3 y AllWISE; distancia solo con paralaje significativa |
-| Teff por ley de Wien e "índice de hielos biogénicos" | Una enana marrón no es un cuerpo negro y sus bandas son de gas, no de hielo | Profundidad aparente con error y significancia, más una interpretación gas/hielo según el tipo de objeto |
-| "% de confianza IA" y escudos "CLEAN" fijos | No se calculaban con los datos | Panel de calidad con conteos reales de bits y de saturación |
-| "Fotometría Tractor exacta" con una gaussiana 15×15 | No era Tractor ni usaba la PSF real | ePSF oficial con ajuste forzado (método del pipeline, Suplemento sec. 3.3) |
-| Candidatos de la diferencia presentados como detecciones | Falsos positivos por la fase subpíxel, la λ distinta de cada exposición, el borde del filtro y el *blooming* de estrellas saturadas | Verificación ePSF obligatoria: confirmado, no confirmado (o artefacto de estrella saturada) o no verificable |
-| Elias 16 y 3I/ATLAS mal ubicados; "candidato a Planeta X" | Coordenadas erróneas o inventadas | Coordenadas de SIMBAD y JPL Horizons; el candidato ficticio se eliminó |
-| Imagen estirada por CSS | Deformaba ángulos y distancias | Píxeles cuadrados y Aitoff con proporción 2:1 |
+| Fixed coordinates for WISE 0855, Barnard and Eps Indi B | In 2026 they were 125″, 103″ and 59″ away from the real objects | Gaia DR3 or literature astrometry, propagated to the date of each exposure |
+| Fixed *blooming* guard at (1648, 1752) in band 1 | Real data show no fixed defect at that position; blooming depends on each star | Official `BLOOM` bit (26), pixel by pixel |
+| `FLAGS` bits that do not exist in DR1 (e.g. `PHANTOM`) | They are not in the official Table 16 | Official Table 16; `SOURCE` (bit 21) is never masked |
+| MPC code `C59` and ground-based optical format | `C59` is the Yangwang-1 telescope, not SPHEREx | Code **288** and two-line satellite format with the spacecraft vector |
+| HEALPix NESTED index with clipping | ~12 % of the sky pointed to the wrong tile | Reference algorithm: 0 mismatches against `astropy-healpix` in 200,000 positions |
+| DR1 cube "epochs" with dates | The DR1 cube is a one-year co-add with no time information | A single static image, labelled as such, with no blink |
+| Spectral types and distances generated by *hash*; photometric distances | Invented data | Gaia DR3 and AllWISE; distance only with a significant parallax |
+| Teff from Wien's law and a "biogenic ice index" | A brown dwarf is not a blackbody and its bands are gas, not ice | Apparent depth with error and significance, plus a gas/ice interpretation according to the object type |
+| "AI confidence %" and fixed "CLEAN" shields | They were not computed from the data | Quality panel with real counts of bits and saturation |
+| "Exact Tractor photometry" with a 15×15 Gaussian | It was not Tractor and did not use the real PSF | Official ePSF with forced fit (pipeline method, Supplement sec. 3.3) |
+| Difference candidates presented as detections | False positives from sub-pixel phase, the different λ of each exposure, the filter edge and the *blooming* of saturated stars | Mandatory ePSF verification: confirmed, not confirmed (or saturated-star artefact) or not verifiable |
+| Elias 16 and 3I/ATLAS misplaced; "Planet X candidate" | Wrong or invented coordinates | SIMBAD and JPL Horizons coordinates; the fictitious candidate was removed |
+| Image stretched by CSS | It distorted angles and distances | Square pixels and a 2:1 Aitoff |
 
 ---
 
-## 🎯 Objetivos de referencia del reto
+## 🎯 Challenge reference targets
 
-Al elegir un objetivo, la app centra el campo en su posición de **2026.0** y predice su posición en la fecha de **cada** exposición.
+When a target is selected, the app centres the field on its **2026.0** position and predicts its position at the date of **each** exposure.
 
-| Objetivo | Astrometría (fuente) | Qué mide SPHEREx (datos reales) |
+| Target | Astrometry (source) | What SPHEREx measures (real data) |
 | :--- | :--- | :--- |
-| **WISE 0855−0714** (enana Y, 2.28 pc) | Kirkpatrick et al. 2021: μ = (−8123.7, +673.2) mas/año, ϖ = 439.0 mas | Las coordenadas del enunciado (`08h55m10.831s −7d14m42.53s`) son de la época AllWISE (2010.6); en 2026 el objeto está a **~2.1′** de ellas. En 19 exposiciones L2b de 4.4–5.0 µm (3 visitas) se detecta en 9 (S/N ≈ 4; la mejor, 1.0 ± 0.2 mJy a 4.74 µm) a una mediana de 1.1″ de la posición predicha. Pasa a 8″ de la estrella Gaia DR3 5756956644387831296 (G = 16.3), que la ePSF separa en L2b pero que domina la apertura DR1 por debajo de 3.5 µm. |
-| **Barnard's Star** (M4V, 1.83 pc) | Gaia DR3: μ = (−801.6, +10362.4) mas/año | **Saturada** en 28 de 28 exposiciones L2b y en 99 de 100 canales DR1: el flujo no es medible. La posición sí: el centroide del núcleo saturado cae a 1.2″ (0.19 px) de la posición predicha, y SPHEREx **mide un desplazamiento de 6.59 ± 1.00″ (AP 355°)** entre 2025-08-25 y 2026-03-30, frente a 6.19″ (AP 356°) predichos por Gaia DR3 (diferencia 0.4σ). |
-| **Epsilon Indi Ba/Bb** (T1 + T6, 3.64 pc) | Gaia DR3: μ = (+3982.0, −2466.8) mas/año | Detectada en 32 de 32 exposiciones L2b (S/N ≈ 32) a una mediana de 0.0″ de la posición predicha. SPHEREx **mide 6.88 ± 0.25″ (AP 122°)** en 519 días frente a 6.65″ (AP 122°) predichos (1.0σ), y la imagen de diferencia la marca como *movimiento confirmado*. SED de enana T en DR1: 31 mJy (1.25 µm), 36 (1.66), 25 (2.19), 8 (3.29), 63 (4.0) y 18 mJy (4.6 µm); **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** y τ(H₂O 3.0 µm) = 0.52 ± 0.05: absorción de gas. |
-| **RW Aurigae A** (T Tauri, 156 pc) | Gaia DR3 (2016.0) | **Saturada** en 24 de 24 exposiciones L2b y en 48 canales DR1. Movimiento medido 0.56 ± 1.23″ en un año (compatible con cero, como se espera). Un falso "movimiento" de 9.5″ sobre su *blooming* queda marcado como artefacto de estrella saturada. |
-| **R Draconis** (Mira, P ≈ 245.6 d, ~800 pc) | Gaia DR3 (2016.0) | **Saturada** en 64 de 64 exposiciones L2b (8 visitas, cerca del polo eclíptico norte) y en los 100 canales DR1. Movimiento medido 1.82 ± 0.83″ en 503 días (2.2σ, no significativo). Sus artefactos de *blooming* se marcan como tales. |
+| **WISE 0855−0714** (Y dwarf, 2.28 pc) | Kirkpatrick et al. 2021: μ = (−8123.7, +673.2) mas/yr, ϖ = 439.0 mas | The coordinates in the challenge statement (`08h55m10.831s −7d14m42.53s`) are from the AllWISE epoch (2010.6); in 2026 the object is **~2.1′** away from them. In 19 L2b exposures at 4.4–5.0 µm (3 visits) it is detected in 9 (S/N ≈ 4; the best, 1.0 ± 0.2 mJy at 4.74 µm) at a median of 1.1″ from the predicted position. It passes 8″ from the star Gaia DR3 5756956644387831296 (G = 16.3), which the ePSF separates in L2b but which dominates the DR1 aperture below 3.5 µm. |
+| **Barnard's Star** (M4V, 1.83 pc) | Gaia DR3: μ = (−801.6, +10362.4) mas/yr | **Saturated** in 28 of 28 L2b exposures and in 99 of 100 DR1 channels: the flux cannot be measured. The position can: the centroid of the saturated core falls 1.2″ (0.19 px) from the predicted position, and SPHEREx **measures a shift of 6.59 ± 1.00″ (PA 355°)** between 2025-08-25 and 2026-03-30, against 6.19″ (PA 356°) predicted by Gaia DR3 (0.4σ difference). |
+| **Epsilon Indi Ba/Bb** (T1 + T6, 3.64 pc) | Gaia DR3: μ = (+3982.0, −2466.8) mas/yr | Detected in 32 of 32 L2b exposures (S/N ≈ 32) at a median of 0.0″ from the predicted position. SPHEREx **measures 6.88 ± 0.25″ (PA 122°)** in 519 days against 6.65″ (PA 122°) predicted (1.0σ), and the difference image flags it as *confirmed motion*. T-dwarf SED in DR1: 31 mJy (1.25 µm), 36 (1.66), 25 (2.19), 8 (3.29), 63 (4.0) and 18 mJy (4.6 µm); **τ(CH₄ 3.3 µm) = 1.51 ± 0.05** and τ(H₂O 3.0 µm) = 0.52 ± 0.05: gas absorption. |
+| **RW Aurigae A** (T Tauri, 156 pc) | Gaia DR3 (2016.0) | **Saturated** in 24 of 24 L2b exposures and in 48 DR1 channels. Measured motion 0.56 ± 1.23″ in one year (consistent with zero, as expected). A false 9.5″ "motion" on its *blooming* is flagged as a saturated-star artefact. |
+| **R Draconis** (Mira, P ≈ 245.6 d, ~800 pc) | Gaia DR3 (2016.0) | **Saturated** in 64 of 64 L2b exposures (8 visits, near the north ecliptic pole) and in all 100 DR1 channels. Measured motion 1.82 ± 0.83″ in 503 days (2.2σ, not significant). Its *blooming* artefacts are flagged as such. |
 
-Para repetir esta validación (necesita acceso a IRSA):
+To repeat this validation (requires access to IRSA):
 
 ```bash
 python tools/validate_targets.py
 ```
 ```bash
-python tools/validate_targets.py WISE0855 Barnard --json informe.json
+python tools/validate_targets.py WISE0855 Barnard --json report.json
 ```
 
 ---
 
-## 🏗️ Arquitectura
+## 🏗️ Architecture
 
 ```mermaid
 flowchart LR
     subgraph Client["Frontend (HTML5 · Canvas 2D · Aladin Lite v3)"]
-        UI["Interfaz bilingüe ES/EN<br/>objetivos, controles y modales"]
-        Canvas["#skyCanvas<br/>Blink · Diferencia · RGB · Co-adición · Cortina<br/>pantalla completa ⛶"]
-        Universe["Visor 360°<br/>Aitoff · Globo 3D · HiPS"]
-        Spec["Espectro ePSF + DR1<br/>curva de luz por canal"]
+        UI["Bilingual ES/EN interface<br/>targets, controls and modals"]
+        Canvas["#skyCanvas<br/>Blink · Difference · RGB · Co-add · Curtain<br/>fullscreen ⛶"]
+        Universe["360° viewer<br/>Aitoff · 3D globe · HiPS"]
+        Spec["ePSF + DR1 spectrum<br/>band depths"]
     end
 
-    subgraph Server["Backend asíncrono (app.py · aiohttp)"]
-        API["API REST + proxy HiPS"]
-        Cache["Caché en memoria y en disco<br/>(cache/, ignorada por Git)"]
+    subgraph Server["Asynchronous backend (app.py · aiohttp)"]
+        API["REST API + HiPS proxy"]
+        Cache["Memory and disk cache<br/>(cache/, ignored by Git)"]
     end
 
-    subgraph Engine["Motor científico (spherex_engine.py)"]
-        Disc["Descubrimiento<br/>IRSA TAP → SIA"]
-        S3["AWS S3 (HTTP Range) → IRSA IBE<br/>L2b + cubo All-Sky DR1"]
-        Phot["ePSF forzada · astrometría · verificación<br/>espectro DR1 · bandas · MPC 288"]
+    subgraph Engine["Scientific engine (spherex_engine.py)"]
+        Disc["Discovery<br/>IRSA TAP → SIA"]
+        S3["AWS S3 (HTTP Range) → IRSA IBE<br/>L2b + DR1 All-Sky cube"]
+        Phot["Forced ePSF · astrometry · verification<br/>DR1 spectrum · bands · MPC 288"]
     end
 
-    subgraph External["Catálogos e IA"]
+    subgraph External["Catalogues and AI"]
         Cat["Gaia DR3 (MAST/VizieR) · AllWISE<br/>SIMBAD / Sesame"]
-        AI["Gemini (opcional)<br/>o motor local"]
+        AI["Gemini (optional)<br/>or local engine"]
     end
 
     UI <--> API
@@ -131,87 +131,87 @@ flowchart LR
 
 ---
 
-## 📁 Estructura del proyecto
+## 📁 Project structure
 
 ```text
 NASA-SPACE-APPS-SPHEREX-ZULIA/
-├── app.py                 # Servidor aiohttp: API REST, proxy HiPS y precarga opcional
-├── spherex_engine.py      # Motor científico: IRSA/S3, ePSF, astrometría, DR1, bandas, MPC y copiloto
-├── requirements.txt       # Dependencias de Python
-├── Dockerfile             # Imagen Docker (Python 3.11, puerto 8050)
-├── render.yaml            # Despliegue en Render
-├── .env.example           # Plantilla de variables de entorno (copiar a .env)
-├── .gitignore             # Excluye .env, cache/, *.fits, entornos virtuales
+├── app.py                 # aiohttp server: REST API, HiPS proxy and optional pre-loading
+├── spherex_engine.py      # Scientific engine: IRSA/S3, ePSF, astrometry, DR1, bands, MPC and copilot
+├── requirements.txt       # Python dependencies
+├── Dockerfile             # Docker image (Python 3.11, port 8050)
+├── render.yaml            # Render deployment
+├── .env.example           # Environment variable template (copy to .env)
+├── .gitignore             # Excludes .env, cache/, *.fits, virtual environments
 ├── static/
-│   ├── index.html         # Interfaz bilingüe
-│   ├── app.js             # Visores, gráficos, pantalla completa y lógica de la UI
-│   └── styles.css         # Estilos
+│   ├── index.html         # Bilingual interface
+│   ├── app.js             # Viewers, charts, fullscreen and UI logic
+│   └── styles.css         # Styles
 ├── data/
-│   └── spherex_exposure_index/  # Listas oficiales de exposiciones (IRSA SIA) de los 5 objetivos: respaldo si IRSA no responde
+│   └── spherex_exposure_index/  # Official exposure lists (IRSA SIA) for the 5 targets: fallback when IRSA does not respond
 ├── docs/
-│   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Documentación completa (5 capítulos, ES)
+│   ├── SPHEREx_SkyChrono_Documentation_ES.md   # Complete documentation (5 chapters, ES)
 │   └── SPHEREx_SkyChrono_Documentation_EN.md   # Complete documentation (5 chapters, EN)
 ├── tests/
-│   ├── test_science.py    # Pruebas sin red: HEALPix, astrometría, bits, AB, MPC, τ, fotometría y respaldo sin IRSA
-│   └── test_copilot.py    # Copiloto con proveedores simulados: clave válida/inválida, sin cuota, modelo inexistente
+│   ├── test_science.py    # Offline tests: HEALPix, astrometry, bits, AB, MPC, τ, photometry and IRSA-less fallback
+│   └── test_copilot.py    # Copilot with simulated providers: valid/invalid key, no quota, missing model
 ├── tools/
-│   └── validate_targets.py  # Validación de los objetivos del reto con datos reales de SPHEREx
+│   └── validate_targets.py  # Validation of the challenge targets with real SPHEREx data
 ```
 
 ---
 
-## 🔌 API REST (`app.py`)
+## 🔌 REST API (`app.py`)
 
-| Método | Ruta | Descripción |
+| Method | Route | Description |
 | :--- | :--- | :--- |
-| `GET` | `/` | Interfaz web |
-| `GET · POST · DELETE` | `/api/targets` | Objetivos de referencia y personalizados (la astrometría oficial no es editable) |
-| `GET` | `/api/resolve?q=` | Coordenadas o nombre (Sesame/SIMBAD) propagados a 2026.0; reconoce las coordenadas antiguas de los objetivos |
-| `GET` | `/api/cube` | Cubo multi-época: imágenes, fotometría, trayectoria del objetivo, movimiento medido, candidatos y calidad |
-| `GET` | `/api/point_spectrum` | Fotometría ePSF por exposición en el píxel elegido |
-| `GET` | `/api/dr1_spectrum` | Espectro de 102 canales del cubo DR1, profundidades de banda y avisos |
-| `GET` | `/api/catalogs` | Gaia DR3 y AllWISE proyectados en el campo |
-| `GET` | `/api/gif` | Animación GIF de las épocas |
-| `POST` | `/api/ai/chat` | Copiloto |
-| `POST` | `/api/ai/validate` | Comprueba una clave de IA con su proveedor (nunca la devuelve) |
-| `GET` | `/api/ai/status` | Indica si el servidor tiene clave en `.env` (sin revelarla) |
-| `GET` | `/api/docs?lang=es\|en` | Documentación integrada |
-| `GET` | `/api/spherex-allsky-map` | Mapa equirectangular del cubo DR1 (visualización) |
-| `GET` | `/api/hips/spherex/{canal}/{ruta}` | Proxy HiPS para Aladin Lite |
-| `GET` | `/static/*`, `/docs/*` | Archivos estáticos |
+| `GET` | `/` | Web interface |
+| `GET · POST · DELETE` | `/api/targets` | Reference and custom targets (the official astrometry cannot be edited) |
+| `GET` | `/api/resolve?q=` | Coordinates or name (Sesame/SIMBAD) propagated to 2026.0; recognises the old coordinates of the targets |
+| `GET` | `/api/cube` | Multi-epoch cube: images, photometry, target track, measured motion, candidates and quality |
+| `GET` | `/api/point_spectrum` | Per-exposure ePSF photometry at the chosen pixel |
+| `GET` | `/api/dr1_spectrum` | 102-channel spectrum from the DR1 cube, band depths and warnings |
+| `GET` | `/api/catalogs` | Gaia DR3 and AllWISE projected onto the field |
+| `GET` | `/api/gif` | GIF animation of the epochs |
+| `POST` | `/api/ai/chat` | Copilot |
+| `POST` | `/api/ai/validate` | Checks an AI key with its provider (never returns it) |
+| `GET` | `/api/ai/status` | Tells whether the server has a key in `.env` (without revealing it) |
+| `GET` | `/api/docs?lang=es\|en` | Built-in documentation |
+| `GET` | `/api/spherex-allsky-map` | Equirectangular map of the DR1 cube (visualisation) |
+| `GET` | `/api/hips/spherex/{channel}/{path}` | HiPS proxy for Aladin Lite |
+| `GET` | `/static/*`, `/docs/*` | Static files |
 
 ---
 
-## 🚀 Inicio rápido
+## 🚀 Quick start
 
-### 1. Instalar dependencias
+### 1. Install dependencies
 ```bash
 python -m venv .venv
 ```
 ```bash
 source .venv/bin/activate
 ```
-En Windows (PowerShell): `.\.venv\Scripts\Activate.ps1`
+On Windows (PowerShell): `.\.venv\Scripts\Activate.ps1`
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configuración opcional (`.env`)
-La app funciona al 100 % sin claves: el copiloto usa entonces su motor local. Para usar Gemini, copia la plantilla y escribe tu clave en `.env`, que nunca se sube a Git:
+### 2. Optional configuration (`.env`)
+The app works 100 % without keys: the copilot then uses its local engine. To use Gemini, copy the template and write your key in `.env`, which is never pushed to Git:
 ```bash
 cp .env.example .env
 ```
-Variables disponibles: `GEMINI_API_KEY` u `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (solo para forzar un modelo; por defecto se elige solo), `PORT`, `SPHEREX_TAP_TIMEOUT` (segundos, por defecto 30), `SPHEREX_SIA_TIMEOUT` (por defecto 60) y `SPHEREX_PREWARM=0` (desactiva la precarga de los objetivos).
+Available variables: `GEMINI_API_KEY` or `OPENAI_API_KEY`, `GEMINI_MODEL` / `OPENAI_MODEL` (only to force a model; by default it is chosen automatically), `PORT`, `SPHEREX_TAP_TIMEOUT` (seconds, default 30), `SPHEREX_SIA_TIMEOUT` (default 60) and `SPHEREX_PREWARM=0` (disables pre-loading of the targets).
 
-También puedes usar tu clave sin `.env`: en el panel del copiloto abre **🔑 Conectar API Key**, pégala y pulsa **Confirmar**. La app la comprueba con Google u OpenAI y muestra ✅ (conectada, con el modelo elegido), ⚠️ (válida, pero modelos saturados o sin cuota en ese momento) o ❌ (rechazada, con el motivo). La clave vive solo en esa pestaña del navegador; **Quitar** la borra.
+You can also use your key without `.env`: in the copilot panel open **🔑 Connect API Key**, paste it and press **Confirm**. The app checks it with Google or OpenAI and shows ✅ (connected, with the chosen model), ⚠️ (valid, but models overloaded or out of quota at that moment) or ❌ (rejected, with the reason). The key lives only in that browser tab; **Remove** deletes it.
 
-### 3. Ejecutar
+### 3. Run
 ```bash
 python app.py
 ```
-Abre `http://localhost:8050`.
+Open `http://localhost:8050`.
 
-### 4. Verificar
+### 4. Verify
 ```bash
 python -m py_compile app.py spherex_engine.py
 ```
@@ -225,54 +225,54 @@ python tests/test_science.py
 python tests/test_copilot.py
 ```
 
-### 5. Docker o Render
+### 5. Docker or Render
 ```bash
 docker build -t spherex-skychrono .
 ```
 ```bash
 docker run -p 8050:8050 spherex-skychrono
 ```
-Para Render, [`render.yaml`](render.yaml) ya está configurado; añade `GEMINI_API_KEY` como variable secreta en el panel si quieres usar Gemini.
+For Render, [`render.yaml`](render.yaml) is already configured; add `GEMINI_API_KEY` as a secret variable in the dashboard if you want to use Gemini.
 
 ---
 
-## ⚠️ Limitaciones conocidas
+## ⚠️ Known limitations
 
-SkyChrono trabaja con datos reales de SPHEREx, y eso tiene algunas limitaciones que conviene conocer. Barnard's Star, RW Aurigae y R Draconis son tan brillantes que saturan los detectores, así que su posición se mide con precisión pero su flujo no es fiable. En el extremo opuesto, WISE 0855−0714 es un objeto débil para SPHEREx y además está mezclado con una estrella de magnitud G = 16.3 situada a solo 8″, por lo que su relación señal/ruido en cada exposición individual es baja.
+SkyChrono works with real SPHEREx data, which comes with some limitations worth knowing. Barnard's Star, RW Aurigae and R Draconis are so bright that they saturate the detectors, so their position is measured accurately but their flux is not reliable. At the opposite end, WISE 0855−0714 is a faint object for SPHEREx and is also blended with a G = 16.3 star only 8″ away, so its signal-to-noise ratio in each individual exposure is low.
 
-En cuanto a la disponibilidad de los datos, IRSA solo se necesita para saber qué exposiciones cubren un punto del cielo, ya que las imágenes se leen directamente de AWS S3. Si los servicios TAP y SIA de IRSA no responden, los cinco objetivos del reto usan su lista oficial guardada en `data/spherex_exposure_index/` y el blink sigue funcionando con normalidad. En cualquier otro punto del cielo, si IRSA falla en ese momento, la aplicación muestra una sola imagen estática del cubo DR1, claramente señalada como tal, y nunca simula épocas. Mientras tanto, vuelve a intentar la conexión cada minuto aproximadamente, consultando TAP y SIA a la vez y con reintentos. En cuanto IRSA responde, cualquier punto del cielo muestra todas sus épocas.
+As for data availability, IRSA is only needed to know which exposures cover a point of the sky, because the images are read directly from AWS S3. If IRSA's TAP and SIA services do not respond, the five challenge targets use their official list stored in `data/spherex_exposure_index/` and the blink keeps working normally. At any other point of the sky, if IRSA fails at that moment, the application shows a single static image from the DR1 cube, clearly labelled as such, and never simulates epochs. Meanwhile, it retries the connection about every minute, querying TAP and SIA at the same time and with retries. As soon as IRSA responds, any point of the sky shows all its epochs.
 
-Por último, el Planeta X (o Planeta Nueve) sigue siendo un objeto hipotético que no se ha detectado. A unas 500 UA del Sol se desplazaría unos 7″ por día, de modo que habría que buscarlo dentro de una misma visita de SPHEREx, que abarca varios días, y no comparando visitas separadas por seis meses. Tampoco el cubo DR1 sirve para esa búsqueda: tiene píxeles de 12.9″, combina las observaciones de todo un año sin información temporal, y sus imágenes HiPS están pensadas solo para visualizar, no para hacer medidas científicas.
+Finally, Planet X (or Planet Nine) is still a hypothetical object that has not been detected. At about 500 AU from the Sun it would move about 7″ per day, so it would have to be searched for within a single SPHEREx visit, which spans several days, and not by comparing visits six months apart. Nor is the DR1 cube suitable for that search: it has 12.9″ pixels, combines a whole year of observations with no time information, and its HiPS images are meant only for visualisation, not for scientific measurements.
 
 ---
 
-## 📚 Documentación
+## 📚 Documentation
 
-La documentación completa (conceptos, manual de usuario, métodos y fórmulas, validación y referencias) está en un solo documento por idioma. También se lee dentro de la app con **📚 Manuales y Docs**.
+The complete documentation (concepts, user manual, methods and formulas, validation and references) is a single document per language. It can also be read inside the app with **📚 Manuals and Docs**.
 
-| Edición | Enlace |
+| Edition | Link |
 | :--- | :--- |
 | 🇪🇸 Español | [docs/SPHEREx_SkyChrono_Documentation_ES.md](docs/SPHEREx_SkyChrono_Documentation_ES.md) |
 | 🇺🇸 English | [docs/SPHEREx_SkyChrono_Documentation_EN.md](docs/SPHEREx_SkyChrono_Documentation_EN.md) |
 
 ---
 
-## 🔗 Recursos oficiales y créditos
+## 🔗 Official resources and credits
 
-- Archivo SPHEREx en IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
-- Tutoriales oficiales de SPHEREx: https://caltech-ipac.github.io/irsa-tutorials/spherex/
-- Herramientas oficiales de IRSA: [SPHEREx Data Explorer](https://irsa.ipac.caltech.edu/applications/spherex) · [MOST](https://irsa.ipac.caltech.edu/applications/MOST) (imágenes de SPHEREx que cubren un objeto del Sistema Solar) · [Spectrophotometry Tool](https://irsa.ipac.caltech.edu/applications/spherex/tool-spectrophotometry)
-- Artículos canónicos de SPHEREx: Bock et al. 2026 (misión), Akeson et al. 2026 (pipeline), Korngut et al. 2026 (instrumento y calibración), Crill et al. 2025 (simulador del cielo)
-- Recursos del reto: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
-- Gaia DR3 en MAST: https://archive.stsci.edu/missions-and-data/gaia
+- SPHEREx archive at IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
+- Official SPHEREx tutorials: https://caltech-ipac.github.io/irsa-tutorials/spherex/
+- Official IRSA tools: [SPHEREx Data Explorer](https://irsa.ipac.caltech.edu/applications/spherex) · [MOST](https://irsa.ipac.caltech.edu/applications/MOST) (SPHEREx images covering a Solar System object) · [Spectrophotometry Tool](https://irsa.ipac.caltech.edu/applications/spherex/tool-spectrophotometry)
+- Canonical SPHEREx papers: Bock et al. 2026 (mission), Akeson et al. 2026 (pipeline), Korngut et al. 2026 (instrument and calibration), Crill et al. 2025 (sky simulator)
+- Challenge resources: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=resources
+- Gaia DR3 at MAST: https://archive.stsci.edu/missions-and-data/gaia
 - WiseView: http://byw.tools/wiseview
-- Formato MPC para observaciones desde satélites: https://www.minorplanetcenter.net/iau/info/SatelliteObs.html
+- MPC format for observations from satellites: https://www.minorplanetcenter.net/iau/info/SatelliteObs.html
 - DOIs: [10.26131/IRSA678](https://doi.org/10.26131/IRSA678) (DR1 Spectral Images) · [10.26131/IRSA679](https://doi.org/10.26131/IRSA679) (DR1 All-Sky Cube) · [10.26131/IRSA662](https://doi.org/10.26131/IRSA662) (QR3) · [10.26131/IRSA554](https://doi.org/10.26131/IRSA554) (SPLICES)
 
 > This publication makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration.
 
-NASA no respalda a entidades que no sean del Gobierno de EE. UU.; los datos de sitios externos se usan según sus propias condiciones.
+NASA does not endorse any non-U.S. Government entity; data from external sites are used according to their own terms.
 
 ---
 
-*Desarrollado por la **Delegación Zuliana de Astronomía** para el **NASA Space Apps Challenge 2026**.*
+*Developed by the **Delegación Zuliana de Astronomía** for the **NASA Space Apps Challenge 2026**.*
