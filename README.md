@@ -2,6 +2,8 @@
 
 **All-sky and time-domain explorer for SPHEREx: multi-epoch blinking of real L2b images, photometry with the official ePSF, 0.75–5.0 µm spectra and verification of moving or variable candidates.**
 
+<p align="center">🌐 <b>Project website: <a href="https://skychrono.earth">skychrono.earth</a></b></p>
+
 <table>
   <tr>
     <td align="center" width="25%"><a href="docs/SPHEREx_SkyChrono_Beginners_Guide.md"><b>🚀 Beginner's Guide</b></a><br><sub>Your first moving star in ten minutes</sub></td>
@@ -11,10 +13,11 @@
   </tr>
 </table>
 
-> **Official challenge:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026
-> **Team:** Stars Finders — Delegación Zuliana de Astronomía · Jesús Durán (lead), Alejandro Montiel and José Montiel (programming), Jeshua Durán (research)
+> **Official challenge:** *Planet X and SPHEREx* — NASA Space Apps Challenge 2026<br>
+> **Team:** Stars Finders — Delegación Zuliana de Astronomía · Jesús Durán (lead), Alejandro Montiel and José Montiel (programming), Jeshua Durán (research)<br>
 > **Data:** NASA/IPAC IRSA (SPHEREx DR1 and QR3) · AWS Open Data (`s3://nasa-irsa-spherex/`) · Gaia DR3 (MAST) · AllWISE (VizieR / IRSA) · SIMBAD / Sesame · Minor Planet Center (SPHEREx = code **288**)
 
+[![Website](https://img.shields.io/badge/Website-skychrono.earth-0EA5E9)](https://skychrono.earth)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![aiohttp](https://img.shields.io/badge/Backend-aiohttp-2C5BB4)](https://docs.aiohttp.org/)
 [![Astropy](https://img.shields.io/badge/Astrophysics-Astropy%20%2B%20Reproject-FF6F00)](https://www.astropy.org/)
